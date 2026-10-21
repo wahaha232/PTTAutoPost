@@ -1,11 +1,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-# runtime user data (drafts, signatures, logs) -- never commit; dist/ and build/ ARE committed on request
+# build outputs are published as GitHub Releases, not committed
+dist/
+build/
 /data/
 /logs/
 /config/
-dist/*/data/
-dist/*/logs/
-dist/*/config/
-dist/PTTAutoPost-0.5.2-portable/
