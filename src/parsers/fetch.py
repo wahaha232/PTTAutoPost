@@ -51,6 +51,8 @@ def validate_url(raw: str) -> str:
         raise InputError(f"不支援的網址類型「{p.scheme or '無'}」，僅支援 http／https。")
     if not host:
         raise InputError("網址缺少主機名稱。")
+    if p.username or p.password:
+        raise InputError("網址不可包含帳號或密碼（user:password@ 形式）；請移除後再試。")
     return url
 
 
@@ -118,7 +120,8 @@ def fetch(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_BYTES,
         warnings.append(note)
     if allowed is False and not ignore_robots:
         raise FetchError("該網站的 robots.txt 不允許擷取此路徑（可勾選「忽略 robots」由您自行承擔後再試）。", "robots")
-    host = urlparse(url).netloc
+    pu = urlparse(url)
+    host = (pu.hostname or "") + (f":{pu.port}" if pu.port else "")          # never userinfo
     with _lock:
         wait = max(min_interval, delay or 0) - (time.monotonic() - _last_hit.get(host, 0))
         _last_hit[host] = time.monotonic() + max(wait, 0)     # reserve our slot so parallel fetches queue up
@@ -150,11 +153,14 @@ def fetch(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_BYTES,
         if not re.search(r"html|xml", ctype, re.I):
             raise FetchError(f"內容類型不是網頁（{ctype or '未知'}）。", "type")
         chunks, total = [], 0
-        for c in r.iter_content(65536):
-            total += len(c)
-            if total > max_bytes:
-                raise FetchError(f"網頁超過大小上限（{max_bytes // 1024 // 1024} MB）。", "size")
-            chunks.append(c)
+        try:
+            for c in r.iter_content(65536):
+                total += len(c)
+                if total > max_bytes:
+                    raise FetchError(f"網頁超過大小上限（{max_bytes // 1024 // 1024} MB）。", "size")
+                chunks.append(c)
+        except requests.RequestException as e:             # connection dropped / bad chunked or compressed body mid-download
+            raise FetchError("讀取網頁內容時連線中斷或內容無法解碼。", f"{type(e).__name__}: {e}") from e
         raw = b"".join(chunks)
         hc = re.search(r"charset=([\w\-]+)", ctype, re.I)
         text, cs = _decode(raw, hc.group(1) if hc else None, warnings)

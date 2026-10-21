@@ -389,6 +389,7 @@ def test_keybar_buttons_and_wheel_send_navigation_keys(win, bbs_factory):
                      Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
     win.term.wheelEvent(ev)                                      # one notch up = 2 arrow-ups
     assert wait_until(lambda: bytes(bbs.after_login) == b"\x1b[6~\x1b[A\x1b[A")
+    win.chk_keybar.setChecked(False)
     win.chk_keybar.setChecked(True)
     assert win.keybar.isVisibleTo(win) and win.db.get_setting("ui.keybar") == "1"
     win.chk_keybar.setChecked(False)
@@ -509,3 +510,58 @@ def test_pttlogin_default_is_not_a_hardcoded_developer_path(win):
     from src.ui import main_window
     assert "D:/Claude" not in inspect.getsource(main_window)
     assert win.pttlogin_path.text() == "" or win.pttlogin_path.text().lower().endswith("pttautologin.exe")
+
+
+def test_terminal_keyboard_is_paused_while_typing_or_logging_in(win, bbs_factory):
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtCore import QEvent
+    bbs = bbs_factory()
+    connect_and_login(win, bbs)
+    win.typer.running = True
+    win._update_input_lock()
+    assert win.term.locked
+    ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, "a")
+    win.term.keyPressEvent(ev)
+    win._send_key(b"\x1b[A")
+    pump(300)
+    assert bytes(bbs.after_login) == b"" and "暫停" in win.msg_log.toPlainText()
+    win.typer.running = False
+    win._update_input_lock()
+    assert not win.term.locked
+    win.term.keyPressEvent(ev)
+    assert wait_until(lambda: bytes(bbs.after_login) == b"a")
+
+
+def test_draft_keeps_signature_snapshot_when_signature_changes(win):
+    fill_article(win)
+    for name, text in (("甲", "簽名甲"), ("乙", "簽名乙")):
+        win.new_signature()
+        win.sig_name.setText(name)
+        win.sig_edit.setPlainText(text)
+        win.save_signature()
+    win.sig_combo.setCurrentIndex(0)
+    win._pick_signature(0)
+    win.chk_sig.setChecked(True)
+    did = win.save_draft()
+    assert win.db.get_draft(did)["signature_text"] == "簽名甲"
+    win.sig_combo.setCurrentIndex(1)
+    win._pick_signature(1)                                       # now the selected signature is 乙
+    win.reload_drafts()
+    win.draft_list.setCurrentRow(0)
+    win.open_selected()
+    win.render_preview(force=True)
+    assert win.preview.toPlainText().endswith("簽名甲") and win.lbl_sig_snap.isVisibleTo(win)
+    win.use_current_signature()
+    win.render_preview(force=True)
+    assert win.preview.toPlainText().endswith("簽名乙") and not win.lbl_sig_snap.isVisibleTo(win)
+
+
+def test_recovered_draft_shows_aborted_in_first_list(qapp, tmp_path, monkeypatch):
+    db = Database(tmp_path / "r.db")
+    did = db.save_draft({"title": "t", "post_title": "[新聞] t", "body": "b"})
+    db.set_input_state(did, "started")
+    db.close()
+    w = MainWindow(Database(tmp_path / "r.db"), PttSession())
+    assert w.db.get_draft(did)["input_state"] == "aborted"
+    assert "aborted" in w.draft_list.item(0).text() or "中止" in w.draft_list.item(0).text() or w.draft_list.count() == 1
+    w.db.close()

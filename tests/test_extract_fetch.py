@@ -276,3 +276,54 @@ def test_body_found_without_article_or_p_tags_and_with_css_in_js_class_names():
     paras = "".join(f'<div class="Paragraph__Block-sc-9 a"><span>{LONG[i * 30:(i + 1) * 30 + 30]}</span></div>' for i in range(8))
     html = page(body=f'{junk}<div class="article-page__Body-sc-5"><div class="article-page__Content-sc-6">{paras}</div></div>')
     assert len(parse(html, "https://spa.example/a").body.value) > 150
+
+
+def test_validate_url_rejects_userinfo_without_echoing_it():
+    import pytest
+    from src.errors import InputError
+    from src.parsers.fetch import validate_url
+    with pytest.raises(InputError) as e:
+        validate_url("https://user:secret@news.example/a")
+    assert "secret" not in str(e.value) and "secret" not in getattr(e.value, "detail", "")
+    assert validate_url("https://news.example/a?x=1") == "https://news.example/a?x=1"
+
+
+def test_parse_is_reentrant_time_note_does_not_leak_between_parses():
+    future = "2999-01-01T00:00:00+00:00"
+    html_bad = f"<html><head><title>甲</title><meta property='article:published_time' content='{future}'></head><body><article><p>{'內文很長。' * 40}</p></article></body></html>"
+    html_ok = "<html><head><title>乙</title></head><body><article><p>" + "內文很長。" * 40 + "</p></article></body></html>"
+    a = parse(html_bad, "https://a.example/1")
+    b = parse(html_ok, "https://b.example/2")
+    assert any("時區" in w for w in a.warnings) and not any("時區" in w for w in b.warnings)
+
+
+def test_truncation_flag_does_not_leak_to_next_parse():
+    cut = "<html><head><title>T</title></head><body><article>" + "<p>" + "完整的句子，內容很長。" * 30 + "</p><p>展開全文</p></article></body></html>"
+    full = "<html><head><title>T2</title></head><body><article><p>" + "完整的句子，內容很長。" * 30 + "</p></article></body></html>"
+    assert parse(cut, "https://x.example/1").body_status == "suspect_partial"
+    assert parse(full, "https://x.example/2").body_status == "likely_complete"
+
+
+def test_stream_read_error_becomes_fetch_error(monkeypatch):
+    import pytest
+    import requests
+    from src.errors import FetchError
+    from src.parsers import fetch as fm
+
+    class Resp:
+        url = "https://news.example/a"
+        status_code = 200
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+
+        def iter_content(self, _n):
+            yield b"<html>"
+            raise requests.exceptions.ChunkedEncodingError("connection broken")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(requests.Session, "get", lambda self, *a, **k: Resp())
+    monkeypatch.setattr(fm, "_robots", lambda url, timeout: (True, "", None))
+    with pytest.raises(FetchError) as e:
+        fm.fetch("https://news.example/a", min_interval=0)
+    assert "中斷" in e.value.message

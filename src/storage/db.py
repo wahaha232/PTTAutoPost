@@ -11,11 +11,11 @@ from ..logging_setup import get_logger
 from ..paths import data_dir
 
 log = get_logger("db")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_SIGNATURES = 10
 
 DRAFT_FIELDS = ("title", "post_title", "site", "author", "published", "url", "body", "notes", "board",
-                "use_signature", "preview_override", "parse_status", "body_status", "field_states", "input_state")
+                "use_signature", "signature_text", "preview_override", "parse_status", "body_status", "field_states", "input_state")
 INPUT_STATES = ("none", "started", "done", "aborted")
 
 
@@ -30,9 +30,16 @@ class Database:
             self.conn = sqlite3.connect(str(self.path))
         except sqlite3.Error as e:
             raise StorageError("無法開啟資料庫。", str(e)) from e
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys=ON")
-        self._migrate()
+        try:
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA foreign_keys=ON")
+            self._migrate()
+        except sqlite3.Error as e:                          # corrupt / read-only / disk full / bad schema
+            self.conn.close()
+            raise StorageError("資料庫無法初始化（檔案可能損毀、唯讀或磁碟空間不足）。", str(e)) from e
+        except StorageError:
+            self.conn.close()
+            raise
 
     def close(self) -> None:
         self.conn.close()
@@ -59,6 +66,11 @@ class Database:
                                     draft_id INTEGER, detail TEXT NOT NULL DEFAULT '');
                 CREATE INDEX idx_drafts_updated ON drafts(updated_at DESC);
                 PRAGMA user_version=1;""")
+        if v < 2:                                    # draft keeps a snapshot of the signature text it was saved with
+            with self.conn:
+                self.conn.executescript("""
+                ALTER TABLE drafts ADD COLUMN signature_text TEXT NOT NULL DEFAULT '';
+                PRAGMA user_version=2;""")
 
     # ---------------------------------------------------------------- drafts
     def save_draft(self, data: dict, draft_id: int | None = None) -> int:
@@ -125,15 +137,26 @@ class Database:
             self.conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                               (key, value))
 
+    def _json_setting(self, key: str):
+        """Parsed JSON of a setting, or None when missing / corrupt (logged, never raised)."""
+        raw = self.get_setting(key, "")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            log.warning("setting %s is not valid JSON; ignored", key)
+            return None
+
     def signatures(self) -> list[dict]:
         """Saved signatures [{name, text}], at most MAX_SIGNATURES. A pre-0.3 single signature becomes entry 1."""
-        raw = self.get_setting("signature.list", "")
-        if raw:
-            try:
-                items = json.loads(raw)
-                return [{"name": str(i.get("name", "")), "text": str(i.get("text", ""))} for i in items][:MAX_SIGNATURES]
-            except (ValueError, AttributeError):
+        if self.get_setting("signature.list", ""):
+            items = self._json_setting("signature.list")
+            if not isinstance(items, list):
+                log.warning("signature.list has an unexpected shape; ignored")
                 return []
+            out = [{"name": str(i.get("name", "")), "text": str(i.get("text", ""))} for i in items if isinstance(i, dict)]
+            return out[:MAX_SIGNATURES]
         old = self.get_setting("signature.text", "")
         return [{"name": "簽名檔1", "text": old}] if old.strip() else []
 
@@ -175,10 +198,14 @@ class Database:
             self.set_active_signature(0)
 
     def favorite_boards(self) -> list[str]:
-        try:
-            return [str(b) for b in json.loads(self.get_setting("boards.favorites", "[]"))]
-        except ValueError:
+        items = self._json_setting("boards.favorites")
+        if not isinstance(items, list):
             return []
+        out: list[str] = []
+        for b in items:
+            if isinstance(b, str) and 0 < len(b) <= 12 and b.lower() not in {o.lower() for o in out}:
+                out.append(b)
+        return out
 
     def set_board_favorite(self, board: str, on: bool) -> None:
         favs = [b for b in self.favorite_boards() if b.lower() != board.lower()]

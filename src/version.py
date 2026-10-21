@@ -1,10 +1,22 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.5.4"
+__version__ = "0.6.0"
 BUILD_DATE = "2026/10/16"
 APP_NAME = "PTT AutoPost"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.6.0", "2026/10/16", [
+        "Drafts keep a snapshot of the signature text they were saved with (database schema v2, migrated automatically); opening a draft "
+        "shows it with a 'use current signature' button",
+        "Terminal keyboard / wheel / key bar are paused while automatic typing or the assisted login runs",
+        "Connection: cancelling while connecting can no longer be undone by a late 'connected' signal; signals of replaced sockets are ignored",
+        "Fetch: URLs with user:password@ are refused; a connection drop while downloading is reported as a fetch error; hostname only in logs",
+        "Parser: no module-level / function-attribute state (time-zone note and truncation flag are per parse)",
+        "Settings JSON that is corrupt or has an unexpected shape no longer crashes startup; database init errors are StorageError and the "
+        "connection is always closed; startup errors show a dialog and unhandled exceptions are logged",
+        "Typing finished message now says the data was sent, not that the server confirmed it; key bar checkbox and draft recovery order fixed",
+        "requirements.txt added; README updated",
+    ]),
     ("0.5.4", "2026/10/16", [
         "Fix: check() no longer crashes on a ' -- ' line when a signature is used",
         "Fix: copy / check / typing always use a freshly rebuilt preview (no stale text within the 350 ms refresh delay)",

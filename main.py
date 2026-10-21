@@ -105,7 +105,20 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     log.info("start %s %s", APP_NAME, __version__)
-    win = MainWindow(Database(), PttSession())
+    from PySide6.QtWidgets import QMessageBox
+
+    from src.errors import ToolError
+
+    def excepthook(et, ev, tb):                       # windowed EXE has no console: keep a trace in the log
+        log.error("unhandled exception", exc_info=(et, ev, tb))
+        sys.__excepthook__(et, ev, tb)
+    sys.excepthook = excepthook
+    try:
+        win = MainWindow(Database(), PttSession())
+    except ToolError as e:
+        log.error("startup failed: %s (%s)", e.message, e.detail)
+        QMessageBox.critical(None, APP_NAME, f"程式無法啟動：{e.message}\n\n資料庫檔案不會被自動刪除；請先備份 data 資料夾再處理。")
+        return 1
     win.show()
     code = app.exec()
     log.info("exit code=%s", code)

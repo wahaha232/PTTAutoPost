@@ -152,7 +152,7 @@ class PostTyper(QObject):
             return
         if self._i >= len(self._chunks):
             self.running = False
-            self.finished.emit(True, "已輸入完成。程式不會代按存檔或送出——請在終端機中自行檢查，並自行確認／送出。")
+            self.finished.emit(True, "傳送完成：程式只確認資料已送出，並不代表伺服器已完整收到。請在終端機逐行核對內容；程式不會代按存檔或送出，請自行確認／送出。")
             return
         if not self._screen_ok():
             self._abort(f"輸入途中畫面不是預期的畫面（偵測為：{self.s.kind.value}），已停止；請目視確認終端機內容。")

@@ -117,6 +117,7 @@ class TerminalWidget(QWidget):
         self.fill = fill
         self.cw, self.ch = 9.0, 19.0
         self.sx, self.sy, self.ox, self.oy = 1.0, 1.0, 0.0, 0.0   # glyph stretch and grid offset (fit mode)
+        self.locked = False                             # True while an automatic typing / login run owns the keyboard
         self.stretch = False                            # True: distort glyphs so the grid fills the area completely
         self._adv: dict[str, float] = {}
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)           # never grabs focus on its own
@@ -215,7 +216,15 @@ class TerminalWidget(QWidget):
         return self.cw, self.ch
 
     # ----------------------------------------------------------------- input
+    def _blocked(self) -> bool:
+        if self.locked:
+            self.notice.emit("自動輸入／登入進行中，鍵盤與捲動已暫停（可按「取消輸入」）。")
+        return self.locked
+
     def keyPressEvent(self, e):
+        if self._blocked():
+            e.accept()
+            return
         data, why = key_to_bytes(e.key(), e.modifiers(), e.text())
         if why:
             self.notice.emit(why)
@@ -228,6 +237,9 @@ class TerminalWidget(QWidget):
 
     def wheelEvent(self, e):
         """Touchpad / mouse wheel scrolls like the arrow keys (laptops have no PgUp/PgDn)."""
+        if self.locked:
+            e.accept()
+            return
         self._wheel = getattr(self, "_wheel", 0) + e.angleDelta().y()
         steps = int(self._wheel / 60)
         if steps:
@@ -237,6 +249,9 @@ class TerminalWidget(QWidget):
         e.accept()
 
     def inputMethodEvent(self, e):
+        if self._blocked():
+            e.accept()
+            return
         text = e.commitString()
         if text:
             try:

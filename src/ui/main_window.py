@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         self._quitting = False
         self._dirty = False                               # unsaved edits in the current draft
         self._typing_draft_id: int | None = None          # draft that the running typing session belongs to
+        self._draft_sig: str | None = None                # signature snapshot of the opened draft (None = use the selected one)
         self._tray: QSystemTrayIcon | None = None
         self._tray_hint_shown = False
         scr0 = QGuiApplication.primaryScreen()
@@ -110,9 +111,9 @@ class MainWindow(QMainWindow):
         self.typer.finished.connect(self._typing_finished)
         self.typer.progress.connect(lambda i, n: self.type_status.setText(f"輸入中… {i}/{n} 段"))
         self.new_draft()
+        self.db.recover_interrupted_inputs()               # before the first list load, so aborted runs show correctly
         self.reload_drafts()
         self._on_conn_state(self.session.client.state)
-        self.db.recover_interrupted_inputs()
 
     # ================================================================== terminal tab
     def _build_terminal_tab(self) -> QWidget:
@@ -242,7 +243,7 @@ class MainWindow(QMainWindow):
         self.chk_tray_min = QCheckBox("最小化時縮到系統匣（工作列不顯示，從系統匣圖示還原）")
         self.chk_tray_close = QCheckBox("按視窗關閉鈕（X）時縮到系統匣（要真正結束請在系統匣圖示按右鍵選「離開」）")
         self.chk_keybar = QCheckBox("終端機下方顯示按鍵列（Esc、方向鍵、PgUp／PgDn、Home／End；筆電沒有這些鍵時使用）")
-        self.chk_keybar.setChecked(self.keybar.isVisible())
+        self.chk_keybar.setChecked(not self.keybar.isHidden())
         self.chk_keybar.toggled.connect(self._keybar_toggled)
         tl.addWidget(self.chk_keybar)
         self.lbl_tray_note = QLabel("")
@@ -342,7 +343,12 @@ class MainWindow(QMainWindow):
         self._update_tray(c)
         self._update_type_buttons()
 
+    def _update_input_lock(self) -> None:
+        """The terminal keyboard is paused while automatic typing or the assisted login owns the connection."""
+        self.term.locked = bool(self.typer.running or self.session.login_state is Login.LOGGING_IN)
+
     def _on_login_state(self, st: Login):
+        self._update_input_lock()
         self.lbl_login.setText(f"登入：{st.value}")
         self._update_type_buttons()
 
@@ -432,6 +438,12 @@ class MainWindow(QMainWindow):
         self.chk_sig = QCheckBox("此草稿套用簽名檔")
         row2.addWidget(self.btn_sig_save)
         row2.addWidget(self.chk_sig)
+        self.lbl_sig_snap = QLabel("使用草稿儲存時的簽名檔（與目前選取的不同）")
+        self.btn_sig_current = QPushButton("改用目前簽名檔")
+        self.lbl_sig_snap.setVisible(False)
+        self.btn_sig_current.setVisible(False)
+        row2.addWidget(self.lbl_sig_snap)
+        row2.addWidget(self.btn_sig_current)
         row2.addStretch(1)
         self._sig_idx = -1
         self._reload_signatures(self.db.active_signature_index)
@@ -507,6 +519,7 @@ class MainWindow(QMainWindow):
         self.btn_board_go.clicked.connect(self.goto_board)
         self.board_combo.activated.connect(lambda _i: self._board_changed())
         self.board_combo.lineEdit().editingFinished.connect(self._board_changed)
+        self.btn_sig_current.clicked.connect(self.use_current_signature)
         self.btn_sig_new.clicked.connect(self.new_signature)
         self.btn_sig_del.clicked.connect(self.delete_signature)
         self.sig_combo.activated.connect(self._pick_signature)
@@ -603,7 +616,7 @@ class MainWindow(QMainWindow):
     def fields(self) -> compose.Fields:
         return compose.Fields(post_title=self.w["post_title"].text(), site=self.w["site"].text(), author=self.w["author"].text(),
                               published=self.w["published"].text(), url=self.w["url"].text(), news_title=self.w["title"].text(),
-                              body=self.body.toPlainText(), notes=self.notes.toPlainText(), signature=self.sig_edit.toPlainText(),
+                              body=self.body.toPlainText(), notes=self.notes.toPlainText(), signature=self._sig_text(),
                               use_signature=self.chk_sig.isChecked())
 
     def _schedule_preview(self, dirty: bool = True):
@@ -627,6 +640,21 @@ class MainWindow(QMainWindow):
         self._setting_preview = False
         self._preview_manual = False
         self.lbl_preview.setText("")
+
+    def _sig_text(self) -> str:
+        """Signature text for preview / checks / saving: the opened draft's snapshot, else the selected signature."""
+        return self._draft_sig if self._draft_sig is not None else self.sig_edit.toPlainText()
+
+    def _sync_sig_snapshot_ui(self) -> None:
+        on = self._draft_sig is not None
+        self.lbl_sig_snap.setVisible(on)
+        self.btn_sig_current.setVisible(on)
+
+    def use_current_signature(self) -> None:
+        self._draft_sig = None
+        self._sync_sig_snapshot_ui()
+        self._dirty = True
+        self._schedule_preview(False)
 
     def regen_preview(self):
         if self._preview_manual and QMessageBox.question(
@@ -666,8 +694,8 @@ class MainWindow(QMainWindow):
 
     def run_checks(self) -> list[compose.Issue]:
         title, body = self.current_texts()
-        used = self.chk_sig.isChecked() and bool(self.sig_edit.toPlainText().strip())
-        issues = compose.check(title, body, self.sig_edit.toPlainText(), used)
+        used = self.chk_sig.isChecked() and bool(self._sig_text().strip())
+        issues = compose.check(title, body, self._sig_text(), used)
         if self._last_result is not None and self._last_result.body_status != "likely_complete":
             issues.append(compose.Issue("warn", "擷取內文" + BODY_TEXT[self._last_result.body_status] + "，請對照原網頁確認。"))
         n, ctrl = compose.normalize(body)
@@ -858,6 +886,8 @@ class MainWindow(QMainWindow):
         self.notes.setPlainText("")
         self.url_in.setText("")
         self.chk_sig.setChecked(bool(self.db.signature.strip()))
+        self._draft_sig = None
+        self._sync_sig_snapshot_ui()
         self._loading = False
         self._last_result = None
         for f in FIELDS:
@@ -875,6 +905,7 @@ class MainWindow(QMainWindow):
         title, _body = self.current_texts()
         data = {f: self.w[f].text() for f in FIELDS}
         data.update(board=self.current_board(), body=self.body.toPlainText(), notes=self.notes.toPlainText(), use_signature=self.chk_sig.isChecked(),
+                    signature_text=self._sig_text() if self.chk_sig.isChecked() else "",
                     preview_override=self.preview.toPlainText() if self._preview_manual else None,
                     parse_status=self._last_result.status if self._last_result else "",
                     body_status=self._last_result.body_status if self._last_result else "",
@@ -912,6 +943,10 @@ class MainWindow(QMainWindow):
         self.notes.setPlainText(d["notes"])
         self.url_in.setText(d["url"])
         self.chk_sig.setChecked(bool(d["use_signature"]))
+        snap = d.get("signature_text", "")
+        cur = compose.normalize(self.sig_edit.toPlainText())[0]
+        self._draft_sig = snap if (d["use_signature"] and snap.strip() and snap != cur) else None
+        self._sync_sig_snapshot_ui()
         if d["board"]:
             self._reload_boards(d["board"])
         states = dict(kv.split("=", 1) for kv in d["field_states"].split(",") if "=" in kv)
@@ -1000,12 +1035,14 @@ class MainWindow(QMainWindow):
         self._update_type_buttons()
 
     def _typing_started(self, target: Target):
+        self._update_input_lock()
         if target is Target.BODY and self._typing_draft_id:
             self.db.set_input_state(self._typing_draft_id, "started")          # write-ahead: recorded before the first byte
         self.type_status.setText("輸入中…（可按「取消輸入」；取消不會清除已輸入的內容）")
         self._update_type_buttons()
 
     def _typing_finished(self, ok: bool, msg: str):
+        self._update_input_lock()
         if self._typing_target is Target.BODY and self._typing_draft_id:
             self.db.set_input_state(self._typing_draft_id, "done" if ok else "aborted")
             self.reload_drafts()
@@ -1042,6 +1079,9 @@ class MainWindow(QMainWindow):
         self.keybar.setVisible(on)
 
     def _send_key(self, data: bytes) -> None:
+        if self.term.locked:
+            self._notice("自動輸入／登入進行中，按鍵已暫停。")
+            return
         if not self.session.send_user_bytes(data):
             self._notice("尚未連線，按鍵未送出。")
 

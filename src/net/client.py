@@ -75,10 +75,21 @@ class PttClient(QObject):
         """Polite close (sends a WebSocket close frame so PTT frees the session promptly)."""
         self._intentional_close = True
         self._timer.stop()
+        connecting = self.state is State.CONNECTING
         if self._ws is not None:
-            self._ws.close()
-        if self.state is State.CONNECTING:
+            if connecting:                                  # handshake not finished: abort and forget this socket
+                ws, self._ws = self._ws, None
+                ws.abort()
+                ws.deleteLater()
+            else:
+                self._ws.close()
+        if connecting:
             self._set_state(State.DISCONNECTED)
+
+    def _stale(self) -> bool:
+        """True for a signal from a socket that was replaced by a newer live one (it must never touch the current state)."""
+        s = self.sender()
+        return s is not None and self._ws is not None and s is not self._ws
 
     def send(self, data: bytes) -> bool:
         """Send raw terminal bytes. Returns False (and sends nothing) unless connected."""
@@ -90,6 +101,12 @@ class PttClient(QObject):
 
     # ----------------------------------------------------------------- slots
     def _on_connected(self) -> None:
+        if self._stale():
+            return
+        if self._intentional_close or self.state is not State.CONNECTING:      # cancelled / timed out meanwhile
+            if self._ws is not None:
+                self._ws.abort()
+            return
         self._timer.stop()
         self._set_state(State.CONNECTED)
         log.info("connected (subprotocol=%r)", self._ws.subprotocol() if self._ws else "")
@@ -106,7 +123,7 @@ class PttClient(QObject):
             self.dataReceived.emit(data)
 
     def _on_error(self, err) -> None:
-        if self._intentional_close:
+        if self._intentional_close or self._stale():
             return
         msg = self._ws.errorString() if self._ws else str(err)
         log.warning("socket error: %s", msg)
@@ -118,6 +135,8 @@ class PttClient(QObject):
             self._set_state(State.DISCONNECTED)
 
     def _on_disconnected(self) -> None:
+        if self._stale():
+            return
         self._timer.stop()
         was = self.state
         ws, self._ws = self._ws, None

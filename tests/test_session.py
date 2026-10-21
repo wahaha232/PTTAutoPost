@@ -130,3 +130,20 @@ def test_connect_failure_reports_error(qapp):
     s.connect_to("ws://127.0.0.1:1/bbs")
     assert wait_until(lambda: bool(notes), 8000)
     assert s.client.state is State.DISCONNECTED
+
+
+def test_cancel_while_connecting_is_not_undone_by_late_connected(qapp, bbs_factory):
+    from conftest import pump, wait_until
+    from src.net.client import State
+    from src.net.session import PttSession
+    bbs = bbs_factory()
+    s = PttSession()
+    s.connect_to(bbs.url)
+    assert s.client.state is State.CONNECTING
+    s.disconnect_()                                       # cancel before the handshake finishes
+    pump(600)
+    assert s.client.state is State.DISCONNECTED and not s.logged_in
+    s.connect_to(bbs.url)                                 # a quick reconnect must not be hit by the old socket's signals
+    assert wait_until(lambda: s.client.state is State.CONNECTED)
+    s.disconnect_()
+    pump(200)

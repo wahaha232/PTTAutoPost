@@ -156,3 +156,49 @@ def test_redact_handles_quoted_dict_and_list_forms():
     from src.logging_setup import redact
     for text in ("{'pwd': 'hunter22'}", '{"password": "hunter22"}', "password=hunter22", "token: hunter22"):
         assert "hunter22" not in redact(text), text
+
+
+def test_corrupt_signature_and_board_settings_return_empty(tmp_path):
+    d = Database(tmp_path / "c.db")
+    for bad in ("null", '"str"', "42", '{"a": 1}', "[1, 2, null]", "not json"):
+        d.set_setting("signature.list", bad)
+        d.set_setting("boards.favorites", bad)
+        assert isinstance(d.signatures(), list) and isinstance(d.favorite_boards(), list)
+    d.set_setting("boards.favorites", '["Stock", "stock", 5, "", "TooLongBoardNameXX", "NBA"]')
+    assert d.favorite_boards() == ["Stock", "NBA"]
+
+
+def test_database_init_failure_is_storage_error_and_connection_closed(tmp_path):
+    bad = tmp_path / "bad.db"
+    bad.write_bytes(b"this is not a sqlite database" * 50)
+    with pytest.raises(StorageError):
+        Database(bad)
+    newer = tmp_path / "new.db"
+    conn = sqlite3.connect(newer)
+    conn.execute("PRAGMA user_version=99")
+    conn.commit()
+    conn.close()
+    with pytest.raises(StorageError):
+        Database(newer)
+    newer.unlink()                                        # would fail on Windows if the connection had been left open
+
+
+def test_migration_v1_to_v2_keeps_drafts_and_adds_signature_snapshot(tmp_path):
+    p = tmp_path / "old.db"
+    conn = sqlite3.connect(p)
+    conn.executescript("""
+        CREATE TABLE drafts(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL DEFAULT '', post_title TEXT NOT NULL DEFAULT '',
+          site TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', published TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+          body TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', board TEXT NOT NULL DEFAULT '', use_signature INTEGER NOT NULL DEFAULT 0,
+          preview_override TEXT, parse_status TEXT NOT NULL DEFAULT '', body_status TEXT NOT NULL DEFAULT '', field_states TEXT NOT NULL DEFAULT '',
+          input_state TEXT NOT NULL DEFAULT 'none', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, kind TEXT NOT NULL, draft_id INTEGER, detail TEXT NOT NULL DEFAULT '');
+        INSERT INTO drafts(title, created_at, updated_at) VALUES('舊草稿', 'x', 'x');
+        PRAGMA user_version=1;""")
+    conn.commit()
+    conn.close()
+    d = Database(p)
+    row = d.get_draft(1)
+    assert row["title"] == "舊草稿" and row["signature_text"] == ""
+    assert d.conn.execute("PRAGMA user_version").fetchone()[0] == 2

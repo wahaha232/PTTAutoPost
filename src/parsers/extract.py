@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 FOUND, MISSING, INFERRED = "found", "missing", "inferred"
-TIME_NOTES: list[str] = []
 ARTICLE_TYPES = {"newsarticle", "article", "blogposting", "reportagenewsarticle", "analysisnewsarticle", "opinionnewsarticle"}
 ORG_WORDS = re.compile(r"(新聞|電子報|通訊社|雜誌|日報|時報|報導者|編輯部|記者群|網站|網$|Marketing|News|Media|http)", re.I)
 _NOISE_TOK = ("comment|comments|related|recommend|recommended|share|sharing|social|advert|advertisement|sponsor|breadcrumb|breadcrumbs|"
@@ -99,7 +98,7 @@ def _meta(doc, *names):
     return None
 
 
-def _norm_time(raw: str | None) -> str | None:
+def _norm_time(raw: str | None, notes: list[str] | None = None) -> str | None:
     if not raw:
         return None
     raw = raw.strip()
@@ -109,7 +108,9 @@ def _norm_time(raw: str | None) -> str | None:
             local = dt.astimezone()       # show in the user's local time zone
             if local.replace(tzinfo=None) > datetime.now() + timedelta(minutes=10):
                 dt = dt.replace(tzinfo=None)    # would be in the future: the site mislabelled local time as UTC
-                TIME_NOTES.append("發布時間的時區標示可能有誤（換算後會落在未來），已改用頁面上的原始時間。")
+                note = "發布時間的時區標示可能有誤（換算後會落在未來），已改用頁面上的原始時間。"
+                if notes is not None and note not in notes:
+                    notes.append(note)
             else:
                 dt = local
         return dt.strftime("%Y-%m-%d %H:%M")
@@ -353,14 +354,14 @@ def _paragraphs_of(el):
     _strip_noise(root)
     paras, prev = [], None
     raw = _paragraph_texts(root)
-    _paragraphs_of.raw_tail = " | ".join(raw[-6:])
+    raw_tail = " | ".join(raw[-6:])
     for p in raw:
         if len(p) < 3 or NOISE_PARA.match(p) or DATE_ONLY.match(p) or p.startswith("<") or "allowfullscreen" in p or "</" in p:
             continue
         if p != prev:
             paras.append(p)
         prev = p
-    return paras, root
+    return paras, root, raw_tail
 
 
 def _trim_tail(paras):
@@ -399,14 +400,14 @@ KIND_RANK = {"profile": 0, "itemprop": 1, "article": 2, "dense": 3, "generic": 4
 def _extract_body(doc, selectors, warnings, hint_len=0, title=None):
     scored = []
     for el, kind in _candidates(doc, selectors)[:18]:
-        paras, root = _paragraphs_of(el)
+        paras, root, raw_tail = _paragraphs_of(el)
         chars = sum(len(p) for p in paras)
         if chars == 0:
             continue
         scored.append({"kind": kind, "paras": paras, "chars": chars, "score": chars * max(0.1, 1 - _link_density(el)), "root": root,
-                       "raw_tail": getattr(_paragraphs_of, "raw_tail", "")})
+                       "raw_tail": raw_tail})
     if not scored:
-        return [], "none", None
+        return [], "none", None, False
 
     def order(c):
         near = hint_len >= 200 and 0.7 * hint_len <= c["chars"] <= 2.5 * hint_len
@@ -427,10 +428,10 @@ def _extract_body(doc, selectors, warnings, hint_len=0, title=None):
             best = (c, paras, chars, dropped + head_dropped)
             break
     c, paras, chars, dropped = best
-    _extract_body.trunc = bool(TRUNC_MARK.search(c["raw_tail"]))
+    truncated = bool(TRUNC_MARK.search(c["raw_tail"]))
     if dropped:
         warnings.append(f"已自動移除 {dropped} 行疑似非內文的短行（開頭的版面標籤／重複標題，或結尾的相關新聞、標籤）；若內文被誤刪請自行補回。")
-    return paras, c["kind"], c["root"]
+    return paras, c["kind"], c["root"], truncated
 
 
 # ---------------------------------------------------------------------- site profiles
@@ -453,7 +454,7 @@ def _ptt_web(doc, res: ParseResult):
     res.title.set(meta.get("標題"), FOUND, "ptt-web")
     if meta.get("作者"):
         res.author.set(re.sub(r"\s*\(.*\)$", "", meta["作者"]), FOUND, "ptt-web")
-    res.published.set(_norm_time(meta.get("時間")), FOUND, "ptt-web")
+    res.published.set(_norm_time(meta.get("時間"), res.warnings), FOUND, "ptt-web")
     res.site.set("PTT" + (f" {board.get_text(strip=True)}板" if board else ""), FOUND, "ptt-web")
     for t in main.select(".article-metaline, .article-metaline-right, .push, .richcontent"):
         t.decompose()
@@ -468,7 +469,6 @@ def _ptt_web(doc, res: ParseResult):
 # ---------------------------------------------------------------------- main entry
 def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> ParseResult:
     res = ParseResult()
-    TIME_NOTES.clear()
     res.warnings.extend(extra_warnings or [])
     doc = BeautifulSoup(html, "lxml")
     host = (urlparse(url).hostname or "").lower()
@@ -497,7 +497,7 @@ def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> Parse
     t_el = doc.find("time", attrs={"datetime": True})
     res.published.set(_norm_time(ld.get("published") or _meta(doc, "article:published_time", "og:article:published_time", "pubdate",
                                                               "datePublished", "date")
-                                 or (t_el["datetime"] if t_el else None)), FOUND, "json-ld/meta/time")
+                                 or (t_el["datetime"] if t_el else None), res.warnings), FOUND, "json-ld/meta/time")
     names = [c for c in (_clean_author(n) for n in ld.get("authors", [])) if _author_ok(c, res.site.value)]
     if names:
         res.author.set("、".join(dict.fromkeys(names[:3])), FOUND, "json-ld")
@@ -524,7 +524,7 @@ def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> Parse
         if res.title.value and title_raw:
             res.title.value = _strip_title_suffix(_clean(title_raw), res.site.value) or res.title.value
 
-    paras, how, container = _extract_body(doc, PROFILES.get(host, {}).get("body", []), res.warnings, ld.get("body_len") or 0, res.title.value)
+    paras, how, container, truncated = _extract_body(doc, PROFILES.get(host, {}).get("body", []), res.warnings, ld.get("body_len") or 0, res.title.value)
     body_text = "\n\n".join(paras)
     res.body.set(body_text, FOUND, how)
 
@@ -541,12 +541,11 @@ def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> Parse
         if cand:
             res.author.set(cand, INFERRED, "byline-in-text")
 
-    res.warnings.extend(dict.fromkeys(TIME_NOTES))
-    _finish(res, ld, visible=visible, html=html, container=container)
+    _finish(res, ld, visible=visible, html=html, container=container, truncated=truncated)
     return res
 
 
-def _finish(res: ParseResult, ld, visible: str = "", html: str = "", container=None):
+def _finish(res: ParseResult, ld, visible: str = "", html: str = "", container=None, truncated: bool = False):
     body = res.body.value or ""
     n = len(re.sub(r"\s", "", body))
     page_text = visible or body
@@ -569,7 +568,7 @@ def _finish(res: ParseResult, ld, visible: str = "", html: str = "", container=N
     else:
         res.body_status = "likely_complete"
         reasons = []
-        if TRUNC_MARK.search(body[-300:]) or getattr(_extract_body, "trunc", False):
+        if TRUNC_MARK.search(body[-300:]) or truncated:
             reasons.append("內文結尾附近出現「展開全文／繼續閱讀／訂閱」等字樣")
         if container is not None and container.find("a", rel=re.compile("next")):
             reasons.append("頁面有分頁連結（rel=next）")
