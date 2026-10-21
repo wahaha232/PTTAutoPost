@@ -1,0 +1,143 @@
+import sqlite3
+
+import pytest
+
+from src import compose
+from src.compose import Fields, check, has_errors, normalize, render, wrap, wrap_line
+from src.errors import StorageError
+from src.storage.db import Database
+
+
+# ------------------------------------------------------------------ compose
+def test_normalize_strips_ansi_controls_and_invisibles():
+    t, notes = normalize("a\x1b[31mb\x1b[0m\x18c​d\r\ne\tf")
+    assert t == "abcd\ne    f"
+    assert len(notes) >= 3
+
+
+def test_wrap_respects_width_and_keeps_urls():
+    long = "中文" * 60
+    for line in wrap(long, 76).split("\n"):
+        assert compose.display_width(line) <= 76
+    url = "https://example.com/" + "a" * 120
+    assert wrap(f"請看 {url}", 76).split("\n")[-1] == url
+    assert wrap("hello world " * 20, 40).replace("\n", " ").split() == ("hello world " * 20).split()   # no word cut
+
+
+def test_wrap_does_not_start_a_line_with_closing_punctuation():
+    text = "你" * 37 + "，" + "好" * 10
+    lines = wrap(text, 76).split("\n")
+    assert not lines[1].startswith("，")
+
+
+def test_render_news_format_and_empty_fields_stay_empty():
+    f = Fields(post_title="[新聞] 標題", site="某報", author="", url="https://x.test/a", news_title="標題", body="第一段\n\n第二段", notes="我的心得")
+    title, body = render(f)
+    assert title == "[新聞] 標題"
+    assert "1.媒體來源: 某報" in body and "2.記者署名:" in body
+    assert "未知" not in body and "未取得" not in body
+    assert body.index("4.完整新聞內文:") < body.index("第一段") < body.index("5.完整新聞連結") < body.index("6.備註:") < body.index("我的心得")
+    assert "\n--\n" not in body
+
+
+def test_signature_applied_only_when_enabled_and_non_empty():
+    f = Fields(post_title="t", body="b", signature="我的簽名", use_signature=True)
+    _, body = render(f)
+    assert body.endswith("\n--\n我的簽名")
+    f.use_signature = False
+    assert "--" not in render(f)[1]
+    f.use_signature, f.signature = True, "  "
+    assert "--" not in render(f)[1]
+
+
+def test_check_flags_errors_and_warnings():
+    issues = check("", "")
+    assert has_errors(issues)
+    issues = check("標題😀", "內容\x18")
+    msgs = " ".join(str(i) for i in issues)
+    assert "Big5" in msgs and "控制字元" in msgs
+    issues = check("[新聞] ok", "1.媒體來源: \n2.記者署名: \n3.完整新聞標題: x\n4.完整新聞內文:\n內容\n--\n")
+    assert not has_errors(issues)
+    assert any("--" in i.message for i in issues) and any("媒體來源" in i.message for i in issues)
+    long_title = "很長的標題" * 10
+    assert any(i.level == "warn" and "標題" in i.message for i in check(long_title[:25], "x"))   # 50 bytes: warn only
+    assert any(i.level == "error" and "過長" in i.message for i in check(long_title * 2, "x"))
+
+
+def test_check_rejects_signature_with_separator_line():
+    assert has_errors(check("t", "b", sig_text="a\n--\nb", used_signature=True))
+
+
+def test_wrap_line_idempotent_on_short_lines():
+    assert wrap_line("短行") == ["短行"]
+
+
+# ------------------------------------------------------------------ database
+@pytest.fixture
+def db(tmp_path):
+    d = Database(tmp_path / "t.db")
+    yield d
+    d.close()
+
+
+def test_draft_crud_and_search(db):
+    a = db.save_draft({"title": "甲標題", "post_title": "[新聞] 甲", "body": "內文一", "notes": "心得", "site": "某報", "use_signature": True})
+    b = db.save_draft({"title": "乙", "body": "別的"})
+    assert db.get_draft(a)["use_signature"] == 1
+    assert [d["id"] for d in db.list_drafts("內文一")] == [a]
+    assert {d["id"] for d in db.list_drafts()} == {a, b}
+    db.save_draft({"title": "甲改", "body": "內文二"}, a)
+    assert db.get_draft(a)["title"] == "甲改" and db.get_draft(a)["body"] == "內文二"
+    assert db.delete_draft(b) and db.get_draft(b) is None and not db.delete_draft(b)
+    with pytest.raises(StorageError):
+        db.save_draft({"title": "x"}, 9999)
+
+
+def test_signature_roundtrip_and_persistence(tmp_path):
+    p = tmp_path / "s.db"
+    d = Database(p)
+    assert d.signature == ""
+    d.set_signature("第一行\n第二行")
+    d.close()
+    d2 = Database(p)
+    assert d2.signature == "第一行\n第二行"
+    d2.close()
+
+
+def test_input_state_check_constraint_and_recovery(db):
+    a = db.save_draft({"title": "t"})
+    assert db.get_draft(a)["input_state"] == "none"
+    db.set_input_state(a, "started")
+    assert db.recover_interrupted_inputs() == 1
+    assert db.get_draft(a)["input_state"] == "aborted"
+    with pytest.raises(StorageError):
+        db.set_input_state(a, "bogus")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.conn.execute("UPDATE drafts SET input_state='x'")
+
+
+def test_newer_schema_is_refused(tmp_path):
+    p = tmp_path / "n.db"
+    c = sqlite3.connect(p)
+    c.execute("PRAGMA user_version=99")
+    c.commit()
+    c.close()
+    with pytest.raises(StorageError):
+        Database(p)
+
+
+def test_events_never_store_credentials(db):
+    db.event("login", None, "ok")
+    assert db.events()[0]["kind"] == "login"
+
+
+def test_legacy_single_signature_becomes_first_entry_and_limit(tmp_path):
+    d = Database(tmp_path / "x.db")
+    d.set_setting("signature.text", "舊簽名")
+    assert d.signatures() == [{"name": "簽名檔1", "text": "舊簽名"}] and d.signature == "舊簽名"
+    for i in range(9):
+        d.save_signature_entry(-1, f"n{i}", f"t{i}")
+    assert len(d.signatures()) == 10
+    import pytest
+    with pytest.raises(ValueError):
+        d.save_signature_entry(-1, "多的", "x")

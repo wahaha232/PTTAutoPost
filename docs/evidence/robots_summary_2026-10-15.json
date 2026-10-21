@@ -1,0 +1,130 @@
+{
+ "www.cna.com.tw": {
+  "http": "200",
+  "content_signal": [
+   "search=yes, ai-input=yes, ai-train=no"
+  ],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "news.ltn.com.tw": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": true
+ },
+ "udn.com": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": true
+ },
+ "www.ettoday.net": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.chinatimes.com": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": true
+ },
+ "news.tvbs.com.tw": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.setn.com": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "news.pts.org.tw": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.storm.mg": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.nownews.com": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.bbc.com": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": true
+ },
+ "www.ptt.cc": {
+  "http": "404",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.twreporter.org": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.thenewslens.com": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.ithome.com.tw": {
+  "http": "200",
+  "content_signal": [
+   "search=yes, ai-input=yes, ai-train=no"
+  ],
+  "crawl_delay": [
+   "10"
+  ],
+  "has_disallow_all_for_star": true
+ },
+ "technews.tw": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.bnext.com.tw": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "www.cw.com.tw": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "tw.news.yahoo.com": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [],
+  "has_disallow_all_for_star": false
+ },
+ "zh.wikipedia.org": {
+  "http": "200",
+  "content_signal": [],
+  "crawl_delay": [
+   "5"
+  ],
+  "has_disallow_all_for_star": false
+ }
+}
