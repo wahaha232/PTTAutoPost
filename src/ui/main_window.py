@@ -84,6 +84,8 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(app_icon())
         self.setMinimumSize(760, 560)                     # freely resizable above this
         self._quitting = False
+        self._dirty = False                               # unsaved edits in the current draft
+        self._typing_draft_id: int | None = None          # draft that the running typing session belongs to
         self._tray: QSystemTrayIcon | None = None
         self._tray_hint_shown = False
         scr0 = QGuiApplication.primaryScreen()
@@ -174,8 +176,8 @@ class MainWindow(QMainWindow):
         kb = QHBoxLayout(self.keybar)
         kb.setContentsMargins(0, 0, 0, 0)
         kb.addWidget(QLabel("按鍵"))
-        for label_, seq in (("Esc", b""), ("←", b"[D"), ("↑", b"[A"), ("↓", b"[B"), ("→", b"[C"),
-                            ("PgUp", b"[5~"), ("PgDn", b"[6~"), ("Home", b"[1~"), ("End", b"[4~")):
+        for label_, seq in (("Esc", b"\x1b"), ("←", b"\x1b[D"), ("↑", b"\x1b[A"), ("↓", b"\x1b[B"), ("→", b"\x1b[C"),
+                            ("PgUp", b"\x1b[5~"), ("PgDn", b"\x1b[6~"), ("Home", b"\x1b[1~"), ("End", b"\x1b[4~")):
             b = QPushButton(label_)
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.setMaximumWidth(56)
@@ -256,7 +258,7 @@ class MainWindow(QMainWindow):
         lg = QGroupBox("PTT 登入小幫手（外部程式，獨立執行）")
         ll_ = QVBoxLayout(lg)
         lrow = QHBoxLayout()
-        self.pttlogin_path = QLineEdit(self.db.get_setting("pttlogin.path", "") or self.DEFAULT_PTTLOGIN)
+        self.pttlogin_path = QLineEdit(self.db.get_setting("pttlogin.path", "") or self._find_pttlogin())
         self.pttlogin_path.setPlaceholderText("PttAutoLogin.exe 的完整路徑")
         self.btn_pttlogin_browse = QPushButton("瀏覽…")
         self.btn_pttlogin_open = QPushButton("開啟登入小幫手")
@@ -493,7 +495,7 @@ class MainWindow(QMainWindow):
 
         self.btn_fetch.clicked.connect(self.start_fetch)
         self.url_in.returnPressed.connect(self.start_fetch)
-        self.btn_regen.clicked.connect(lambda: self.render_preview(force=True))
+        self.btn_regen.clicked.connect(self.regen_preview)
         self.btn_check.clicked.connect(self.run_checks)
         self.btn_copy_all.clicked.connect(lambda: self.copy("all"))
         self.btn_copy_body.clicked.connect(lambda: self.copy("body"))
@@ -509,7 +511,7 @@ class MainWindow(QMainWindow):
         self.btn_sig_del.clicked.connect(self.delete_signature)
         self.sig_combo.activated.connect(self._pick_signature)
         self.chk_sig.toggled.connect(lambda _c: self._schedule_preview())
-        self.sig_edit.textChanged.connect(self._schedule_preview)
+        self.sig_edit.textChanged.connect(lambda: self._schedule_preview(False))
         self.btn_type_title.clicked.connect(lambda: self.type_into_ptt(Target.TITLE))
         self.btn_type_body.clicked.connect(lambda: self.type_into_ptt(Target.BODY))
         self.btn_type_cancel.clicked.connect(self.typer.cancel)
@@ -524,6 +526,8 @@ class MainWindow(QMainWindow):
         url = self.url_in.text().strip()
         if not url:
             self._notice("請先輸入網址。")
+            return
+        if not self._confirm_unsaved("擷取（會覆蓋目前欄位）"):
             return
         self._busy = True
         self.btn_fetch.setEnabled(False)
@@ -569,6 +573,7 @@ class MainWindow(QMainWindow):
         self.parse_warn.setPlainText("\n".join(res.warnings) or "（沒有警告；仍請對照原網頁確認全文）")
         self.preview_manual_reset()
         self.render_preview(force=True)
+        self._dirty = True                                 # fetched content is not saved yet
         self.db.event("fetch", self.draft_id, f"{res.status}/{res.body_status}")
 
     # ---------------------------------------------------------------- editing / state labels
@@ -601,8 +606,10 @@ class MainWindow(QMainWindow):
                               body=self.body.toPlainText(), notes=self.notes.toPlainText(), signature=self.sig_edit.toPlainText(),
                               use_signature=self.chk_sig.isChecked())
 
-    def _schedule_preview(self):
+    def _schedule_preview(self, dirty: bool = True):
         if not self._loading:
+            if dirty:
+                self._dirty = True
             self._refresh_timer.start()
 
     def _auto_preview(self):
@@ -621,16 +628,39 @@ class MainWindow(QMainWindow):
         self._preview_manual = False
         self.lbl_preview.setText("")
 
+    def regen_preview(self):
+        if self._preview_manual and QMessageBox.question(
+                self, "重新產生預覽", "預覽已被手動修改，重新產生會捨棄這些修改。確定？") != QMessageBox.StandardButton.Yes:
+            return
+        self.render_preview(force=True)
+
+    def _confirm_unsaved(self, what: str) -> bool:
+        """True when it is fine to continue: nothing unsaved, or the user chose to save / discard."""
+        if not self._dirty:
+            return True
+        r = QMessageBox.question(self, "尚未儲存", f"目前草稿有未儲存的修改。{what}前要先儲存嗎？",
+                                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                                 QMessageBox.StandardButton.Save)
+        if r == QMessageBox.StandardButton.Cancel:
+            return False
+        if r == QMessageBox.StandardButton.Save:
+            return self.save_draft() is not None
+        return True
+
     def preview_manual_reset(self):
         self._preview_manual = False
 
     def _preview_changed(self):
         if not self._setting_preview:
             self._preview_manual = True
+            self._dirty = True
             self.lbl_preview.setText("預覽已手動修改：欄位變更不會自動覆蓋。按「重新產生預覽」會捨棄手動修改。")
 
     def current_texts(self) -> tuple[str, str]:
         """(title, body) exactly as they will be copied / typed."""
+        if not self._preview_manual:                      # never read a stale preview (debounce timer still pending)
+            self._refresh_timer.stop()
+            self.render_preview()
         title = compose.normalize(self.w["post_title"].text())[0].replace("\n", " ").strip()
         return title, self.preview.toPlainText().rstrip("\n")
 
@@ -717,8 +747,7 @@ class MainWindow(QMainWindow):
             return
         if QMessageBox.question(self, "前往看板", f"將在終端機輸入「s」、「{b}」與 Enter 進入看板。不會發文。確定？") != QMessageBox.StandardButton.Yes:
             return
-        self.session.send_user_bytes(b"s")
-        self.session.send_user_bytes(b.encode("ascii") + bytes([13]))
+        self.session.send_user_bytes(b"s" + b.encode("ascii") + b"\r")      # one frame: no ordering race
         self.db.event("goto_board", self.draft_id, b)
         self._notice(f"已送出前往看板 {b}；請在終端機確認畫面（可能需要按任意鍵），發文仍由您自行操作。")
 
@@ -735,7 +764,7 @@ class MainWindow(QMainWindow):
             return
         self._reload_signatures(idx)
         self._notice("簽名檔已儲存。")
-        self._schedule_preview()
+        self._schedule_preview(False)
 
     def _reload_signatures(self, select: int) -> None:
         """Refill the drop-down from the DB and show entry `select` (-1 = empty new entry)."""
@@ -761,7 +790,7 @@ class MainWindow(QMainWindow):
     def _pick_signature(self, idx: int) -> None:
         self.db.set_active_signature(idx)
         self._show_signature(idx)
-        self._schedule_preview()
+        self._schedule_preview(False)
 
     def new_signature(self):
         if len(self.db.signatures()) >= MAX_SIGNATURES:
@@ -782,7 +811,7 @@ class MainWindow(QMainWindow):
         self.db.delete_signature_entry(self._sig_idx)
         self._reload_signatures(self.db.active_signature_index)
         self._notice("簽名檔已刪除。")
-        self._schedule_preview()
+        self._schedule_preview(False)
 
     # ================================================================== drafts
     def _build_drafts_tab(self) -> QWidget:
@@ -814,7 +843,13 @@ class MainWindow(QMainWindow):
             self.draft_list.addItem(it)
 
     def new_draft(self):
+        if self.typer.running:
+            self._notice("輸入進行中，請先取消輸入再切換草稿。")
+            return
+        if not self._confirm_unsaved("新增草稿"):
+            return
         self.draft_id = None
+        self.chk_nonempty.setChecked(False)
         self._loading = True
         for f in FIELDS:
             self.w[f].setText("")
@@ -849,6 +884,7 @@ class MainWindow(QMainWindow):
         except ToolError as e:
             self._notice(f"儲存失敗：{e.message}")
             return None
+        self._dirty = False
         self.lbl_draft.setText(f"草稿 #{self.draft_id} 已儲存")
         self.reload_drafts()
         self._notice(f"草稿 #{self.draft_id} 已儲存。")
@@ -858,6 +894,12 @@ class MainWindow(QMainWindow):
         it = self.draft_list.currentItem()
         if it is None:
             return
+        if self.typer.running:
+            self._notice("輸入進行中，請先取消輸入再切換草稿。")
+            return
+        if not self._confirm_unsaved("開啟其他草稿"):
+            return
+        self.chk_nonempty.setChecked(False)
         d = self.db.get_draft(it.data(Qt.ItemDataRole.UserRole))
         if d is None:
             self._notice("找不到該草稿。")
@@ -901,6 +943,9 @@ class MainWindow(QMainWindow):
         if it is None:
             return
         did = it.data(Qt.ItemDataRole.UserRole)
+        if self.typer.running:
+            self._notice("輸入進行中，無法刪除草稿。")
+            return
         if QMessageBox.question(self, "刪除草稿", f"確定刪除草稿 #{did}？此動作無法復原。") != QMessageBox.StandardButton.Yes:
             return
         self.db.delete_draft(did)
@@ -924,11 +969,13 @@ class MainWindow(QMainWindow):
         if compose.has_errors(issues):
             self._notice("有「錯誤」等級的檢查項目，已拒絕輸入（請先修正）。")
             return
-        did = self.draft_id or self.save_draft()
+        did = self.save_draft()                           # one save; also persists the exact text that will be typed
         if did is None:
             return
-        self.save_draft()
         d = self.db.get_draft(did)
+        if d is None:
+            self._notice("找不到目前的草稿（可能已被刪除），已取消輸入。")
+            return
         if target is Target.BODY and d["input_state"] != "none" and not self.chk_retype.isChecked():
             self._notice(f"此草稿的輸入狀態為「{d['input_state']}」：為避免重複輸入整篇文章，已拒絕。請先在終端機確認／清空編輯區，再勾選允許重新輸入。")
             return
@@ -944,22 +991,26 @@ class MainWindow(QMainWindow):
             self._notice("已取消輸入。")
             return
         self._typing_target = target
+        self._typing_draft_id = did
         reason = self.typer.start(target, text, self.chk_nonempty.isChecked())
         if reason:
+            self._typing_draft_id = None
             self._notice("無法輸入：" + reason)
             return
         self._update_type_buttons()
 
     def _typing_started(self, target: Target):
-        if target is Target.BODY and self.draft_id:
-            self.db.set_input_state(self.draft_id, "started")          # write-ahead: recorded before the first byte
+        if target is Target.BODY and self._typing_draft_id:
+            self.db.set_input_state(self._typing_draft_id, "started")          # write-ahead: recorded before the first byte
         self.type_status.setText("輸入中…（可按「取消輸入」；取消不會清除已輸入的內容）")
         self._update_type_buttons()
 
     def _typing_finished(self, ok: bool, msg: str):
-        if self._typing_target is Target.BODY and self.draft_id:
-            self.db.set_input_state(self.draft_id, "done" if ok else "aborted")
+        if self._typing_target is Target.BODY and self._typing_draft_id:
+            self.db.set_input_state(self._typing_draft_id, "done" if ok else "aborted")
             self.reload_drafts()
+        self._typing_draft_id = None
+        self.chk_nonempty.setChecked(False)               # the "non-empty" allowance never outlives one typing run
         self.type_status.setText(msg)
         self._notice(msg)
         self.chk_retype.setChecked(False)
@@ -995,7 +1046,16 @@ class MainWindow(QMainWindow):
             self._notice("尚未連線，按鍵未送出。")
 
     # ================================================================== external PTT login helper
-    DEFAULT_PTTLOGIN = "D:/Claude/PTTLOGIN/release/PttAutoLogin.exe"
+    @staticmethod
+    def _find_pttlogin() -> str:
+        """PttAutoLogin.exe next to this program or in a sibling/parent folder; '' when not found (never a fixed path)."""
+        from ..paths import runtime_base_dir
+        base = Path(runtime_base_dir())
+        for d in (base, base.parent, base.parent.parent):
+            for rel in ("PttAutoLogin.exe", "PTTLOGIN/release/PttAutoLogin.exe", "PttAutoLogin/PttAutoLogin.exe"):
+                if (d / rel).is_file():
+                    return str(d / rel)
+        return ""
 
     def _browse_pttlogin(self) -> None:
         f, _ = QFileDialog.getOpenFileName(self, "選擇 PttAutoLogin.exe", str(Path(self.pttlogin_path.text()).parent), "程式 (*.exe)")
@@ -1005,7 +1065,7 @@ class MainWindow(QMainWindow):
 
     def launch_pttlogin(self) -> bool:
         """Start the separate PTT login helper (its own process, working dir = its folder so its Data/Logs stay there)."""
-        path = Path(self.pttlogin_path.text().strip() or self.DEFAULT_PTTLOGIN)
+        path = Path(self.pttlogin_path.text().strip() or self._find_pttlogin() or "PttAutoLogin.exe")
         if path.suffix.lower() != ".exe" or not path.is_file():
             self._notice(f"找不到登入小幫手：{path}。請在「設定」分頁指定 PttAutoLogin.exe 的位置。")
             return False
@@ -1115,6 +1175,10 @@ class MainWindow(QMainWindow):
         if (not self._quitting and self._tray is not None and self.chk_tray_close.isChecked()):
             e.ignore()
             self._to_tray()
+            return
+        if not self._confirm_unsaved("關閉程式"):
+            self._quitting = False
+            e.ignore()
             return
         if self.typer.running:
             self.typer.cancel()

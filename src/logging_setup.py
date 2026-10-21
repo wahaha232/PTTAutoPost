@@ -8,7 +8,7 @@ from logging.handlers import TimedRotatingFileHandler
 from .paths import logs_dir
 
 _PATTERNS = [
-    (re.compile(r"(?i)(password|passwd|pwd|token|secret|api[_-]?key|session|cookie|set-cookie|authorization)\s*[:=]\s*[^\s,;&]+"), r"\1=***"),
+    (re.compile(r"""(?i)(password|passwd|pwd|token|secret|api[_-]?key|session|cookie|set-cookie|authorization)(['"\s]*[:=]['"\s]*)[^\s,;&'"}\]]+"""), r"\1\2***"),
     (re.compile(r"(?i)(bearer|basic)\s+[A-Za-z0-9._~+/=-]+"), r"\1 ***"),
     (re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@"), r"\1***@"),
 ]

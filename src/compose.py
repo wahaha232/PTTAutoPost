@@ -175,10 +175,12 @@ def check(title: str, body: str, sig_text: str = "", used_signature: bool = Fals
                     issues.append(Issue("error", f"{label}含有無法以 Big5 編碼的字元「{ch}」(U+{ord(ch):04X})，PTT 會顯示成亂碼；請改寫。", i))
                     break
     lines = body.split("\n")
+    # the system-generated separator is the last exact "--" line (render() appends the signature after it)
+    sys_sep = max((n for n, l in enumerate(lines, 1) if l == "--"), default=None) if used_signature else None
     for i, line in enumerate(lines, 1):
         if display_width(line) > MAX_LINE and not re.search(r"https?://\S{20,}", line):
             issues.append(Issue("warn", f"行寬 {display_width(line)} 超過 {MAX_LINE}，PTT 編輯器可能自動折行。", i))
-        if line.strip() == "--" and not (used_signature and i == body.rstrip().split("\n").index("--") + 1):
+        if line.strip() == "--" and i != sys_sep:
             issues.append(Issue("warn", "單獨一行的「--」會被 PTT 當成簽名檔分隔線。", i))
     if len(lines) > 400:
         issues.append(Issue("warn", f"內文共 {len(lines)} 行，偏長。"))

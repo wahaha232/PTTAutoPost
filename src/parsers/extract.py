@@ -474,7 +474,7 @@ def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> Parse
     host = (urlparse(url).hostname or "").lower()
     res.url.set(url, FOUND, "request")
 
-    visible = re.sub(r"\s+", "", BeautifulSoup(html, "lxml").get_text())
+    visible = re.sub(r"\s+", "", doc.get_text())
     if host.endswith("ptt.cc") and _ptt_web(doc, res):
         res.body_status = "likely_complete" if len(res.body.value or "") >= 20 else "insufficient"
         _finish(res, None)

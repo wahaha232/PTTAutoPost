@@ -232,7 +232,7 @@ class TerminalWidget(QWidget):
         steps = int(self._wheel / 60)
         if steps:
             self._wheel -= steps * 60
-            if self.s.send_user_bytes((b"[A" if steps > 0 else b"[B") * min(abs(steps), 5)) is False:
+            if self.s.send_user_bytes((b"\x1b[A" if steps > 0 else b"\x1b[B") * min(abs(steps), 5)) is False:
                 self.notice.emit("尚未連線，捲動未送出。")
         e.accept()
 

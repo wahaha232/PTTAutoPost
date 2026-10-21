@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 import urllib.robotparser
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ MAX_REDIRECTS = 5
 _RESTRICTED = {401: "需要登入", 402: "需要付費", 403: "存取被拒（可能是登入牆、付費牆或反爬機制）", 451: "因法律原因無法存取"}
 _robots_cache: dict[str, tuple[urllib.robotparser.RobotFileParser | None, str]] = {}
 _last_hit: dict[str, float] = {}
+_lock = threading.Lock()                # FetchTask runs on pool threads: guard the shared caches
 
 
 @dataclass
@@ -55,7 +57,9 @@ def validate_url(raw: str) -> str:
 def _robots(url: str, timeout: float) -> tuple[bool | None, str, float | None]:
     p = urlparse(url)
     base = f"{p.scheme}://{p.netloc}"
-    if base not in _robots_cache:
+    with _lock:
+        cached = base in _robots_cache
+    if not cached:
         rp, note = None, ""
         try:
             r = requests.get(base + "/robots.txt", headers={"User-Agent": USER_AGENT}, timeout=min(timeout, 6))
@@ -66,8 +70,10 @@ def _robots(url: str, timeout: float) -> tuple[bool | None, str, float | None]:
                 note = f"無法確認 robots.txt（HTTP {r.status_code}）"
         except requests.RequestException:
             note = "無法讀取 robots.txt"
-        _robots_cache[base] = (rp, note)
-    rp, note = _robots_cache[base]
+        with _lock:
+            _robots_cache[base] = (rp, note)
+    with _lock:
+        rp, note = _robots_cache[base]
     if rp is None:
         return None, note, None
     return rp.can_fetch(USER_AGENT, url), note, rp.crawl_delay(USER_AGENT)
@@ -113,10 +119,11 @@ def fetch(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_BYTES,
     if allowed is False and not ignore_robots:
         raise FetchError("該網站的 robots.txt 不允許擷取此路徑（可勾選「忽略 robots」由您自行承擔後再試）。", "robots")
     host = urlparse(url).netloc
-    wait = max(min_interval, delay or 0) - (time.monotonic() - _last_hit.get(host, 0))
+    with _lock:
+        wait = max(min_interval, delay or 0) - (time.monotonic() - _last_hit.get(host, 0))
+        _last_hit[host] = time.monotonic() + max(wait, 0)     # reserve our slot so parallel fetches queue up
     if wait > 0:
         time.sleep(min(wait, 12))
-    _last_hit[host] = time.monotonic()
     sess = requests.Session()
     sess.max_redirects = MAX_REDIRECTS
     sess.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5",

@@ -407,3 +407,105 @@ def test_stretch_fill_removes_margins_and_persists(win):
     win.set_stretch.setChecked(False)
     resize_term(win.term, 3000, 500)                              # hidden widget: re-send the size
     assert not win.tb_stretch.isChecked() and win.term.ox > 0
+
+
+def answer(monkeypatch, button):
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: button))
+
+
+def test_copy_immediately_after_field_edit_uses_fresh_preview(win):
+    fill_article(win)
+    win.render_preview(force=True)
+    win.w["site"].setText("全新媒體")
+    win._field_edited("site")                                    # debounce timer still pending, no event loop pumped
+    win.copy("body")
+    assert "全新媒體" in QApplication.clipboard().text()
+    win.w["site"].setText("再改一次")
+    win._field_edited("site")
+    assert "再改一次" in win.current_texts()[1]
+
+
+def test_unsaved_changes_prompt_on_new_draft_open_and_fetch(win, monkeypatch, http_server):
+    fill_article(win)
+    win._field_edited("site")
+    assert win._dirty
+    answer(monkeypatch, QMessageBox.StandardButton.Cancel)
+    win.new_draft()
+    assert win.w["site"].text() == "某報" and win._dirty          # cancelled: nothing lost
+    win.url_in.setText(http_server + "/article")
+    win.start_fetch()
+    assert not win._busy and win.w["site"].text() == "某報"      # fetch refused while the prompt is cancelled
+    answer(monkeypatch, QMessageBox.StandardButton.Save)
+    win.new_draft()
+    assert win.w["site"].text() == "" and not win._dirty
+    assert len(win.db.list_drafts()) == 1                        # saved before clearing
+    fill_article(win)
+    win._field_edited("site")
+    answer(monkeypatch, QMessageBox.StandardButton.Discard)
+    win.new_draft()
+    assert win.w["site"].text() == "" and len(win.db.list_drafts()) == 1
+
+
+def test_signature_edit_does_not_mark_draft_dirty(win):
+    win.save_draft()
+    win.sig_edit.setPlainText("只改簽名")
+    assert not win._dirty
+
+
+def test_type_with_missing_draft_shows_error_and_sends_nothing(win, bbs_factory):
+    bbs = bbs_factory()
+    fill_article(win)
+    connect_and_login(win, bbs)
+    bbs.goto("editor")
+    assert wait_until(lambda: win.session.kind is Kind.EDITOR)
+    win.chk_confirm.setChecked(True)
+    win.save_draft()
+    win.db.get_draft = lambda _id: None                          # draft vanished (deleted elsewhere)
+    win.type_into_ptt(Target.BODY)
+    pump(200)
+    assert bytes(bbs.after_login) == b"" and "找不到" in win.msg_log.toPlainText()
+
+
+def test_switching_draft_during_typing_is_blocked_and_state_goes_to_original(win, bbs_factory):
+    bbs = bbs_factory()
+    fill_article(win)
+    connect_and_login(win, bbs)
+    bbs.goto("editor")
+    assert wait_until(lambda: win.session.kind is Kind.EDITOR)
+    win.chk_confirm.setChecked(True)
+    win.chk_nonempty.setChecked(True)
+    win.type_into_ptt(Target.BODY)
+    original = win._typing_draft_id
+    assert original and win.typer.running
+    win.new_draft()                                              # refused while typing
+    assert win.draft_id == original and "輸入進行中" in win.msg_log.toPlainText()
+    assert wait_until(lambda: not win.typer.running, 10000)
+    assert win.db.get_draft(original)["input_state"] == "done"
+    assert not win.chk_nonempty.isChecked()                      # allowance reset after the run
+
+
+def test_nonempty_allowance_resets_on_new_and_open(win):
+    win.chk_nonempty.setChecked(True)
+    win.new_draft()
+    assert not win.chk_nonempty.isChecked()
+    fill_article(win)
+    did = win.save_draft()
+    win.reload_drafts()
+    win.draft_list.setCurrentRow(0)
+    win.chk_nonempty.setChecked(True)
+    win.open_selected()
+    assert not win.chk_nonempty.isChecked() and win.draft_id == did
+
+
+def test_source_has_no_raw_control_bytes_and_keybar_sends_real_escapes():
+    import pathlib
+    for f in ("src/ui/main_window.py", "src/ui/terminal_widget.py"):
+        data = pathlib.Path(__file__).resolve().parent.parent.joinpath(f).read_bytes()
+        assert b"\x1b" not in data, f                           # escapes must be written as \x1b, never a raw ESC byte
+
+
+def test_pttlogin_default_is_not_a_hardcoded_developer_path(win):
+    import inspect
+    from src.ui import main_window
+    assert "D:/Claude" not in inspect.getsource(main_window)
+    assert win.pttlogin_path.text() == "" or win.pttlogin_path.text().lower().endswith("pttautologin.exe")

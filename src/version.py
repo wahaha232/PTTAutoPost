@@ -1,10 +1,19 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 BUILD_DATE = "2026/10/16"
 APP_NAME = "PTT AutoPost"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.5.4", "2026/10/16", [
+        "Fix: check() no longer crashes on a ' -- ' line when a signature is used",
+        "Fix: copy / check / typing always use a freshly rebuilt preview (no stale text within the 350 ms refresh delay)",
+        "New: unsaved-changes prompt (save / discard / cancel) before new draft, opening a draft, fetching and closing",
+        "Fix: typing session stays bound to its own draft; draft switching is blocked while typing; 'allow non-empty' resets after each run",
+        "Fix: typing a missing draft shows an error instead of raising",
+        "Cleanup: ESC bytes written as escapes, 'go to board' sent as one frame, no hard-coded developer path for the login helper, "
+        "broader log redaction (quoted dict/list forms), fetch caches guarded by a lock, one HTML parse less",
+    ]),
     ("0.5.3", "2026/10/16", [
         "Terminal: new 'stretch to fill' option (terminal bar and settings) that stretches the characters so the screen fills the whole "
         "area with no black margin; off by default (aspect-preserving, centred)",

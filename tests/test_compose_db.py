@@ -141,3 +141,18 @@ def test_legacy_single_signature_becomes_first_entry_and_limit(tmp_path):
     import pytest
     with pytest.raises(ValueError):
         d.save_signature_entry(-1, "多的", "x")
+
+
+def test_check_with_spaced_separator_and_signature_does_not_crash():
+    issues = check("t", "內容\n -- \n", "sig", True)            # used to raise ValueError: '--' is not in list
+    assert any("--" in i.message for i in issues)
+    ok = check("t", "內容\n--\n簽名", "簽名", True)               # the system separator itself is fine
+    assert not any("單獨一行" in i.message for i in ok)
+    user_sep = check("t", "前\n--\n中\n--\n簽名", "簽名", True)    # only the last "--" is the system one
+    assert sum("單獨一行" in i.message for i in user_sep) == 1
+
+
+def test_redact_handles_quoted_dict_and_list_forms():
+    from src.logging_setup import redact
+    for text in ("{'pwd': 'hunter22'}", '{"password": "hunter22"}', "password=hunter22", "token: hunter22"):
+        assert "hunter22" not in redact(text), text
