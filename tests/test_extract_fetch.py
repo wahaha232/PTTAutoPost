@@ -34,7 +34,7 @@ def test_generic_article_all_fields_found():
 
 def test_organization_author_is_not_taken_as_reporter_and_byline_is_inferred():
     html = ARTICLE.replace('"author":{"@type":"Person","name":"王小明"},', "").replace(
-        "<article><h1>", f"<article><h1>").replace(f"<p>{PARA}第0段。</p>", f"<p>（某社記者李大華台北1日電）{PARA}</p>")
+        "<article><h1>", "<article><h1>").replace(f"<p>{PARA}第0段。</p>", f"<p>（某社記者李大華台北1日電）{PARA}</p>")
     r = parse(html, "https://news.example/a/2")
     assert r.author.value == "李大華" and r.author.status == INFERRED
     assert any("推定" in w for w in r.warnings)
@@ -327,3 +327,98 @@ def test_stream_read_error_becomes_fetch_error(monkeypatch):
     with pytest.raises(FetchError) as e:
         fm.fetch("https://news.example/a", min_interval=0)
     assert "中斷" in e.value.message
+
+
+# ---------------------------------------------------------------- SSRF / redirects / robots
+class FakeResp:
+    def __init__(self, status=200, headers=None, body=b"<html><body><article><p>" + "內文很長。".encode() * 60 + b"</p></article></body></html>"):
+        self.status_code, self.url, self.body = status, "", body
+        self.headers = {"Content-Type": "text/html; charset=utf-8", **(headers or {})}
+
+    def iter_content(self, n):
+        yield self.body
+
+    def close(self):
+        pass
+
+
+def route(monkeypatch, table, robots=None):
+    """requests.Session.get -> FakeResp per URL; records the URLs actually requested."""
+    import requests
+    seen = []
+
+    def fake_get(self, url, **kw):
+        seen.append(url)
+        assert kw.get("allow_redirects") is False                  # redirects are followed by the program itself
+        return table[url]
+    monkeypatch.setattr(requests.Session, "get", fake_get)
+    monkeypatch.setattr(F, "_robots", robots or (lambda url, timeout: (True, "", None)))
+    return seen
+
+
+def test_ssrf_guard_blocks_loopback_private_and_metadata_hosts(monkeypatch):
+    import socket
+    monkeypatch.setattr(F, "ALLOW_PRIVATE_HOSTS", False)
+    table = {"127.0.0.1": "127.0.0.1", "lan.example": "192.168.1.20", "meta.example": "169.254.169.254", "pub.example": "93.184.216.34"}
+    monkeypatch.setattr(socket, "getaddrinfo", lambda h, *a, **k: [(2, 1, 6, "", (table.get(h, h), 0))])
+    for host in ("127.0.0.1", "lan.example", "meta.example"):
+        with pytest.raises(FetchError) as e:
+            F.fetch(f"http://{host}/x", min_interval=0)
+        assert "本機或內網" in e.value.message
+    seen = route(monkeypatch, {"http://pub.example/x": FakeResp()})
+    assert F.fetch("http://pub.example/x", min_interval=0).status == 200 and seen == ["http://pub.example/x"]
+
+
+def test_redirect_to_internal_host_is_blocked_before_any_request(monkeypatch):
+    import socket
+    monkeypatch.setattr(F, "ALLOW_PRIVATE_HOSTS", False)
+    table = {"pub.example": "93.184.216.34", "inner.example": "10.0.0.5"}
+    monkeypatch.setattr(socket, "getaddrinfo", lambda h, *a, **k: [(2, 1, 6, "", (table[h], 0))])
+    seen = route(monkeypatch, {"http://pub.example/s": FakeResp(302, {"Location": "http://inner.example/admin"})})
+    with pytest.raises(FetchError) as e:
+        F.fetch("http://pub.example/s", min_interval=0)
+    assert "本機或內網" in e.value.message and seen == ["http://pub.example/s"]       # inner host never requested
+
+
+def test_redirect_rechecks_robots_for_new_host_and_warns(monkeypatch):
+    asked = []
+
+    def robots(url, timeout):
+        asked.append(url)
+        return (False if "blocked.example" in url else True), "", None
+    route(monkeypatch, {"https://a.example/s": FakeResp(301, {"Location": "https://blocked.example/p"}),
+                        "https://ok.example/s": FakeResp(301, {"Location": "https://b.example/p"}), "https://b.example/p": FakeResp()}, robots)
+    with pytest.raises(FetchError) as e:
+        F.fetch("https://a.example/s", min_interval=0)
+    assert "robots" in e.value.detail and asked == ["https://a.example/s", "https://blocked.example/p"]
+    r = F.fetch("https://ok.example/s", min_interval=0)
+    assert any("b.example" in w for w in r.warnings) and r.final_url == "https://b.example/p"
+
+
+def test_redirect_to_bad_scheme_userinfo_or_loop_is_refused(monkeypatch):
+    route(monkeypatch, {"https://a.example/1": FakeResp(302, {"Location": "ftp://a.example/f"}),
+                        "https://a.example/2": FakeResp(302, {"Location": "https://u:pw@a.example/x"}),
+                        "https://a.example/3": FakeResp(302, {"Location": "/3"})})
+    for path in ("1", "2", "3"):
+        with pytest.raises(FetchError):
+            F.fetch(f"https://a.example/{path}", min_interval=0)
+
+
+def test_ignore_robots_does_not_request_robots_txt(monkeypatch):
+    def boom(url, timeout):
+        raise AssertionError("robots.txt must not be requested when ignored")
+    route(monkeypatch, {"https://a.example/p": FakeResp()}, boom)
+    assert F.fetch("https://a.example/p", ignore_robots=True, min_interval=0).status == 200
+
+
+def test_oversized_robots_txt_is_not_read_forever(monkeypatch):
+    import requests
+
+    class Big(FakeResp):
+        def iter_content(self, n):
+            for _ in range(200):                                    # 200 x 16 KB >> limit
+                yield b"#" * 16384
+    monkeypatch.setattr(requests.Session, "get", lambda self, *a, **k: Big())
+    F._robots_cache.pop("https://big.example", None)
+    allowed, note, _delay = F._robots("https://big.example/x", 5)
+    assert allowed is None and "robots" in note

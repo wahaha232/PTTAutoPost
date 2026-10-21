@@ -11,7 +11,7 @@ from src.storage.db import Database
 from src.terminal.detect import Kind
 from src.ui.main_window import MainWindow
 from src.ui.terminal_widget import key_to_bytes
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QResizeEvent
 from test_extract_fetch import H
 
@@ -565,3 +565,23 @@ def test_recovered_draft_shows_aborted_in_first_list(qapp, tmp_path, monkeypatch
     assert w.db.get_draft(did)["input_state"] == "aborted"
     assert "aborted" in w.draft_list.item(0).text() or "中止" in w.draft_list.item(0).text() or w.draft_list.count() == 1
     w.db.close()
+
+
+def test_login_rejects_control_characters_and_sends_nothing(win, bbs_factory):
+    bbs = bbs_factory()
+    win.session.connect_to(bbs.url)
+    assert wait_until(lambda: win.session.kind is Kind.LOGIN_PROMPT)
+    assert not win.session.login("ab\x1bc", "pw")
+    assert not win.session.login("abc", "p\tw")
+    assert not win.session.login("a" * 65, "pw")
+    pump(200)
+    assert bytes(bbs.after_login) == b""
+
+
+def test_fetched_title_with_existing_prefix_is_not_prefixed_twice(win):
+    from src.parsers import fetch as F
+    from src.parsers.extract import parse
+    html = "<html><head><title>[快訊] 某事件</title></head><body><article><h1>[快訊] 某事件</h1><p>" + "內文很長。" * 60 + "</p></article></body></html>"
+    res = parse(html, "https://news.example/a")
+    win._fetch_done(F.Fetched("https://news.example/a", "https://news.example/a", 200, "text/html", "utf-8", html, len(html), []), res)
+    assert win.w["post_title"].text().count("[") == 1 and win.w["post_title"].text().startswith("[快訊]")

@@ -41,6 +41,7 @@ class PttClient(QObject):
         self.state = State.DISCONNECTED
         self._ws: QWebSocket | None = None
         self._first = True
+        self._head = b""
         self._intentional_close = False
         self._connect_timeout_ms = connect_timeout_ms
         self._timer = QTimer(self)
@@ -54,7 +55,7 @@ class PttClient(QObject):
     def connect_to(self, url: str = DEFAULT_URL) -> None:
         if self.state is not State.DISCONNECTED:
             return
-        self._first, self._intentional_close = True, False
+        self._first, self._intentional_close, self._head = True, False, b""
         self.bytes_sent = self.bytes_received = 0
         self._iac = IacFilter()
         ws = QWebSocket(ORIGIN)
@@ -63,7 +64,7 @@ class PttClient(QObject):
         ws.disconnected.connect(self._on_disconnected)
         ws.errorOccurred.connect(self._on_error)
         ws.binaryMessageReceived.connect(self._on_message)
-        ws.textMessageReceived.connect(lambda s: self._on_message(s.encode("utf-8", "replace")))
+        ws.textMessageReceived.connect(lambda _s: log.warning("ignored an unexpected text frame (PTT sends binary only)"))
         opts = QWebSocketHandshakeOptions()
         opts.setSubprotocols(["binary"])
         self._set_state(State.CONNECTING)
@@ -113,8 +114,12 @@ class PttClient(QObject):
 
     def _on_message(self, data) -> None:
         data = bytes(data)
-        if self._first:
-            self._first = False
+        if self._first:                                    # the proxy status line may be split across frames: buffer until decided
+            data = self._head + data
+            if len(data) < len(_PROXY_PREFIX) and _PROXY_PREFIX.startswith(data):
+                self._head = data
+                return
+            self._head, self._first = b"", False
             if data.startswith(_PROXY_PREFIX):
                 data = data[len(_PROXY_PREFIX):]
         self.bytes_received += len(data)

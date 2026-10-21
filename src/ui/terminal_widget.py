@@ -259,8 +259,17 @@ class TerminalWidget(QWidget):
             except UnicodeEncodeError:
                 self.notice.emit("輸入含有無法以 Big5 編碼的字元，已忽略。")
             else:
-                self.s.send_user_bytes(data)
+                if not self.s.send_user_bytes(data):
+                    self.notice.emit("尚未連線，輸入未送出。")
         e.accept()
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        self.update()                                      # cursor colour follows focus
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.update()
 
     def inputMethodQuery(self, q):
         if q == Qt.InputMethodQuery.ImCursorRectangle:

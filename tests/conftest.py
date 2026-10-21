@@ -57,3 +57,10 @@ def bbs_factory(qapp):
     yield make
     for b in made:
         b.srv.close()
+
+
+@pytest.fixture(autouse=True)
+def _allow_loopback_fetch(monkeypatch):
+    """Tests serve pages from 127.0.0.1; the SSRF guard has its own tests that switch this off."""
+    import src.parsers.fetch as fm
+    monkeypatch.setattr(fm, "ALLOW_PRIVATE_HOSTS", True)

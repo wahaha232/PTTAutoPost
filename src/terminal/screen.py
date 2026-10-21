@@ -264,7 +264,13 @@ class Screen:
             self.grid[r] = [(" ", DEFAULT_FG, self.bg, 0)] * self.cols
 
     def _sgr(self, params: list[int]) -> None:
-        for v in params:
+        it = iter(params)
+        for v in it:
+            if v in (38, 48):                              # extended colour (256 / truecolor): not supported, skip its arguments
+                mode = next(it, None)
+                for _ in range(1 if mode == 5 else 3 if mode == 2 else 0):
+                    next(it, None)
+                continue
             if v == 0:
                 self.fg, self.bg, self.flags = DEFAULT_FG, DEFAULT_BG, 0
             elif v == 1:

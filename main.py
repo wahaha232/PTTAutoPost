@@ -56,7 +56,8 @@ def probe() -> int:
     from src.net.session import PttSession
     from src.terminal.detect import Kind
 
-    _app = QApplication([])
+    app = QApplication([])
+    assert app is not None                              # keep the QApplication alive for the whole self-test
     s = PttSession()
     url = next((a for a in sys.argv[1:] if a.startswith(("ws://", "wss://"))), DEFAULT_URL)
 

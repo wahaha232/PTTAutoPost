@@ -202,3 +202,18 @@ def test_migration_v1_to_v2_keeps_drafts_and_adds_signature_snapshot(tmp_path):
     row = d.get_draft(1)
     assert row["title"] == "舊草稿" and row["signature_text"] == ""
     assert d.conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_draft_search_treats_percent_and_underscore_literally(tmp_path):
+    d = Database(tmp_path / "s.db")
+    d.save_draft({"title": "漲幅 50% 創高", "post_title": "[新聞] a", "body": "b"})
+    d.save_draft({"title": "漲幅 500 創高", "post_title": "[新聞] b", "body": "b"})
+    d.save_draft({"title": "snake_case 說明", "post_title": "[新聞] c", "body": "b"})
+    d.save_draft({"title": "snakeXcase 說明", "post_title": "[新聞] d", "body": "b"})
+    assert [r["title"] for r in d.list_drafts("50%")] == ["漲幅 50% 創高"]
+    assert [r["title"] for r in d.list_drafts("snake_case")] == ["snake_case 說明"]
+
+
+def test_database_waits_for_a_locked_file_instead_of_failing_immediately(tmp_path):
+    d = Database(tmp_path / "w.db")
+    assert d.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000

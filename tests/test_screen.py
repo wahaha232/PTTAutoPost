@@ -146,3 +146,11 @@ def test_telnet_iac_sequences_are_stripped():
     raw = b"\xff\xfd\x18\xff\xfb\x01hello\xff\xfa\x18\x01\xff\xf0 world\xff\xff!"
     out = f.feed(raw[:5]) + f.feed(raw[5:11]) + f.feed(raw[11:])      # split across chunks
     assert out == b"hello world\xff!" and f.stripped == 3
+
+
+def test_extended_colour_sgr_is_skipped_not_misread_as_blink():
+    from src.terminal.screen import BLINK
+    s = Screen()
+    s.feed(b"\x1b[38;5;196mA\x1b[48;2;1;2;3mB\x1b[0mC")
+    assert [s.grid[0][i][0] for i in range(3)] == ["A", "B", "C"]
+    assert not any(s.grid[0][i][3] & BLINK for i in range(3))

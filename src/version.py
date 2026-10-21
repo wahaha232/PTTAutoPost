@@ -1,10 +1,20 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 BUILD_DATE = "2026/10/16"
 APP_NAME = "PTT AutoPost"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.6.1", "2026/10/16", [
+        "Fetch: redirects are followed by the program hop by hop; every hop is checked for scheme, user:password@ and for loopback / LAN / "
+        "metadata addresses (SSRF guard), robots.txt and request spacing are re-applied when the host changes; ignoring robots no longer "
+        "requests robots.txt; robots.txt size is limited",
+        "Title: an article title that already starts with a [category] is not prefixed with [新聞] again",
+        "Login input: control characters and over-long values are refused (nothing is sent); screen de-duplication uses SHA-256",
+        "Database: busy timeout for a second instance, literal % and _ in draft search; connection: PTT proxy status line split across frames, "
+        "text frames ignored (PTT sends binary only); terminal: 256/true-colour SGR skipped, cursor repaint on focus change, IME send check",
+        "Cleanup: fetch failure detail is logged, lint warnings fixed",
+    ]),
     ("0.6.0", "2026/10/16", [
         "Drafts keep a snapshot of the signature text they were saved with (database schema v2, migrated automatically); opening a draft "
         "shows it with a 'use current signature' button",

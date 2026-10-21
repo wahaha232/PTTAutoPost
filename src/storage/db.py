@@ -33,6 +33,7 @@ class Database:
         try:
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA foreign_keys=ON")
+            self.conn.execute("PRAGMA busy_timeout=5000")           # a second instance waits instead of failing at once
             self._migrate()
         except sqlite3.Error as e:                          # corrupt / read-only / disk full / bad schema
             self.conn.close()
@@ -99,9 +100,11 @@ class Database:
 
     def list_drafts(self, query: str = "") -> list[dict]:
         if query.strip():
-            like = f"%{query.strip()}%"
+            q = query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")      # literal % and _
+            like = f"%{q}%"
             rows = self.conn.execute(
-                "SELECT * FROM drafts WHERE title LIKE ? OR post_title LIKE ? OR body LIKE ? OR notes LIKE ? OR site LIKE ? "
+                "SELECT * FROM drafts WHERE title LIKE ? ESCAPE '\\' OR post_title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' "
+                "OR notes LIKE ? ESCAPE '\\' OR site LIKE ? ESCAPE '\\' "
                 "ORDER BY updated_at DESC, id DESC", (like,) * 5).fetchall()
         else:
             rows = self.conn.execute("SELECT * FROM drafts ORDER BY updated_at DESC, id DESC").fetchall()

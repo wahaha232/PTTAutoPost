@@ -558,7 +558,7 @@ class MainWindow(QMainWindow):
         self.parse_status.setText(f"擷取失敗：{msg}")
         self.parse_status.setStyleSheet("color:#c62828")
         self.parse_warn.setPlainText("程式不會嘗試繞過登入、付費牆或存取限制。您可以改在瀏覽器取得內容後，手動貼到下方欄位。")
-        log.info("fetch failed: %s", msg)
+        log.info("fetch failed: %s | %s", msg, detail)
 
     def _fetch_done(self, fetched, res: ParseResult):
         self._busy = False
@@ -572,7 +572,8 @@ class MainWindow(QMainWindow):
                 self.states[name] = f.status if f.value else "missing"
             self.body.setPlainText(res.body.value or "")
             self.states["body"] = res.body.status if res.body.value else "missing"
-            self.w["post_title"].setText(("[新聞] " + res.title.value) if res.title.value else "")
+            t = res.title.value or ""
+            self.w["post_title"].setText("" if not t else t if t.lstrip().startswith("[") else "[新聞] " + t)
             self.states["post_title"] = "edited" if res.title.value else "missing"
             self.url_in.setText(fetched.url)
         finally:
@@ -698,7 +699,6 @@ class MainWindow(QMainWindow):
         issues = compose.check(title, body, self._sig_text(), used)
         if self._last_result is not None and self._last_result.body_status != "likely_complete":
             issues.append(compose.Issue("warn", "擷取內文" + BODY_TEXT[self._last_result.body_status] + "，請對照原網頁確認。"))
-        n, ctrl = compose.normalize(body)
         lines = [str(i) for i in issues] or ["通過基本檢查（標題、內文、編碼、控制字元、行寬）。"]
         lines.append(f"標題 {compose.byte_len(title)} bytes｜內文 {len(body.splitlines())} 行 / {compose.byte_len(body)} bytes")
         self.issues.setPlainText("\n".join(lines))

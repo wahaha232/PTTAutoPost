@@ -147,3 +147,20 @@ def test_cancel_while_connecting_is_not_undone_by_late_connected(qapp, bbs_facto
     assert wait_until(lambda: s.client.state is State.CONNECTED)
     s.disconnect_()
     pump(200)
+
+
+def test_proxy_status_line_split_across_frames_is_stripped(qapp):
+    from src.net.client import PttClient
+    c = PttClient()
+    got = []
+    c.dataReceived.connect(got.append)
+    c._on_message(b"HTTP/1.1 200 ")
+    assert got == []                                       # still deciding
+    c._on_message(b"OK\r\n\r\nhello")
+    assert got == [b"hello"]
+    c2 = PttClient()
+    got2 = []
+    c2.dataReceived.connect(got2.append)
+    c2._on_message(b"plain")                               # no prefix at all: passed through untouched
+    c2._on_message(b"HTTP/1.1 200 OK\r\n\r\n")             # a later frame is never treated as the proxy line
+    assert got2 == [b"plain", b"HTTP/1.1 200 OK\r\n\r\n"]

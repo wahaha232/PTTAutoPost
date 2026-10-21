@@ -15,7 +15,8 @@ from src.ui.icon import SIZES, render  # noqa: E402
 
 
 def main() -> None:
-    _app = QGuiApplication([])
+    app = QGuiApplication([])
+    assert app is not None
     pngs = []
     for n in SIZES:
         ba = QByteArray()

@@ -98,8 +98,9 @@ class PttSession(QObject):
         if not account or not password:
             self.notice.emit("請輸入帳號與密碼。")
             return False
-        if not (account.isascii() and password.isascii()) or "\r" in account + password or "\n" in account + password:
-            self.notice.emit("帳號或密碼含有不支援的字元（僅支援 ASCII）。")
+        if (not (account.isascii() and password.isascii() and account.isprintable() and password.isprintable())
+                or len(account) > 64 or len(password) > 128):
+            self.notice.emit("帳號或密碼含有不支援的字元（僅支援可顯示的 ASCII 字元，不可含控制字元）或長度過長。")
             return False
         self._creds = [account, password]
         self._stage, self._actions, self._acted_on = 0, 0, None
@@ -164,7 +165,7 @@ class PttSession(QObject):
         if self._creds is None or self.client.state is not State.CONNECTED:
             return
         k = self.kind
-        key = (k, hashlib.md5(self.screen.text().encode("utf-8", "replace")).hexdigest())
+        key = (k, hashlib.sha256(self.screen.text().encode("utf-8", "replace")).hexdigest())
         if key == self._acted_on:
             return                                    # already answered this exact screen
         if k is Kind.MAIN_MENU:
