@@ -31,7 +31,11 @@ def _dir(name: str) -> Path:
     if _writable(d):
         return d
     fallback = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "PTTAutoPost" / name
-    fallback.mkdir(parents=True, exist_ok=True)
+    try:
+        fallback.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        from .errors import StorageError
+        raise StorageError(f"無法建立資料夾「{fallback}」，程式無法儲存資料。", str(e)) from e
     return fallback
 
 

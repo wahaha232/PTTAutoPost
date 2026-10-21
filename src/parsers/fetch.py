@@ -14,9 +14,10 @@ import requests
 
 from ..errors import FetchError, InputError
 from ..logging_setup import get_logger
+from ..version import __version__
 
 log = get_logger("fetch")
-USER_AGENT = "PTTAutoPost/0.1 (personal desktop tool; single GET per article; honest UA)"
+USER_AGENT = f"PTTAutoPost/{__version__} (personal desktop tool; single GET per article; honest UA)"
 MAX_BYTES = 5 * 1024 * 1024
 TIMEOUT = 15
 MAX_REDIRECTS = 5
@@ -84,10 +85,20 @@ def _robots(url: str, timeout: float) -> tuple[bool | None, str, float | None]:
     if not cached:
         rp, note = None, ""
         try:
-            _check_public_host(base)
             sess = requests.Session()
-            sess.max_redirects = 3
-            r = sess.get(base + "/robots.txt", headers={"User-Agent": USER_AGENT}, timeout=min(timeout, 6), stream=True)
+            cur, hops = base + "/robots.txt", 0
+            while True:                                           # same per-hop SSRF checks as the article itself
+                _check_public_host(cur)
+                r = sess.get(cur, headers={"User-Agent": USER_AGENT}, timeout=min(timeout, 6), stream=True, allow_redirects=False)
+                loc = r.headers.get("Location") if r.status_code in (301, 302, 303, 307, 308) else None
+                if not loc:
+                    break
+                r.close()
+                hops += 1
+                if hops > 3:
+                    raise ValueError("too many robots.txt redirects")
+                cur = urljoin(cur, loc)
+                validate_url(cur)
             try:
                 if r.status_code == 200:
                     data, total = [], 0
@@ -102,7 +113,7 @@ def _robots(url: str, timeout: float) -> tuple[bool | None, str, float | None]:
                     note = f"無法確認 robots.txt（HTTP {r.status_code}）"
             finally:
                 r.close()
-        except (requests.RequestException, ValueError, FetchError):
+        except (requests.RequestException, ValueError, FetchError, InputError):
             note = "無法讀取 robots.txt"
         with _lock:
             _robots_cache[base] = (rp, note)
@@ -157,7 +168,7 @@ def _decode(raw: bytes, header_charset: str | None, warnings: list[str]) -> tupl
             warnings.append(f"網頁未宣告編碼，已自動偵測為 {best.encoding}（請確認文字無亂碼）。")
             return str(best), best.encoding
     except Exception:  # noqa: BLE001
-        pass
+        log.debug("charset detection failed", exc_info=True)
     warnings.append("編碼無法判定，以 UTF-8 解碼（可能有亂碼）。")
     return raw.decode("utf-8", "replace"), "utf-8?"
 
@@ -211,7 +222,7 @@ def fetch(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_BYTES,
         if r.status_code >= 400:
             raise FetchError(f"網站回應錯誤 HTTP {r.status_code}。", "http")
         ctype = r.headers.get("Content-Type", "")
-        if not re.search(r"html|xml", ctype, re.I):
+        if not re.search(r"text/html|application/xhtml\+xml", ctype, re.I):         # not SVG / feeds / arbitrary XML
             raise FetchError(f"內容類型不是網頁（{ctype or '未知'}）。", "type")
         chunks, total = [], 0
         try:

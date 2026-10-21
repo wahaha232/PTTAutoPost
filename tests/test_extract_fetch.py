@@ -422,3 +422,48 @@ def test_oversized_robots_txt_is_not_read_forever(monkeypatch):
     F._robots_cache.pop("https://big.example", None)
     allowed, note, _delay = F._robots("https://big.example/x", 5)
     assert allowed is None and "robots" in note
+
+
+def test_robots_txt_redirects_get_the_same_ssrf_checks(monkeypatch):
+    import socket
+    import requests
+    monkeypatch.setattr(F, "ALLOW_PRIVATE_HOSTS", False)
+    table = {"pub.example": "93.184.216.34", "lan.example": "192.168.0.9", "v6.example": "::1", "ll.example": "fe80::1"}
+    monkeypatch.setattr(socket, "getaddrinfo", lambda h, *a, **k: [(2, 1, 6, "", (table[h], 0))])
+    for target in ("http://lan.example/robots.txt", "http://v6.example/robots.txt", "http://ll.example/robots.txt"):
+        requested = []
+
+        def fake_get(self, url, **kw):
+            requested.append(url)
+            assert kw.get("allow_redirects") is False
+            return FakeResp(302, {"Location": target}) if url.startswith("http://pub.example") else FakeResp(200, body=b"User-agent: *\nAllow: /\n")
+        monkeypatch.setattr(requests.Session, "get", fake_get)
+        F._robots_cache.pop("http://pub.example", None)
+        allowed, note, _d = F._robots("http://pub.example/a", 5)
+        assert allowed is None and "robots" in note and requested == ["http://pub.example/robots.txt"]   # inner host never requested
+
+
+def test_profile_lookup_uses_longest_domain_suffix(monkeypatch):
+    from src.parsers import extract as E
+    monkeypatch.setattr(E, "PROFILES", {"cna.com.tw": {"body": ["a"]}, "news.cna.com.tw": {"body": ["b"]}})
+    assert E._profile_for("news.cna.com.tw")["body"] == ["b"]
+    assert E._profile_for("www.cna.com.tw")["body"] == ["a"]
+    assert E._profile_for("cna.com.tw")["body"] == ["a"]
+    assert E._profile_for("na.com.tw") == {} and E._profile_for("evilcna.com.tw") == {}
+
+
+def test_deeply_nested_jsonld_does_not_crash_the_parser():
+    nested = "[" * 5000 + "]" * 5000
+    html = f"<html><head><title>T</title><script type='application/ld+json'>{nested}</script></head><body><article><p>" + "內文很長。" * 60 + "</p></article></body></html>"
+    assert parse(html, "https://x.example/n").body.value
+
+
+def test_non_html_content_types_are_refused_and_user_agent_has_current_version(monkeypatch):
+    from src.version import __version__
+    assert __version__ in F.USER_AGENT
+    for ctype in ("image/svg+xml", "application/rss+xml", "text/xml"):
+        route(monkeypatch, {"https://a.example/x": FakeResp(200, {"Content-Type": ctype})})
+        with pytest.raises(FetchError):
+            F.fetch("https://a.example/x", min_interval=0)
+    route(monkeypatch, {"https://a.example/x": FakeResp(200, {"Content-Type": "application/xhtml+xml"})})
+    assert F.fetch("https://a.example/x", min_interval=0).status == 200

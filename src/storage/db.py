@@ -49,6 +49,12 @@ class Database:
         v = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if v > SCHEMA_VERSION:
             raise StorageError("資料庫版本比程式新，請使用較新的程式版本。", f"db={v} app={SCHEMA_VERSION}")
+        if 0 < v < SCHEMA_VERSION and self.path.is_file():       # keep a copy before touching an existing schema
+            import shutil
+            try:
+                shutil.copy2(self.path, self.path.with_name(f"{self.path.name}.bak-v{v}"))
+            except OSError as e:
+                raise StorageError("無法在升級資料庫前建立備份，已停止升級。", str(e)) from e
         if v < 1:
             with self.conn:
                 self.conn.executescript("""

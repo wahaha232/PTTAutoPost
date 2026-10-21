@@ -1,10 +1,20 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 BUILD_DATE = "2026/10/16"
 APP_NAME = "PTT AutoPost"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.6.2", "2026/10/16", [
+        "Security: robots.txt redirects get the same per-hop SSRF checks; endpoints must be wss:// (ws:// only for loopback testing), the "
+        "assisted login only sends credentials to ws.ptt.cc; WebSocket frame/message size limits; CSI sequence length and repeat-count limits",
+        "Typing: 'started' must be durably saved before the first byte is sent; every title chunk re-checks the title prompt; partial/"
+        "incomplete bodies need a confirmation; failures to save the final state are reported",
+        "Robustness: absurdly nested JSON-LD, corrupt font-size setting, IME control characters, folder-creation failure at startup, "
+        "database backup before an upgrade, WebSocket socket cleanup in one place",
+        "Fetch: only text/html and application/xhtml+xml are accepted (no SVG / feeds); User-Agent carries the real version; "
+        "profile lookup uses the longest domain suffix",
+    ]),
     ("0.6.1", "2026/10/16", [
         "Fetch: redirects are followed by the program hop by hop; every hop is checked for scheme, user:password@ and for loopback / LAN / "
         "metadata addresses (SSRF guard), robots.txt and request spacing are re-applied when the host changes; ignoring robots no longer "

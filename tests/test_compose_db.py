@@ -217,3 +217,24 @@ def test_draft_search_treats_percent_and_underscore_literally(tmp_path):
 def test_database_waits_for_a_locked_file_instead_of_failing_immediately(tmp_path):
     d = Database(tmp_path / "w.db")
     assert d.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+def test_upgrade_makes_a_backup_first_and_invisible_regex_is_escaped(tmp_path):
+    p = tmp_path / "old.db"
+    conn = sqlite3.connect(p)
+    conn.executescript("""
+        CREATE TABLE drafts(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL DEFAULT '', post_title TEXT NOT NULL DEFAULT '',
+          site TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', published TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+          body TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', board TEXT NOT NULL DEFAULT '', use_signature INTEGER NOT NULL DEFAULT 0,
+          preview_override TEXT, parse_status TEXT NOT NULL DEFAULT '', body_status TEXT NOT NULL DEFAULT '', field_states TEXT NOT NULL DEFAULT '',
+          input_state TEXT NOT NULL DEFAULT 'none', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, kind TEXT NOT NULL, draft_id INTEGER, detail TEXT NOT NULL DEFAULT '');
+        PRAGMA user_version=1;""")
+    conn.commit()
+    conn.close()
+    Database(p).close()
+    assert (tmp_path / "old.db.bak-v1").is_file()
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parent.parent.joinpath("src/compose.py").read_text(encoding="utf-8")
+    assert all(ord(c) < 128 or c in "，。" for c in src.split("INVISIBLE = re.compile(")[1].split("\n")[0])

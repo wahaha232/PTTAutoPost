@@ -164,3 +164,32 @@ def test_proxy_status_line_split_across_frames_is_stripped(qapp):
     c2._on_message(b"plain")                               # no prefix at all: passed through untouched
     c2._on_message(b"HTTP/1.1 200 OK\r\n\r\n")             # a later frame is never treated as the proxy line
     assert got2 == [b"plain", b"HTTP/1.1 200 OK\r\n\r\n"]
+
+
+def test_endpoint_policy_wss_only_no_userinfo_and_login_only_to_ptt():
+    from src.net.client import endpoint_problem, login_host_trusted
+    assert endpoint_problem("wss://ws.ptt.cc/bbs") is None
+    assert endpoint_problem("ws://127.0.0.1:9/bbs") is None                  # local testing only
+    for bad in ("ws://ws.ptt.cc/bbs", "ws://evil.example/bbs", "http://ws.ptt.cc/bbs", "wss://u:p@ws.ptt.cc/bbs", "wss:///bbs", "ftp://x"):
+        assert endpoint_problem(bad), bad
+    assert login_host_trusted("wss://ws.ptt.cc/bbs") and login_host_trusted("ws://127.0.0.1:1/bbs")
+    assert not login_host_trusted("wss://evil.example/bbs") and not login_host_trusted("wss://ws.ptt.cc.evil.example/bbs")
+
+
+def test_connect_to_refuses_insecure_endpoint_and_login_refused_for_other_host(qapp, bbs_factory):
+    s = PttSession()
+    notes = []
+    s.client.failed.connect(notes.append)
+    s.connect_to("ws://evil.example/bbs")
+    assert notes and s.client.state is State.DISCONNECTED
+    bbs = bbs_factory()
+    s.connect_to(bbs.url)
+    assert wait_until(lambda: s.kind is Kind.LOGIN_PROMPT)
+    s.client.url = "wss://evil.example/bbs"                      # pretend we are connected to a custom host
+    msgs = []
+    s.notice.connect(msgs.append)
+    assert not s.login("tester", "pw") and any("官方端點" in m for m in msgs)
+    pump(200)
+    assert bytes(bbs.received) == b""                            # nothing was sent
+    s.disconnect_()
+    pump(100)

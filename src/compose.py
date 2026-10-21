@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()#%][0-9A-Za-z]|\x1b.?")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]")
-INVISIBLE = re.compile("[​-‏  ‪-‮⁠-⁤﻿­]")
+INVISIBLE = re.compile(r"[\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\ufeff\u00ad]")
 CLOSING = set("、。，．,.;:!?！？；：）)】〕」』》〉”’…%")
 LINE_WIDTH = 76          # wrap target (display cells); PTT terminal is 80 columns wide
 MAX_LINE = 78            # warn above this

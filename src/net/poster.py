@@ -140,7 +140,7 @@ class PostTyper(QObject):
     def _screen_ok(self) -> bool:
         k = self.s.kind
         if self._target is Target.TITLE:
-            return k is Kind.TITLE_PROMPT if self._i == 0 else True  # echo may redraw the prompt line
+            return k is Kind.TITLE_PROMPT          # the typed echo stays on the '標題：' row, so every chunk can be verified
         return k is Kind.EDITOR
 
     def _next(self) -> None:

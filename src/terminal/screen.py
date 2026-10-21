@@ -100,8 +100,10 @@ class Screen:
                 self._state, self._csi = "esc", bytearray()
             elif b < 0x20:
                 self._control(b)
-            else:
+            elif len(self._csi) < 64:
                 self._csi.append(b)
+            else:                                           # absurdly long parameter list: drop the sequence
+                self._state, self._csi = "ground", bytearray()
 
     # ------------------------------------------------------------------ primitives
     def _control(self, b: int) -> None:
@@ -188,7 +190,7 @@ class Screen:
             return
 
         def a(i: int, d: int) -> int:
-            return p[i] if len(p) > i and p[i] > 0 else d
+            return min(p[i], 512) if len(p) > i and p[i] > 0 else d      # a huge count must not become a huge loop
 
         c = self.cur
         self._wrap_pending = False if f in "ABCDEFGHfdJKLMP@X" else self._wrap_pending

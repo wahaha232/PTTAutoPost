@@ -15,6 +15,10 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
+from ..logging_setup import get_logger
+
+log = get_logger("extract")
+
 FOUND, MISSING, INFERRED = "found", "missing", "inferred"
 ARTICLE_TYPES = {"newsarticle", "article", "blogposting", "reportagenewsarticle", "analysisnewsarticle", "opinionnewsarticle"}
 ORG_WORDS = re.compile(r"(新聞|電子報|通訊社|雜誌|日報|時報|報導者|編輯部|記者群|網站|網$|Marketing|News|Media|http)", re.I)
@@ -192,23 +196,25 @@ def _jsonld(doc, warnings):
     out = {}
     nodes = []
 
-    def walk(o):
+    def walk(o, depth=0):
+        if depth > 30:                                      # hostile / absurdly nested data
+            return
         if isinstance(o, dict):
             t = o.get("@type")
             ts = [t] if isinstance(t, str) else (t or [])
             if any(isinstance(x, str) and x.lower() in ARTICLE_TYPES for x in ts):
                 nodes.append(o)
             for v in o.values():
-                walk(v)
+                walk(v, depth + 1)
         elif isinstance(o, list):
             for v in o:
-                walk(v)
+                walk(v, depth + 1)
 
     for s in doc.find_all("script", attrs={"type": re.compile("ld\\+json", re.I)}):
         txt = s.string or s.get_text() or ""
         try:
             walk(json.loads(re.sub(r"[\x00-\x1f]+", " ", txt)))
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: absurdly nested JSON
             warnings.append("頁面的 JSON-LD 結構化資料損壞，已略過該來源。")
     if not nodes:
         return out
@@ -332,8 +338,8 @@ def _candidates(doc, selectors):
     for sel in selectors:
         try:
             add(doc.select_one(sel), "profile")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001  (a bad profile selector must not break extraction)
+            log.debug("profile selector failed: %r", sel, exc_info=True)
     for el in doc.select("[itemprop=articleBody]"):
         add(el, "itemprop")
     for el in doc.find_all("article"):
@@ -436,8 +442,17 @@ def _extract_body(doc, selectors, warnings, hint_len=0, title=None):
 
 # ---------------------------------------------------------------------- site profiles
 PROFILES: dict[str, dict] = {
-    # host suffix -> declarative hints. Only add an entry after a real page proved the generic path insufficient.
+    # host (or parent domain) -> declarative hints. Only add an entry after a real page proved the generic path insufficient.
 }
+
+
+def _profile_for(host: str) -> dict:
+    """Profile of the longest matching domain: 'news.cna.com.tw' matches 'cna.com.tw' but never 'na.com.tw'."""
+    best = ""
+    for key in PROFILES:
+        if (host == key or host.endswith("." + key)) and len(key) > len(best):
+            best = key
+    return PROFILES.get(best, {})
 
 
 def _ptt_web(doc, res: ParseResult):
@@ -524,7 +539,7 @@ def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> Parse
         if res.title.value and title_raw:
             res.title.value = _strip_title_suffix(_clean(title_raw), res.site.value) or res.title.value
 
-    paras, how, container, truncated = _extract_body(doc, PROFILES.get(host, {}).get("body", []), res.warnings, ld.get("body_len") or 0, res.title.value)
+    paras, how, container, truncated = _extract_body(doc, _profile_for(host).get("body", []), res.warnings, ld.get("body_len") or 0, res.title.value)
     body_text = "\n\n".join(paras)
     res.body.set(body_text, FOUND, how)
 

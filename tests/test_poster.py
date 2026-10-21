@@ -176,3 +176,25 @@ def test_started_signal_fires_before_first_byte(rig):
 def test_encode_big5_reports_positions():
     data, bad = encode_big5("ab😀c")
     assert data is None and bad == [(2, "😀")]
+
+
+def test_title_typing_stops_when_screen_leaves_title_prompt_mid_way(rig, monkeypatch):
+    import src.net.poster as P
+    bbs, sess, typer, done = rig
+    goto(bbs, sess, "title", Kind.TITLE_PROMPT)
+    real_build = P.build_chunks
+    monkeypatch.setattr(P, "build_chunks", lambda text, limit=6: real_build(text, 6))
+    sent = []
+    orig = sess.client.send
+
+    def spy(data):
+        ok = orig(data)
+        if ok:
+            sent.append(bytes(data))
+            if len(sent) == 1:                        # right after the first chunk the screen jumps to the main menu
+                bbs.goto("menu")
+        return ok
+    monkeypatch.setattr(sess.client, "send", spy)
+    assert typer.start(Target.TITLE, "[新聞] 一個比較長的測試標題用來分段") is None
+    assert wait_until(lambda: bool(done), 8000)
+    assert done[0][0] is False and len(sent) == 1       # aborted: no further chunk went out

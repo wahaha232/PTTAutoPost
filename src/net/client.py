@@ -23,6 +23,31 @@ log = get_logger("net")
 DEFAULT_URL = "wss://ws.ptt.cc/bbs"
 ORIGIN = "https://term.ptt.cc"
 _PROXY_PREFIX = b"HTTP/1.1 200 OK\r\n\r\n"
+TRUSTED_LOGIN_HOSTS = ("ws.ptt.cc",)          # the assisted login only ever sends credentials to these hosts
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def endpoint_problem(url: str) -> str | None:
+    """Reason a WebSocket endpoint is refused, or None. wss:// only (ws:// just for loopback / local testing), no userinfo."""
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(url)
+        host = p.hostname
+    except ValueError:
+        return "端點網址格式錯誤。"
+    if not host:
+        return "端點缺少主機名稱。"
+    if p.username or p.password:
+        return "端點網址不可包含帳號或密碼。"
+    if p.scheme == "wss" or (p.scheme == "ws" and host in _LOOPBACK):
+        return None
+    return "端點必須使用加密的 wss://（僅本機測試允許 ws://）。"
+
+
+def login_host_trusted(url: str) -> bool:
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    return host in TRUSTED_LOGIN_HOSTS or host in _LOOPBACK
 
 
 class State(enum.Enum):
@@ -40,6 +65,7 @@ class PttClient(QObject):
         super().__init__(parent)
         self.state = State.DISCONNECTED
         self._ws: QWebSocket | None = None
+        self.url = DEFAULT_URL
         self._first = True
         self._head = b""
         self._intentional_close = False
@@ -55,10 +81,19 @@ class PttClient(QObject):
     def connect_to(self, url: str = DEFAULT_URL) -> None:
         if self.state is not State.DISCONNECTED:
             return
+        problem = endpoint_problem(url)
+        if problem:
+            log.warning("endpoint refused: %s", problem)
+            self.failed.emit(problem)
+            return
+        self.url = url
         self._first, self._intentional_close, self._head = True, False, b""
         self.bytes_sent = self.bytes_received = 0
         self._iac = IacFilter()
+        self._drop_ws()                                    # never leave a previous socket without an owner
         ws = QWebSocket(ORIGIN)
+        ws.setMaxAllowedIncomingFrameSize(256 * 1024)         # PTT frames are a few KB; refuse absurd ones
+        ws.setMaxAllowedIncomingMessageSize(1024 * 1024)
         self._ws = ws
         ws.connected.connect(self._on_connected)
         ws.disconnected.connect(self._on_disconnected)
@@ -86,6 +121,13 @@ class PttClient(QObject):
                 self._ws.close()
         if connecting:
             self._set_state(State.DISCONNECTED)
+
+    def _drop_ws(self) -> None:
+        """Single cleanup path: forget the current socket, abort it and let Qt delete it."""
+        ws, self._ws = self._ws, None
+        if ws is not None:
+            ws.abort()
+            ws.deleteLater()
 
     def _stale(self) -> bool:
         """True for a signal from a socket that was replaced by a newer live one (it must never touch the current state)."""
@@ -136,7 +178,7 @@ class PttClient(QObject):
         self.failed.emit(f"連線錯誤：{msg}")
         if self.state is State.CONNECTING and self._ws is not None:   # handshake failed: no 'disconnected' follows
             self._intentional_close = True
-            self._ws.abort()
+            self._drop_ws()
             self._set_state(State.DISCONNECTED)
 
     def _on_disconnected(self) -> None:
@@ -156,8 +198,7 @@ class PttClient(QObject):
         log.warning("connect timeout")
         self.failed.emit(f"連線逾時（{self._connect_timeout_ms // 1000} 秒）。")
         self._intentional_close = True
-        if self._ws is not None:
-            self._ws.abort()
+        self._drop_ws()
         self._set_state(State.DISCONNECTED)
 
     def _set_state(self, st: State) -> None:

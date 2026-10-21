@@ -585,3 +585,59 @@ def test_fetched_title_with_existing_prefix_is_not_prefixed_twice(win):
     res = parse(html, "https://news.example/a")
     win._fetch_done(F.Fetched("https://news.example/a", "https://news.example/a", 200, "text/html", "utf-8", html, len(html), []), res)
     assert win.w["post_title"].text().count("[") == 1 and win.w["post_title"].text().startswith("[快訊]")
+
+
+def test_typing_is_blocked_when_started_state_cannot_be_saved(win, bbs_factory, monkeypatch):
+    from src.errors import StorageError
+    bbs = bbs_factory()
+    fill_article(win)
+    connect_and_login(win, bbs)
+    bbs.goto("editor")
+    assert wait_until(lambda: win.session.kind is Kind.EDITOR)
+    win.chk_confirm.setChecked(True)
+
+    def boom(*a, **k):
+        raise StorageError("磁碟已滿")
+    monkeypatch.setattr(win.db, "set_input_state", boom)
+    win.type_into_ptt(Target.BODY)
+    pump(300)
+    assert bytes(bbs.after_login) == b"" and not win.typer.running and "未送出任何內容" in win.msg_log.toPlainText()
+
+
+def test_partial_body_needs_confirmation_before_typing(win, bbs_factory, monkeypatch):
+    bbs = bbs_factory()
+    fill_article(win)
+    connect_and_login(win, bbs)
+    bbs.goto("editor")
+    assert wait_until(lambda: win.session.kind is Kind.EDITOR)
+    win.chk_confirm.setChecked(True)
+    import types
+    win._last_result = types.SimpleNamespace(status="partial", body_status="suspect_partial")     # as after a fetch of a cut-off article
+    answer(monkeypatch, QMessageBox.StandardButton.No)
+    win.type_into_ptt(Target.BODY)
+    pump(300)
+    assert bytes(bbs.after_login) == b"" and "疑似不完整" in win.msg_log.toPlainText()
+    answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    win.chk_nonempty.setChecked(True)
+    win.type_into_ptt(Target.BODY)
+    assert wait_until(lambda: len(bbs.after_login) > 0, 6000)
+    assert wait_until(lambda: not win.typer.running, 10000)
+
+
+def test_corrupt_font_size_setting_does_not_stop_startup(qapp, tmp_path):
+    db = Database(tmp_path / "f.db")
+    db.set_setting("terminal.font_px", "abc")
+    w = MainWindow(db, PttSession())
+    assert w.term.font_.pixelSize() == 17
+    w.db.close()
+
+
+def test_ime_commit_with_control_characters_is_ignored(win, bbs_factory):
+    from PySide6.QtGui import QInputMethodEvent
+    bbs = bbs_factory()
+    connect_and_login(win, bbs)
+    ev = QInputMethodEvent()
+    ev.setCommitString("ab\x1b[A")
+    win.term.inputMethodEvent(ev)
+    pump(200)
+    assert bytes(bbs.after_login) == b"" and "控制字元" in win.msg_log.toPlainText()

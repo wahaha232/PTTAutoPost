@@ -154,3 +154,15 @@ def test_extended_colour_sgr_is_skipped_not_misread_as_blink():
     s.feed(b"\x1b[38;5;196mA\x1b[48;2;1;2;3mB\x1b[0mC")
     assert [s.grid[0][i][0] for i in range(3)] == ["A", "B", "C"]
     assert not any(s.grid[0][i][3] & BLINK for i in range(3))
+
+
+def test_huge_csi_counts_and_long_sequences_do_not_stall_or_grow():
+    import time
+    s = Screen()
+    t0 = time.perf_counter()
+    s.feed(b"\x1b[999999L\x1b[999999M\x1b[999999A\x1b[999999B")
+    assert time.perf_counter() - t0 < 0.5 and len(s.grid) == s.rows
+    s.feed(b"\x1b[" + b"1;" * 100000 + b"mX")
+    assert len(s._csi) <= 64
+    s.feed(b"\x1b[0mhello")
+    assert "hello" in s.row_text(s.cur.y)

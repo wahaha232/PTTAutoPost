@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         self._quitting = False
         self._dirty = False                               # unsaved edits in the current draft
         self._typing_draft_id: int | None = None          # draft that the running typing session belongs to
+        self._ack_incomplete: set[int] = set()            # drafts whose partial body the user already confirmed
         self._draft_sig: str | None = None                # signature snapshot of the opened draft (None = use the selected one)
         self._tray: QSystemTrayIcon | None = None
         self._tray_hint_shown = False
@@ -146,7 +147,10 @@ class MainWindow(QMainWindow):
         st.addStretch(1)
         lay.addLayout(st)
         fam = self.db.get_setting("terminal.font", "")
-        px = int(self.db.get_setting("terminal.font_px", "17") or 17)
+        try:
+            px = min(96, max(6, int(self.db.get_setting("terminal.font_px", "17") or 17)))
+        except ValueError:                                # corrupt setting: fall back instead of failing at startup
+            px = 17
         fill = self.db.get_setting("terminal.fill", "1") == "1"      # default: fit the window
         self.term = TerminalWidget(self.session, family=fam, px=px, fill=fill)
         self.term.set_stretch(self.db.get_setting("terminal.stretch", "0") == "1")
@@ -329,8 +333,10 @@ class MainWindow(QMainWindow):
         self._apply_terminal_settings()
 
     def _do_login(self):
-        ok = self.session.login(self.account.text(), self.password.text())
-        self.password.clear()                         # never keep the password around in the widget
+        try:
+            ok = self.session.login(self.account.text(), self.password.text())
+        finally:
+            self.password.clear()                     # never keep the password around in the widget, even after an error
         if ok:
             self._notice("已送出登入資訊，等待伺服器回應…")
 
@@ -1015,6 +1021,12 @@ class MainWindow(QMainWindow):
             self._notice(f"此草稿的輸入狀態為「{d['input_state']}」：為避免重複輸入整篇文章，已拒絕。請先在終端機確認／清空編輯區，再勾選允許重新輸入。")
             return
         text = title if target is Target.TITLE else body
+        if (target is Target.BODY and d["body_status"] in ("suspect_partial", "insufficient") and did not in self._ack_incomplete):
+            if QMessageBox.question(self, "內文可能不完整",
+                                    "這篇文章擷取到的內文疑似不完整（截斷、登入牆／付費牆或內容過少）。\n\n請確認您已對照原網頁、確定要輸入的內容是完整的。仍要繼續嗎？") != QMessageBox.StandardButton.Yes:
+                self._notice("已取消輸入：內文疑似不完整。")
+                return
+            self._ack_incomplete.add(did)
         why = preflight(self.session, target, text, self.chk_nonempty.isChecked())
         if why:
             self._notice("無法輸入：" + why)
@@ -1027,24 +1039,37 @@ class MainWindow(QMainWindow):
             return
         self._typing_target = target
         self._typing_draft_id = did
+        if target is Target.BODY:                         # write-ahead gate: no byte is sent unless "started" is durably recorded
+            try:
+                self.db.set_input_state(did, "started")
+            except ToolError as e:
+                self._typing_draft_id = None
+                self._notice(f"無法記錄輸入狀態，已取消輸入（未送出任何內容）：{e.message}")
+                return
         reason = self.typer.start(target, text, self.chk_nonempty.isChecked())
         if reason:
             self._typing_draft_id = None
+            if target is Target.BODY:
+                try:
+                    self.db.set_input_state(did, d["input_state"])      # refused: put the previous state back
+                except ToolError:
+                    pass
             self._notice("無法輸入：" + reason)
             return
         self._update_type_buttons()
 
     def _typing_started(self, target: Target):
         self._update_input_lock()
-        if target is Target.BODY and self._typing_draft_id:
-            self.db.set_input_state(self._typing_draft_id, "started")          # write-ahead: recorded before the first byte
         self.type_status.setText("輸入中…（可按「取消輸入」；取消不會清除已輸入的內容）")
         self._update_type_buttons()
 
     def _typing_finished(self, ok: bool, msg: str):
         self._update_input_lock()
         if self._typing_target is Target.BODY and self._typing_draft_id:
-            self.db.set_input_state(self._typing_draft_id, "done" if ok else "aborted")
+            try:
+                self.db.set_input_state(self._typing_draft_id, "done" if ok else "aborted")
+            except ToolError as e:
+                self._notice(f"輸入狀態無法寫入資料庫（{e.message}）。請在終端機人工核對內容，避免重複輸入。")
             self.reload_drafts()
         self._typing_draft_id = None
         self.chk_nonempty.setChecked(False)               # the "non-empty" allowance never outlives one typing run

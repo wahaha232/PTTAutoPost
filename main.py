@@ -94,21 +94,25 @@ def main() -> int:
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication
 
+    from src.errors import ToolError
     from src.logging_setup import get_logger
     from src.net.session import PttSession
     from src.storage.db import Database
     from src.ui.main_window import MainWindow
     from src.version import APP_NAME, __version__
 
-    log = get_logger()
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)   # 125% / 150% stay crisp
     app = QApplication(sys.argv)
+    try:
+        log = get_logger()                              # needs a writable logs folder
+    except (OSError, ToolError) as e:
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, APP_NAME, "程式無法啟動：無法建立記錄資料夾。\n\n" + str(getattr(e, "message", e)))
+        return 1
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     log.info("start %s %s", APP_NAME, __version__)
     from PySide6.QtWidgets import QMessageBox
-
-    from src.errors import ToolError
 
     def excepthook(et, ev, tb):                       # windowed EXE has no console: keep a trace in the log
         log.error("unhandled exception", exc_info=(et, ev, tb))

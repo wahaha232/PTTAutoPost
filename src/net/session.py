@@ -17,7 +17,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from ..logging_setup import get_logger
 from ..terminal.detect import Kind, classify
 from ..terminal.screen import Screen
-from .client import PttClient, State
+from .client import PttClient, State, login_host_trusted
 
 log = get_logger("session")
 
@@ -95,6 +95,9 @@ class PttSession(QObject):
         if self.kind is not Kind.LOGIN_PROMPT:
             self.notice.emit("目前畫面不是登入畫面（請求輸入代號），已停止；請在終端機中自行操作。")
             return False
+        if not login_host_trusted(self.client.url):
+            self.notice.emit("目前連線的不是 PTT 官方端點（ws.ptt.cc），輔助登入已停用，帳密不會由程式送出；如需登入請自行在終端機輸入。")
+            return False
         if not account or not password:
             self.notice.emit("請輸入帳號與密碼。")
             return False
@@ -150,9 +153,7 @@ class PttSession(QObject):
 
     def _login_timeout(self) -> None:
         if self._creds is not None:
-            self._creds = None
-            self._set_login(Login.MANUAL)
-            self.notice.emit("登入逾時或畫面不明，已停止自動處理；請在終端機中查看並手動繼續。")
+            self._stop_manual("登入逾時或畫面不明，已停止自動處理；請在終端機中查看並手動繼續。")
 
     def _stop_manual(self, why: str) -> None:
         self._creds = None

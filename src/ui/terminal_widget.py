@@ -253,6 +253,9 @@ class TerminalWidget(QWidget):
             e.accept()
             return
         text = e.commitString()
+        if text and not text.isprintable():
+            self.notice.emit("輸入含有控制字元，已忽略。")
+            text = ""
         if text:
             try:
                 data = text.encode("cp950")
