@@ -1,5 +1,7 @@
 # PTT AutoPost 驗收條件與測試案例
 
+> **歷史文件（2026-10-15，實作前設計）**：內容已落後於 0.6.2 實作與 2026-10-22 的決定，僅供參考。現況以程式碼、`ESTIMATE_2026-10-22.md`、`ROADMAP_2026-10-22.md`、`PHASE0_RESTART_AUDIT_2026-10-22.md` 為準。
+
 - 版本：**1.1-draft**（對應 SRS 2.0-draft r3；已納入使用者 2026-10-15 五項決策）；日期：2026-10-15；**待使用者審核**
 - 相關：[SRS.md](SRS.md)、[ARCHITECTURE.md](ARCHITECTURE.md)、[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)、[TEST_CORPUS.md](TEST_CORPUS.md)、[GOLDEN_SPEC.md](GOLDEN_SPEC.md)、[PYTHON_BASELINE_AUDIT.md](PYTHON_BASELINE_AUDIT.md)
 - 狀態：**所有案例尚未實作、尚未執行**；「結果」欄一律為「待測」。**目前沒有任何功能已完成；沒有快照、黃金檔、比對結果。** 數值門檻標【待確認】【待校準】或【待驗證】者，於對應決策／校準／PoC 後定案。

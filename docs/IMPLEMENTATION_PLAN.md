@@ -1,5 +1,7 @@
 # PTT AutoPost 分階段開發計畫
 
+> **歷史文件（2026-10-15，實作前設計）**：內容已落後於 0.6.2 實作與 2026-10-22 的決定，僅供參考。現況以程式碼、`ESTIMATE_2026-10-22.md`、`ROADMAP_2026-10-22.md`、`PHASE0_RESTART_AUDIT_2026-10-22.md` 為準。
+
 - 版本：**1.1-draft**（對應 SRS 2.0-draft r3；已納入使用者 2026-10-15 五項決策）；**待使用者審核；未核准前不得開始實作**
 - 日期：2026-10-15
 - 取代：Phase 0 時期的計畫（已封存為 [PHASE0_IMPLEMENTATION_PLAN.md](PHASE0_IMPLEMENTATION_PLAN.md)，僅作歷史參考）

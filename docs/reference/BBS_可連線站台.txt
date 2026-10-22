@@ -1,0 +1,23 @@
+﻿BBS 可連線站台清單
+測試時間：2026-10-21 23:00（本機 TCP 測試，未實際登入）
+來源：C:\Users\wahah\Desktop\PCManCB\PCMan Combo\BBSList
+
+編號	站台名稱	位址	可用連線	備註
+1	臺大批踢踢實業坊 (PTT)	ptt.cc	WSS wss://ws.ptt.cc/bbs；SSH 22	Telnet 23 已關閉
+2	臺大批踢踢兔 (PTT2)	ptt2.cc	WSS wss://ws.ptt2.cc/bbs；SSH 22	Telnet 23 已關閉
+3	成大夢之大地	bbs.ccns.ncku.edu.tw	Telnet 23	
+4	清華資工楓橋驛站	bbs.cs.nthu.edu.tw	Telnet 23	
+5	臺灣電玩站 巴哈姆特	bbs.gamer.com.tw	Telnet 23	
+6	紫丁香社區	lilacbbs.com	Telnet 23	
+7	新水木清華	newsmth.net	Telnet 23	
+8	臺大未來最舊小棧	ofo.tw	Telnet 23	
+9	華年小集	138.197.204.42	Telnet 23	pttbbs 測試／新站
+10	網際新世界	209.141.35.127	Telnet 23	TCP 可連，banner 待確認
+11	交大淒美燈塔	43.224.33.158	SSH 22	BBS 入口待確認
+12	中山七月七日晴	77bbs.com	SSH 22	BBS 入口待確認
+13	臺大資管鳴蟬	bbs.im.ntu.edu.tw	SSH 22	BBS 入口待確認
+
+說明：
+- 只測 TCP 23／22／443 可達性，不代表已完成 BBS 登入。
+- PTT／Ptt2 的 23 埠雖有回應，但服務已明確關閉 Telnet；請改用 WSS 或 SSH。
+- 其餘 81 個 BBSList 位址目前無法連線。

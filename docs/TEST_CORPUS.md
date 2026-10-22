@@ -1,5 +1,7 @@
 # 測試語料與來源支援清單（TEST_CORPUS）
 
+> **歷史文件（2026-10-15，實作前設計）**：內容已落後於 0.6.2 實作與 2026-10-22 的決定，僅供參考。現況以程式碼、`ESTIMATE_2026-10-22.md`、`ROADMAP_2026-10-22.md`、`PHASE0_RESTART_AUDIT_2026-10-22.md` 為準。
+
 - 版本：**2.0-draft**；日期：2026-10-15；**待使用者審核**
 - 用途：M1「真實來源與文章 URL 清單」、本機快照規範、來源支援矩陣。相關：[SRS.md](SRS.md) FR-114～117、[GOLDEN_SPEC.md](GOLDEN_SPEC.md)、[ACCEPTANCE_TESTS.md](ACCEPTANCE_TESTS.md) AT-EXT／AT-GLD／AT-SNP／AT-M1、[ARCHITECTURE.md](ARCHITECTURE.md) §15.2。
 - 證據檔：[evidence/source_verification_2026-10-15.json](evidence/source_verification_2026-10-15.json)（逐 URL 的驗證原始資料）、[evidence/robots_summary_2026-10-15.json](evidence/robots_summary_2026-10-15.json)。
