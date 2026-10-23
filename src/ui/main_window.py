@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QAction, QFont, QFontDatabase, QGuiApplication
+from PySide6.QtGui import QAction, QFont, QFontDatabase, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
                                QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QMenu, QPlainTextEdit, QPushButton,
                                QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
@@ -90,12 +90,11 @@ class MainWindow(QMainWindow):
         self._draft_sig: str | None = None                # signature snapshot of the opened draft (None = use the selected one)
         self._tray: QSystemTrayIcon | None = None
         self._tray_hint_shown = False
-        scr0 = QGuiApplication.primaryScreen()
-        self.compact = bool(scr0 and scr0.availableGeometry().height() <= 800)      # typical 1366x768 laptop
+        self.compact = self._screen_is_compact()      # typical 1366x768 laptop
         self._init_geometry()
+        self._build_article_toggle_action()
         tabs = QTabWidget()
-        tabs.addTab(self._build_terminal_tab(), "終端機")
-        tabs.addTab(self._build_article_tab(), "文章")
+        tabs.addTab(self._build_terminal_article_tab(), "終端機與文章")
         tabs.addTab(self._build_drafts_tab(), "草稿")
         tabs.addTab(self._build_settings_tab(), "設定")
         self.tabs = tabs
@@ -117,6 +116,41 @@ class MainWindow(QMainWindow):
         self._on_conn_state(self.session.client.state)
 
     # ================================================================== terminal tab
+    @staticmethod
+    def _screen_is_compact() -> bool:
+        """True on a typical 1366x768 laptop; used as the article-panel default."""
+        scr = QGuiApplication.primaryScreen()
+        return bool(scr and scr.availableGeometry().height() <= 800)
+
+    def _build_article_toggle_action(self) -> None:
+        self.act_toggle_article = QAction("顯示文章面板", self)
+        self.act_toggle_article.setCheckable(True)
+        self.act_toggle_article.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self.act_toggle_article.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.act_toggle_article.toggled.connect(self._set_article_panel_visible)
+        self.addAction(self.act_toggle_article)
+
+    def _build_terminal_article_tab(self) -> QWidget:
+        """One page: terminal on the left, the article panel on the right (collapsible)."""
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.terminal_panel = self._build_terminal_tab()
+        self.article_panel = self._build_article_tab()
+        self.article_panel.setMinimumWidth(320)
+        self.main_splitter.addWidget(self.terminal_panel)
+        self.main_splitter.addWidget(self.article_panel)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 0)
+        self.main_splitter.setCollapsible(0, False)
+        self.main_splitter.setCollapsible(1, False)
+        self.main_splitter.splitterMoved.connect(self._on_splitter_moved)
+        lay.addWidget(self.main_splitter)
+        self._restore_article_panel_state()
+        return page
+
     def _build_terminal_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -135,7 +169,12 @@ class MainWindow(QMainWindow):
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.password.setFixedWidth(190)
         self.btn_login = QPushButton("登入")
-        for x in (QLabel("端點"), self.url_box, self.btn_connect, self.btn_disconnect, QLabel("帳號"), self.account, self.password, self.btn_login):
+        self.btn_article_toggle = QPushButton("文章面板")
+        self.btn_article_toggle.setCheckable(True)
+        self.btn_article_toggle.setToolTip("顯示／收合文章面板（Ctrl+Shift+A）")
+        self.btn_article_toggle.toggled.connect(self._set_article_panel_visible)
+        for x in (QLabel("端點"), self.url_box, self.btn_connect, self.btn_disconnect, QLabel("帳號"), self.account, self.password, self.btn_login,
+                  self.btn_article_toggle):
             bar.addWidget(x)
         bar.addStretch(1)
         lay.addLayout(bar)
@@ -214,6 +253,97 @@ class MainWindow(QMainWindow):
     def _align_terminal(self):
         """Fixed-size terminal is centred; in fill mode it takes the whole area."""
         self.term_holder.setAlignment(self.term, Qt.AlignmentFlag(0) if self.term.fill else Qt.AlignmentFlag.AlignCenter)
+
+    # ================================================================== article panel layout
+    @staticmethod
+    def _read_int_setting(raw: str, default: int, low: int, high: int) -> int:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(low, min(high, value))
+
+    def _restore_article_panel_state(self) -> None:
+        self._article_width = self._read_int_setting(
+            self.db.get_setting("ui.article_panel_width", ""), 620, 320, 1600)
+        raw_collapsed = self.db.get_setting("ui.article_panel_collapsed", "")
+        if raw_collapsed in ("0", "1"):
+            collapsed = raw_collapsed == "1"
+        else:
+            collapsed = self.compact                 # no saved state: collapsed on a short screen
+        self._article_collapsed = collapsed
+        if collapsed:
+            self.article_panel.hide()
+        else:
+            self.article_panel.show()
+        self._update_article_toggle_ui()
+        QTimer.singleShot(0, self._apply_article_panel_sizes)
+
+    def _apply_article_panel_sizes(self) -> None:
+        if not hasattr(self, "main_splitter"):
+            return
+        if getattr(self, "_article_collapsed", True):
+            self.main_splitter.setSizes([1, 0])
+            return
+        total = max(self.main_splitter.width(), self.width())
+        width = max(320, min(self._article_width, max(320, total - 320)))
+        self._article_width = width
+        self.main_splitter.setSizes([max(1, total - width), width])
+
+    def _set_article_panel_visible(self, visible: bool) -> None:
+        if not hasattr(self, "article_panel") or not hasattr(self, "main_splitter"):
+            return
+        visible = bool(visible)
+        if visible == (not getattr(self, "_article_collapsed", True)):
+            self._update_article_toggle_ui()
+            return
+        if visible:
+            self._article_collapsed = False
+            self.article_panel.show()
+            self._apply_article_panel_sizes()
+        else:
+            sizes = self.main_splitter.sizes()
+            if len(sizes) > 1 and sizes[1] > 0:
+                self._article_width = sizes[1]
+            self._article_collapsed = True
+            self.article_panel.hide()
+            self.main_splitter.setSizes([1, 0])
+        self.db.set_setting("ui.article_panel_collapsed", "1" if self._article_collapsed else "0")
+        if not self._article_collapsed:
+            self.db.set_setting("ui.article_panel_width", str(self._article_width))
+        self._update_article_toggle_ui()
+        QTimer.singleShot(0, self._relayout_after_panel_change)
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        if not getattr(self, "_article_collapsed", True):
+            sizes = self.main_splitter.sizes()
+            if len(sizes) > 1 and sizes[1] > 0:
+                self._article_width = sizes[1]
+                self.db.set_setting("ui.article_panel_width", str(self._article_width))
+        QTimer.singleShot(0, self._relayout_after_panel_change)
+
+    def _relayout_after_panel_change(self) -> None:
+        self.term._relayout()
+
+    def _update_article_toggle_ui(self) -> None:
+        on = not getattr(self, "_article_collapsed", True)
+        for widget in (getattr(self, "btn_article_toggle", None), getattr(self, "act_toggle_article", None)):
+            if widget is not None:
+                widget.blockSignals(True)
+                widget.setChecked(on)
+                widget.blockSignals(False)
+
+    def _save_article_panel_state(self) -> None:
+        self.db.set_setting("ui.article_panel_collapsed", "1" if getattr(self, "_article_collapsed", True) else "0")
+        if not getattr(self, "_article_collapsed", True):
+            self.db.set_setting("ui.article_panel_width", str(getattr(self, "_article_width", 620)))
+
+    def _article_session(self) -> PttSession:
+        """Seam for stage 2: the article panel follows the active connection, not a hard-coded one."""
+        return self.session
+
+    def _article_typer(self) -> PostTyper:
+        return self.typer
 
     # ================================================================== settings tab
     def _build_settings_tab(self) -> QWidget:
@@ -351,7 +481,7 @@ class MainWindow(QMainWindow):
 
     def _update_input_lock(self) -> None:
         """The terminal keyboard is paused while automatic typing or the assisted login owns the connection."""
-        self.term.locked = bool(self.typer.running or self.session.login_state is Login.LOGGING_IN)
+        self.term.locked = bool(self._article_typer().running or self._article_session().login_state is Login.LOGGING_IN)
 
     def _on_login_state(self, st: Login):
         self._update_input_lock()
@@ -365,9 +495,15 @@ class MainWindow(QMainWindow):
     # ================================================================== article tab
     def _build_article_tab(self) -> QWidget:
         root = QWidget()
-        outer = QHBoxLayout(root)
-        split = QSplitter()
-        outer.addWidget(split)
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.article_tabs = QTabWidget()
+        self.sig_snap_bar = QWidget()
+        self.sig_snap_layout = QHBoxLayout(self.sig_snap_bar)
+        self.sig_snap_layout.setContentsMargins(0, 0, 0, 0)
+        self.sig_snap_bar.setVisible(False)
+        outer.addWidget(self.sig_snap_bar)
+        outer.addWidget(self.article_tabs)
 
         left = QWidget()
         ll = QVBoxLayout(left)
@@ -448,15 +584,16 @@ class MainWindow(QMainWindow):
         self.btn_sig_current = QPushButton("改用目前簽名檔")
         self.lbl_sig_snap.setVisible(False)
         self.btn_sig_current.setVisible(False)
-        row2.addWidget(self.lbl_sig_snap)
-        row2.addWidget(self.btn_sig_current)
+        self.sig_snap_layout.addWidget(self.lbl_sig_snap)
+        self.sig_snap_layout.addWidget(self.btn_sig_current)
+        self.sig_snap_layout.addStretch(1)
         row2.addStretch(1)
         self._sig_idx = -1
         self._reload_signatures(self.db.active_signature_index)
         sl.addWidget(self.sig_edit)
         sl.addLayout(row2)
         ll.addWidget(sg)
-        split.addWidget(left)
+        self.article_tabs.addTab(left, "擷取與欄位")
 
         right = QWidget()
         rl = QVBoxLayout(right)
@@ -508,8 +645,7 @@ class MainWindow(QMainWindow):
         self.type_status.setWordWrap(True)
         tl.addWidget(self.type_status)
         rl.addWidget(tg)
-        split.addWidget(right)
-        split.setSizes([620, 620])
+        self.article_tabs.addTab(right, "預覽與輸入")
 
         self.btn_fetch.clicked.connect(self.start_fetch)
         self.url_in.returnPressed.connect(self.start_fetch)
@@ -533,7 +669,7 @@ class MainWindow(QMainWindow):
         self.sig_edit.textChanged.connect(lambda: self._schedule_preview(False))
         self.btn_type_title.clicked.connect(lambda: self.type_into_ptt(Target.TITLE))
         self.btn_type_body.clicked.connect(lambda: self.type_into_ptt(Target.BODY))
-        self.btn_type_cancel.clicked.connect(self.typer.cancel)
+        self.btn_type_cancel.clicked.connect(lambda: self._article_typer().cancel())
         for c in (self.chk_confirm,):
             c.toggled.connect(lambda _x: self._update_type_buttons())
         return root
@@ -654,6 +790,7 @@ class MainWindow(QMainWindow):
 
     def _sync_sig_snapshot_ui(self) -> None:
         on = self._draft_sig is not None
+        self.sig_snap_bar.setVisible(on)
         self.lbl_sig_snap.setVisible(on)
         self.btn_sig_current.setVisible(on)
 
@@ -776,12 +913,13 @@ class MainWindow(QMainWindow):
         if not b:
             self._notice("請先選擇或輸入有效的看板名稱。")
             return
-        if not self.session.logged_in or self.session.kind is not Kind.MAIN_MENU:
+        session = self._article_session()
+        if not session.logged_in or session.kind is not Kind.MAIN_MENU:
             self._notice("需要已登入且畫面停在「主功能表」才能前往看板；請先在終端機回到主功能表。")
             return
         if QMessageBox.question(self, "前往看板", f"將在終端機輸入「s」、「{b}」與 Enter 進入看板。不會發文。確定？") != QMessageBox.StandardButton.Yes:
             return
-        self.session.send_user_bytes(b"s" + b.encode("ascii") + b"\r")      # one frame: no ordering race
+        session.send_user_bytes(b"s" + b.encode("ascii") + b"\r")      # one frame: no ordering race
         self.db.event("goto_board", self.draft_id, b)
         self._notice(f"已送出前往看板 {b}；請在終端機確認畫面（可能需要按任意鍵），發文仍由您自行操作。")
 
@@ -877,7 +1015,7 @@ class MainWindow(QMainWindow):
             self.draft_list.addItem(it)
 
     def new_draft(self):
-        if self.typer.running:
+        if self._article_typer().running:
             self._notice("輸入進行中，請先取消輸入再切換草稿。")
             return
         if not self._confirm_unsaved("新增草稿"):
@@ -931,7 +1069,7 @@ class MainWindow(QMainWindow):
         it = self.draft_list.currentItem()
         if it is None:
             return
-        if self.typer.running:
+        if self._article_typer().running:
             self._notice("輸入進行中，請先取消輸入再切換草稿。")
             return
         if not self._confirm_unsaved("開啟其他草稿"):
@@ -976,7 +1114,9 @@ class MainWindow(QMainWindow):
         self.chk_confirm.setChecked(False)
         self.chk_retype.setChecked(False)
         self.lbl_draft.setText(f"草稿 #{self.draft_id}（輸入狀態：{d['input_state']}）")
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentIndex(0)
+        self._set_article_panel_visible(True)
+        self.article_tabs.setCurrentIndex(1)
         self._update_type_buttons()
 
     def delete_selected(self):
@@ -984,7 +1124,7 @@ class MainWindow(QMainWindow):
         if it is None:
             return
         did = it.data(Qt.ItemDataRole.UserRole)
-        if self.typer.running:
+        if self._article_typer().running:
             self._notice("輸入進行中，無法刪除草稿。")
             return
         if QMessageBox.question(self, "刪除草稿", f"確定刪除草稿 #{did}？此動作無法復原。") != QMessageBox.StandardButton.Yes:
@@ -996,14 +1136,16 @@ class MainWindow(QMainWindow):
 
     # ================================================================== typing into PTT
     def _update_type_buttons(self):
-        connected = self.session.client.state is State.CONNECTED
-        ok = connected and self.session.logged_in and self.chk_confirm.isChecked() and not self.typer.running
+        session, typer = self._article_session(), self._article_typer()
+        connected = session.client.state is State.CONNECTED
+        ok = connected and session.logged_in and self.chk_confirm.isChecked() and not typer.running
         self.btn_type_title.setEnabled(ok)
         self.btn_type_body.setEnabled(ok)
-        self.btn_type_cancel.setEnabled(self.typer.running)
+        self.btn_type_cancel.setEnabled(typer.running)
 
     def type_into_ptt(self, target: Target):
-        if self.typer.running:
+        typer = self._article_typer()
+        if typer.running:
             return
         title, body = self.current_texts()
         issues = self.run_checks()
@@ -1027,7 +1169,7 @@ class MainWindow(QMainWindow):
                 self._notice("已取消輸入：內文疑似不完整。")
                 return
             self._ack_incomplete.add(did)
-        why = preflight(self.session, target, text, self.chk_nonempty.isChecked())
+        why = preflight(self._article_session(), target, text, self.chk_nonempty.isChecked())
         if why:
             self._notice("無法輸入：" + why)
             self.type_status.setText("無法輸入：" + why)
@@ -1046,7 +1188,7 @@ class MainWindow(QMainWindow):
                 self._typing_draft_id = None
                 self._notice(f"無法記錄輸入狀態，已取消輸入（未送出任何內容）：{e.message}")
                 return
-        reason = self.typer.start(target, text, self.chk_nonempty.isChecked())
+        reason = typer.start(target, text, self.chk_nonempty.isChecked())
         if reason:
             self._typing_draft_id = None
             if target is Target.BODY:
@@ -1162,9 +1304,12 @@ class MainWindow(QMainWindow):
 
     def _save_geometry(self) -> None:
         self.db.set_setting("window.geometry", bytes(self.saveGeometry().toBase64()).decode("ascii"))
+        self._save_article_panel_state()
 
     def showEvent(self, e):
         super().showEvent(e)
+        if hasattr(self, "main_splitter"):
+            QTimer.singleShot(0, self._apply_article_panel_sizes)
         wh = self.windowHandle()
         if wh is not None and not getattr(self, "_screen_hooked", False):
             self._screen_hooked = True

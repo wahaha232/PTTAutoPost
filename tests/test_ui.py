@@ -21,6 +21,7 @@ def win(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
     db = Database(tmp_path / "ui.db")
     w = MainWindow(db, PttSession())
+    w._set_article_panel_visible(True)                  # existing tests exercise the article panel; layout tests use their own window
     yield w
     w.session.disconnect_()
     pump(50)
@@ -641,3 +642,90 @@ def test_ime_commit_with_control_characters_is_ignored(win, bbs_factory):
     win.term.inputMethodEvent(ev)
     pump(200)
     assert bytes(bbs.after_login) == b"" and "控制字元" in win.msg_log.toPlainText()
+
+def test_merged_page_layout_and_article_subtabs(win):
+    assert win.tabs.count() == 3
+    assert [win.tabs.tabText(i) for i in range(3)] == ["終端機與文章", "草稿", "設定"]
+    assert win.main_splitter.count() == 2
+    assert win.main_splitter.widget(0) is win.terminal_panel
+    assert win.main_splitter.widget(1) is win.article_panel
+    assert win.article_tabs.count() == 2
+    assert [win.article_tabs.tabText(i) for i in range(2)] == ["擷取與欄位", "預覽與輸入"]
+
+
+def test_article_panel_toggle_shortcut_and_state(win):
+    assert win.act_toggle_article.shortcut().toString() == "Ctrl+Shift+A"
+    assert win.btn_article_toggle.isChecked()
+    win.act_toggle_article.trigger()
+    pump(20)
+    assert win._article_collapsed and win.article_panel.isHidden()
+    assert win.db.get_setting("ui.article_panel_collapsed") == "1"
+    win.btn_article_toggle.click()
+    pump(20)
+    assert not win._article_collapsed and win.article_panel.isVisibleTo(win)
+    assert win.act_toggle_article.isChecked()
+
+
+def test_article_panel_width_and_collapsed_restore(qapp, tmp_path):
+    db = Database(tmp_path / "layout.db")
+    db.set_setting("ui.article_panel_width", "500")
+    db.set_setting("ui.article_panel_collapsed", "0")
+    w = MainWindow(db, PttSession())
+    w.show()
+    w.resize(1600, 900)
+    pump(50)
+    assert w.article_panel.isVisibleTo(w)
+    sizes = w.main_splitter.sizes()
+    assert len(sizes) == 2 and abs(sizes[1] - 500) <= 40
+    w._set_article_panel_visible(False)
+    assert w.db.get_setting("ui.article_panel_collapsed") == "1"
+    w.db.close()
+
+
+def test_corrupt_article_panel_settings_fall_back(qapp, tmp_path):
+    db = Database(tmp_path / "layout2.db")
+    db.set_setting("ui.article_panel_width", "not-a-number")
+    db.set_setting("ui.article_panel_collapsed", "wat")
+    w = MainWindow(db, PttSession())
+    assert w._article_width == 620
+    assert w._article_collapsed == w.compact
+    w.db.close()
+
+
+def test_compact_screen_defaults_panel_collapsed(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(MainWindow, "_screen_is_compact", staticmethod(lambda: True))
+    db = Database(tmp_path / "layout3.db")
+    w = MainWindow(db, PttSession())
+    assert w.compact and w._article_collapsed and w.article_panel.isHidden()
+    w.db.close()
+
+
+def test_open_draft_expands_panel_and_selects_preview(win):
+    fill_article(win)
+    did = win.save_draft()
+    win.new_draft()
+    win.reload_drafts()
+    win.draft_list.setCurrentRow(0)
+    win._set_article_panel_visible(False)
+    win.tabs.setCurrentIndex(1)
+    win.open_selected()
+    pump(20)
+    assert win.tabs.currentIndex() == 0
+    assert not win._article_collapsed and win.article_panel.isVisibleTo(win)
+    assert win.article_tabs.currentIndex() == 1
+    assert win.draft_id == did
+
+
+def test_splitter_change_relayouts_terminal(win):
+    win.show()
+    win.resize(1600, 900)
+    pump(30)
+    win._set_article_panel_visible(True)
+    pump(30)
+    expanded = win.term.width()
+    win._set_article_panel_visible(False)
+    assert wait_until(lambda: win.term.width() > expanded, 2000)
+    collapsed = win.term.width()
+    win._set_article_panel_visible(True)
+    assert wait_until(lambda: win.term.width() < collapsed, 2000)
+    assert win.term.cw * win.term.s.screen.cols <= win.term.width() + 1
