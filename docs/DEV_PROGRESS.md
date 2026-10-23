@@ -4,8 +4,8 @@
 - 分支：`dev/roadmap`（自 `main` @ `6d390c4` 建立）
 - 基準版本：0.6.2
 - 基準測試：`python -m pytest -q`（`QT_QPA_PLATFORM=offscreen`）→ 168 passed
-- 目前測試：同一指令 → 264 passed（C 組 0.6.7 完成）
-- 目前版本：0.6.7（2026/10/23）
+- 目前測試：同一指令 → 278 passed（J 組 0.7.0 完成）
+- 目前版本：0.7.0（2026/10/23）
 - 開始時間 T0：2026-10-23 09:13（UTC+8）／2026-10-23 01:13 UTC
 - 額度基準 B：**暫不追蹤**
 
@@ -16,9 +16,9 @@
 | B | 介面：文章與終端機合併頁、移除訊息區／提示、全螢幕、主題、終端機配色 | 完成（含 0.6.4 追加修改） |
 | A | 超連結：偵測、瀏覽器設定、圖片自動開啟、輸入中禁用 | 完成（0.6.5＋0.6.6 追加） |
 | C | 終端機文字選取、複製、貼上 | 完成（0.6.7） |
-| J | 發佈準備、授權、贊助、打包 | 未開始（下一組） |
+| J | 發佈準備、授權、贊助、打包 | 完成（0.7.0；安裝程式腳本待 Inno Setup 實測） |
 
-## 本組（B）內容
+## B 組內容（歷史）
 
 1. **文章與終端機合併在同一頁**：
    - 主視窗分頁改為「終端機與文章／草稿／設定」。
@@ -170,6 +170,43 @@
 
 - 無（Alt 矩形、雙擊、三擊皆已完成）。實際桌面手感與貼上到 PTT 編輯器的行為待使用者驗證。
 
+## J 組完成內容（0.7.0）
+
+### J1：贊助區塊
+
+- `src/version.py` 新增 `SPONSOR_URL`、`SPONSOR_TEXT`；`SPONSOR_URL` 留空或不是有效 http/https（含帳密）時，設定頁的「贊助作者」區塊整個隱藏。
+- 區塊只在使用者按下按鈕時用系統預設瀏覽器開啟連結；說明贊助自願、不影響功能、程式不追蹤或上傳資料。
+- 新增 `tests/test_sponsor.py`（4 項：未設定、無效 scheme、含帳密、顯示與開啟）。
+- 贊助連結與顯示文字仍待使用者提供；目前區塊隱藏。
+
+### J2：授權與使用者文件
+
+- 新增 `LICENSE`：專有授權聲明（個人非商業使用、不得散布／修改／商用，第三方元件依其授權）。
+- 新增 `THIRD_PARTY_NOTICES.md`：PySide6／Qt／shiboken6（LGPL-3.0）、requests（Apache-2.0）、beautifulsoup4／charset-normalizer（MIT）、lxml（BSD-3-Clause）、Python（PSF）、PyInstaller（GPL-2.0＋exception）。
+- 新增 `licenses/`：LGPL-3.0、GPL-3.0、各相依元件與 Python／PyInstaller 授權全文。
+- 新增 `USER_README.txt`：可攜版啟動、SmartScreen、安全設計、快捷鍵、資料位置、授權與指令列；打包時填入版本與日期。
+- 新增 `tests/test_packaging.py` 文件與打包流程測試。
+
+### J3：資料夾版打包與體積精簡
+
+- `PTTAutoPost.spec` 改為 **onedir／COLLECT**，Qt／PySide6 DLL 以獨立檔案放在 `_internal\`，可由使用者替換（LGPL 較易符合）。
+- 從 PyInstaller 收集結果剔除未使用的 Qt Quick／QML／Pdf／OpenGL／Svg、`opengl32sw.dll`、translations、imageformats、iconengines；保留平台外掛（含 offscreen 供 selftest）、TLS、styles、IME 外掛。
+- `tools/make_portable.py`：onedir build → 複製整個應用程式資料夾 + `LICENSE`／`THIRD_PARTY_NOTICES.md`／`licenses/`／`README.txt` → `--verify` 檢查 selftest、版本、frozen、corpus、文件、可替換 Qt DLL、未使用 Qt 檔。
+- 新增 `--archive`（7-Zip LZMA2）與 `--installer`（Inno Setup 6）；`tools/PTTAutoPost.iss` 採 `lzma2/max`、每位使用者安裝（`PrivilegesRequired=lowest`）、不覆蓋 config／logs／data、附授權頁。
+- 本機實際建置 0.7.0：資料夾版 **76.6 MB**、LZMA2 7z **22.2 MB**；`--selftest` OK、corpus 0、文件齊全、Qt DLL 可替換、未使用 Qt 檔 0。
+- 本機未安裝 Inno Setup，`--installer` 只完成腳本，尚未產出 setup.exe。
+
+### J4：版本與文件
+
+- `src/version.py` bump 到 **0.7.0**（2026/10/23），CHANGELOG、README（打包、授權、贊助、已驗證項目）更新。
+- 全套 **278 passed**。
+
+### 未完成項目
+
+- 安裝程式實測（需先安裝 Inno Setup 6）。
+- 贊助連結與顯示文字（目前 `SPONSOR_URL` 留空，區塊隱藏）。
+- 專有授權與第三方授權文件的法律覆核（本專案只做工程整理，不構成法律建議）。
+
 ## 待使用者驗證（不在本次自動測試範圍）
 
 - B 組已完成項目：實際桌面（含 1366×768）的合併頁比例、面板收合／還原、`F12`、開啟草稿後的面板展開。
@@ -183,6 +220,10 @@
 - C 組：`Ctrl+Shift+C`／`Ctrl+Shift+V` 與 Windows／輸入法快捷鍵是否衝突；終端機有焦點時複製不送 `0x03`、貼上不送 `0x16`。
 - C 組：貼上到 PTT 編輯器的實際結果（換行轉 CR 是否正確斷行）、預覽／取消、Big5 無法編碼的對話框、5000 字上限。
 - C 組：長文字分批貼上的節奏與畫面回顯；中途斷線或自動輸入／登入輔助接手時是否停止並回報已送出數量；貼上期間鍵盤暫停是否符合期待。
+- J 組：實際桌面從 `dist\PTTAutoPost-0.7.0-portable\` 啟動、SmartScreen 提示、防毒掃描、`config`／`logs`／`data` 寫入位置；以 7z 解壓後的完整性。
+- J 組：Qt DLL 替換流程（LGPL）與 `_internal` 結構；未使用 Qt 元件剔除後，實際操作（檔案對話框、系統匣、IME、字型、WebSocket 連線）是否仍正常。
+- J 組：Inno Setup 6 安裝／升級／移除後 config／logs／data 是否保留（本機無 ISCC，尚未產出 setup.exe）。
+- J 組：贊助連結與顯示文字（提供後設定 `SPONSOR_URL`／`SPONSOR_TEXT` 並確認只開系統瀏覽器）；專有授權與第三方授權文件請做法律覆核。
 - 真實 PTT 登入後畫面仍從未驗證；本階段不需要登入真實帳號。
 
 ## 額度與提交紀錄
@@ -191,7 +232,7 @@
 |---|---|
 | 當天開始 B | 暫不追蹤 |
 | 目前累計用量 | 暫不追蹤 |
-| 最後 commit | `c63cf26`（0.6.7 C 組完成） |
-| 下一次要填的組別 | J |
+| 最後 commit | `ad271a2`（0.7.0 J 組完成） |
+| 下一次要填的組別 | 階段 1 已完成；階段 2（多分頁）待指示 |
 
 > 本檔只記錄開發進度，不另產出報告檔。
