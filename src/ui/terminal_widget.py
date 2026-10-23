@@ -191,6 +191,7 @@ class TerminalWidget(QWidget):
     # ----------------------------------------------------------------- links / mouse
     linkActivated = Signal(str)
     linksChanged = Signal(object)
+    linkHovered = Signal(str)                 # URL under the pointer, "" when none
 
     def _on_screen_changed(self) -> None:
         self.clear_selection()
@@ -202,6 +203,7 @@ class TerminalWidget(QWidget):
         if self._hover_link is not None and self._hover_link not in self._links:
             self._hover_link = None
             self.unsetCursor()
+            self.linkHovered.emit("")
         self.linksChanged.emit(list(self._links))
 
     def links(self) -> list[Link]:
@@ -393,6 +395,7 @@ class TerminalWidget(QWidget):
         link = self.link_at(e.position())
         if link != self._hover_link:
             self._hover_link = link
+            self.linkHovered.emit(link.url if link else "")
             if link is None:
                 self.unsetCursor()
             else:
@@ -479,6 +482,7 @@ class TerminalWidget(QWidget):
         if self._hover_link is not None:
             self._hover_link = None
             self.unsetCursor()
+            self.linkHovered.emit("")
             self.update()
         super().leaveEvent(e)
 

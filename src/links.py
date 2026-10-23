@@ -82,7 +82,7 @@ def is_image_url(url: str) -> bool:
 
 
 def is_auto_open_image_url(url: str) -> bool:
-    """Auto-open only https URLs on a known image host; extension-only URLs are never auto-opened."""
+    """Auto-open https image links on a known image host or with a known image extension."""
     if not validate_http_url(url):
         return False
     try:
@@ -92,9 +92,29 @@ def is_auto_open_image_url(url: str) -> bool:
     if p.scheme.lower() != "https":
         return False
     host = (p.hostname or "").lower().rstrip(".")
-    if not host or _private_host(host) or not _known_image_host(host):
+    if not host or _private_host(host):
+        return False
+    suffix = PurePosixPath(p.path).suffix.lower()
+    if suffix == ".svg":
+        return False
+    return _known_image_host(host) or suffix in _IMAGE_EXTENSIONS
+
+
+def is_article_image_url(url: str) -> bool:
+    """An https image URL taken from the article itself (any public host, still no SVG)."""
+    if not validate_http_url(url):
+        return False
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return False
+    if p.scheme.lower() != "https":
+        return False
+    host = (p.hostname or "").lower().rstrip(".")
+    if not host or _private_host(host):
         return False
     return PurePosixPath(p.path).suffix.lower() != ".svg"
+
 
 
 def _row_cells(screen, y: int) -> tuple[str, list[tuple[int, int]]]:

@@ -965,6 +965,8 @@ def test_f12_toggles_panel_and_ctrl_shift_a_stays_terminal_input(win, bbs_factor
 def test_browser_settings_defaults_and_persist(win):
     assert win.browser_combo.currentData() == "system"
     assert not win.chk_auto_image.isChecked()
+    assert not win.chk_hover_image.isChecked()
+    assert not win.chk_article_image.isChecked()
     assert win.db.get_setting("browser.mode", "") == ""
     win.browser_combo.setCurrentIndex(win.browser_combo.findData("custom"))
     win.browser_path.setText("C:/Tools/browser.exe")
@@ -974,6 +976,10 @@ def test_browser_settings_defaults_and_persist(win):
     assert win.browser_path.isEnabled()
     win.chk_auto_image.setChecked(True)
     assert win.db.get_setting("links.image_auto_open") == "1"
+    win.chk_hover_image.setChecked(True)
+    assert win.db.get_setting("links.image_hover_preview") == "1"
+    win.chk_article_image.setChecked(True)
+    assert win.db.get_setting("links.article_images_open") == "1"
 
 
 def test_browser_settings_corrupt_fall_back(qapp, tmp_path):
@@ -1021,6 +1027,57 @@ def test_auto_image_reuses_one_in_app_viewer(win, monkeypatch):
     win._close_image_viewer()
 
 
+def test_hover_preview_only_for_image_links_when_enabled(win, monkeypatch):
+    from src.ui import main_window as mw
+    shown, hidden = [], []
+
+    class FakePreview:
+        def show_url(self, url, pos=None):
+            shown.append(url)
+
+        def hide_preview(self):
+            hidden.append(True)
+
+    monkeypatch.setattr(mw, "ImageHoverPreview", FakePreview)
+    win._on_link_hovered("https://cdn.example.com/a.jpg")       # setting off: nothing starts
+    assert not win._hover_timer.isActive()
+
+    win.chk_hover_image.setChecked(True)
+    win._on_link_hovered("https://cdn.example.com/a.jpg")
+    assert win._hover_timer.isActive()
+    win._show_hover_preview()
+    assert shown == ["https://cdn.example.com/a.jpg"]
+
+    win._on_link_hovered("https://example.com/article")          # not an image URL: hide
+    assert not win._hover_timer.isActive() and hidden
+    win._on_link_hovered("")
+    assert hidden
+
+
+def test_article_images_setting_opens_the_gallery(win, monkeypatch):
+    from src.ui import main_window as mw
+    calls = []
+    monkeypatch.setattr(mw.ImageViewer, "show_images",
+                        lambda self, urls, strict=True: calls.append((urls, strict)))
+    win._article_image_urls = ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"]
+    win.chk_article_image.setChecked(True)
+    assert calls == [(["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"], False)]
+
+
+def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, monkeypatch):
+    from src.ui import main_window as mw
+    calls = []
+    monkeypatch.setattr(mw, "find_image_urls",
+                        lambda html, base: ["https://cdn.example.com/photo.jpg"])
+    monkeypatch.setattr(mw.ImageViewer, "show_images",
+                        lambda self, urls, strict=True: calls.append((urls, strict)))
+    win.chk_article_image.setChecked(True)
+    win.url_in.setText(http_server + "/ok")
+    win.start_fetch()
+    assert wait_until(lambda: not win._busy, 8000)
+    assert calls == [(["https://cdn.example.com/photo.jpg"], False)]
+
+
 def test_auto_image_off_by_default(win, monkeypatch):
     calls = []
     monkeypatch.setattr(win, "_open_image_inside", lambda url: calls.append(url) or True)
@@ -1058,63 +1115,51 @@ def test_auto_image_minute_limit_and_reconnect_reset(win, monkeypatch):
     assert len(calls) == 4
 
 
-def test_auto_image_skipped_while_typing_or_login_but_manual_click_works(win, monkeypatch):
+def test_auto_image_does_not_require_app_login_or_idle_typing(win, monkeypatch):
     calls, manual = [], []
     monkeypatch.setattr(win, "_open_image_inside", lambda url: calls.append(url) or True)
     monkeypatch.setattr(win, "_open_link", lambda url: manual.append(url) or True)
     win.chk_auto_image.setChecked(True)
-    win.session.logged_in = True
+    win.session.logged_in = False                       # manual PTT login: the app never saw the login screen
+    win.session.login_state = Login.MANUAL
     win.typer.running = True
     win._on_links_changed([_image_link("https://i.imgur.com/a.jpg")])
-    assert calls == []
-    win.typer.running = False
-    win.session.login_state = Login.LOGGING_IN
-    win._on_links_changed([_image_link("https://i.imgur.com/b.jpg")])
-    assert calls == []
-    win.session.login_state = Login.LOGGED_IN
-    win.session.logged_in = False
-    win._on_links_changed([_image_link("https://i.imgur.com/c.jpg")])
-    assert calls == []
+    assert calls == ["https://i.imgur.com/a.jpg"]       # the viewer never steals focus, so no need to wait
     win._open_link("https://i.imgur.com/a.jpg")
-    assert manual == ["https://i.imgur.com/a.jpg"] and calls == []
+    assert manual == ["https://i.imgur.com/a.jpg"]
 
 
 def test_auto_image_ignores_non_image_links(win, monkeypatch):
     calls = []
     monkeypatch.setattr(win, "_open_image_inside", lambda url: calls.append(url) or True)
     win.chk_auto_image.setChecked(True)
-    win.session.logged_in = True
     win._on_links_changed([_image_link("https://example.com/article")])
     assert calls == []
 
 
-def test_auto_open_retries_after_typing_finishes(win, monkeypatch):
+def test_auto_open_opens_at_once_and_does_not_duplicate_on_the_retry_hooks(win, monkeypatch):
     calls = []
     monkeypatch.setattr(win, "_open_image_inside", lambda url: calls.append(url) or True)
     win.chk_auto_image.setChecked(True)
-    win.session.logged_in = True
-    win.session.login_state = Login.LOGGED_IN
     win.typer.running = True
     win.term.s.screen.feed(b"https://i.imgur.com/a.jpg")
     win.term._on_screen_changed()
-    assert calls == []
+    assert calls == ["https://i.imgur.com/a.jpg"]
     win.typer.running = False
     win._typing_finished(True, "done")
     assert calls == ["https://i.imgur.com/a.jpg"]
     assert win.statusBar().currentMessage() == "done"
 
 
-def test_auto_open_retries_after_login_finishes(win, monkeypatch):
+def test_auto_open_works_without_the_app_login_state(win, monkeypatch):
     calls = []
     monkeypatch.setattr(win, "_open_image_inside", lambda url: calls.append(url) or True)
     win.chk_auto_image.setChecked(True)
     win.session.logged_in = False
-    win.session.login_state = Login.LOGGING_IN
+    win.session.login_state = Login.MANUAL
     win.term.s.screen.feed(b"https://i.imgur.com/b.jpg")
     win.term._on_screen_changed()
-    assert calls == []
-    win.session.logged_in = True
-    win.session.login_state = Login.LOGGED_IN
+    assert calls == ["https://i.imgur.com/b.jpg"]
     win._on_login_state(Login.LOGGED_IN)
     assert calls == ["https://i.imgur.com/b.jpg"]
 
@@ -1142,22 +1187,20 @@ def test_auto_open_works_from_a_real_terminal_screen(win, monkeypatch):
     assert calls == ["https://i.imgur.com/a.jpg"]
 
 
-def test_auto_open_only_known_hosts_and_limit_notice(win, monkeypatch):
+def test_auto_open_accepts_https_images_and_reports_the_limit(win, monkeypatch):
     calls, notices = [], []
     monkeypatch.setattr(win, "_open_image_inside", lambda url: calls.append(url) or True)
     monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
     win.chk_auto_image.setChecked(True)
-    win.session.logged_in = True
-    win.session.login_state = Login.LOGGED_IN
-    for url in ("https://example.com/x.jpg", "http://i.imgur.com/x.jpg", "https://example.com/a.svg",
+    for url in ("https://example.com/article", "http://i.imgur.com/x.jpg", "https://example.com/a.svg",
                 "https://192.168.1.1/x.png", "https://localhost/x.png"):
         win._on_links_changed([_image_link(url)])
     assert calls == []
-    win._on_links_changed([_image_link("https://i.imgur.com/a.jpg")])
-    assert calls == ["https://i.imgur.com/a.jpg"]
+    win._on_links_changed([_image_link("https://cdn.example.com/photo.jpg")])
+    assert calls == ["https://cdn.example.com/photo.jpg"]
     links = [_image_link("https://i.imgur.com/b.jpg"), _image_link("https://i.imgur.com/c.jpg")]
     win._on_links_changed(links)
-    assert calls == ["https://i.imgur.com/a.jpg", "https://i.imgur.com/b.jpg"]
+    assert calls == ["https://cdn.example.com/photo.jpg", "https://i.imgur.com/b.jpg"]
     limit_notices = [n for n in notices if "已達自動開啟上限" in n]
     assert len(limit_notices) == 1 and "略過 1 個" in limit_notices[0]
     win._on_links_changed(links)

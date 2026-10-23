@@ -6,7 +6,7 @@ import pytest
 
 from src.errors import FetchError, InputError
 from src.parsers import fetch as F
-from src.parsers.extract import FOUND, INFERRED, MISSING, parse
+from src.parsers.extract import FOUND, INFERRED, MISSING, find_image_urls, parse
 
 PARA = "這是一段用來測試的新聞內文，包含足夠的字數以便判斷內文長度是否足夠。"
 ARTICLE = f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
@@ -535,3 +535,22 @@ def test_non_html_content_types_are_refused_and_user_agent_has_current_version(m
             F.fetch("https://a.example/x", min_interval=0)
     route(monkeypatch, {"https://a.example/x": FakeResp(200, {"Content-Type": "application/xhtml+xml"})})
     assert F.fetch("https://a.example/x", min_interval=0).status == 200
+
+
+def test_find_image_urls_uses_img_sources_and_image_links_only():
+    html = """<html><body><article>
+    <img src="/a.jpg" width="800">
+    <img data-src="https://cdn.example.com/b.png">
+    <img src="data:image/gif;base64,AAAA">
+    <img src="https://cdn.example.com/pixel.gif" width="1" height="1">
+    <img src="https://cdn.example.com/c.svg">
+    <img src="http://cdn.example.com/e.jpg">
+    <img srcset="https://cdn.example.com/f.webp 1x, https://cdn.example.com/g.webp 2x">
+    <a href="https://cdn.example.com/d.jpeg">d</a>
+    <a href="https://cdn.example.com/page.html">no</a>
+    </article></body></html>"""
+    urls = find_image_urls(html, "https://news.example.com/story/1")
+    assert urls == ["https://news.example.com/a.jpg", "https://cdn.example.com/b.png",
+                    "https://cdn.example.com/f.webp", "https://cdn.example.com/d.jpeg"]
+    assert find_image_urls(html, "https://news.example.com/", limit=1) == ["https://news.example.com/a.jpg"]
+

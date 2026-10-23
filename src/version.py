@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.3"
+__version__ = "0.8.4"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,18 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.4", "2026/10/24", [
+        "Image auto-open: a terminal image link now opens as soon as it appears — the app no longer waits for its own "
+        "login detection or for automatic typing to finish (the viewer never takes keyboard focus). Auto-open accepts "
+        "any public https image URL, either on a known image host or with an image extension "
+        "(.jpg/.jpeg/.png/.gif/.webp/.bmp/.avif), and still rejects http, SVG, localhost and private addresses.",
+        "New setting: hovering a terminal image link for about half a second shows a small preview next to the "
+        "pointer (off by default); moving away hides it. Images are cached in memory, so the same URL is downloaded "
+        "once.",
+        "New setting: after an article is fetched, its <img> sources and image links open in the in-app gallery (off "
+        "by default) with previous/next buttons. Article images may come from any public https host, but are still "
+        "fetched with the per-hop SSRF/DNS-pinning checks and image content-type checks.",
+    ]),
     ("0.8.3", "2026/10/24", [
         "Image auto-open: links now open in a viewer inside the program instead of an external browser. The image is "
         "downloaded over https from the same known image hosts, with the per-hop SSRF/DNS-pinning checks, no SVG, a "

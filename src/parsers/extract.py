@@ -7,14 +7,17 @@ No scripts are executed; pages are parsed as inert text.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+from pathlib import PurePosixPath
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
+from ..links import is_image_url
 from ..logging_setup import get_logger
 
 log = get_logger("extract")
@@ -657,3 +660,55 @@ def _finish(res: ParseResult, ld, visible: str = "", html: str = "", container=N
         res.status = "success"
     else:
         res.status = "partial"
+
+
+def find_image_urls(html: str, base_url: str = "", limit: int = 12) -> list[str]:
+    """Return https image URLs referenced by the article, in page order (max `limit`).
+
+    <img> sources are trusted as image content (the fetch still verifies the
+    content type); ordinary links count only when they look like an image URL.
+    """
+    doc = BeautifulSoup(html or "", "lxml")
+    found: list[str] = []
+
+    def add(raw: str | None) -> None:
+        if not raw or len(found) >= limit:
+            return
+        url = urljoin(base_url, raw.strip())
+        try:
+            p = urlparse(url)
+        except ValueError:
+            return
+        if p.scheme.lower() != "https" or not p.hostname or p.username or p.password:
+            return
+        host = p.hostname.lower().rstrip(".")
+        if host == "localhost" or host.endswith(".localhost"):
+            return
+        try:
+            if not ipaddress.ip_address(host).is_global:
+                return
+        except ValueError:
+            pass
+        if PurePosixPath(p.path).suffix.lower() == ".svg":
+            return
+        if url not in found:
+            found.append(url)
+
+    def add_srcset(srcset: str | None) -> None:
+        if srcset:
+            add(srcset.split(",")[0].strip().split(" ")[0])
+
+    for img in doc.find_all("img"):
+        if (img.get("width") or "").strip() in ("0", "1") or (img.get("height") or "").strip() in ("0", "1"):
+            continue                                   # tracking pixel
+        add(img.get("src"))
+        for attr in ("data-src", "data-original", "data-lazy-src"):
+            add(img.get(attr))
+        add_srcset(img.get("srcset") or img.get("data-srcset"))
+    for source in doc.find_all("source"):
+        add_srcset(source.get("srcset"))
+    for a in doc.find_all("a", href=True):
+        if is_image_url(a["href"]):
+            add(a["href"])
+    return found
+

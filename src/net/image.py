@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 import requests
 
 from ..errors import FetchError
-from ..links import is_auto_open_image_url
+from ..links import is_article_image_url, is_auto_open_image_url
 from ..logging_setup import get_logger
 from ..parsers.fetch import (MAX_REDIRECTS, USER_AGENT, _mount_pinning, _pin_session,  # shared SSRF/DNS-pinning rules
                              validate_url)
@@ -30,10 +30,11 @@ class ImageData:
     data: bytes
 
 
-def check_hop(url: str) -> str:
-    """Allow only https URLs on a known image host, including every redirect target."""
-    if not is_auto_open_image_url(url):
-        raise FetchError("只會在主程式內開啟已知圖床的 https 圖片連結。", "url")
+def check_hop(url: str, strict_host: bool = True) -> str:
+    """Allow only https image URLs; terminal/hover links additionally need a known host or extension."""
+    allowed = is_auto_open_image_url(url) if strict_host else is_article_image_url(url)
+    if not allowed:
+        raise FetchError("只會在主程式內開啟安全的 https 圖片連結。", "url")
     return validate_url(url)
 
 
@@ -42,9 +43,9 @@ def _content_type(headers) -> str:
 
 
 def fetch_image(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_IMAGE_BYTES,
-                cancel: threading.Event | None = None) -> ImageData:
+                cancel: threading.Event | None = None, strict_host: bool = True) -> ImageData:
     """Download one image into memory; never writes a file, never follows a redirect off the image policy."""
-    url = check_hop(raw_url)
+    url = check_hop(raw_url, strict_host)
     cur, hops = url, 0
     with requests.Session() as sess:                          # releases the urllib3 pool even on errors
         _mount_pinning(sess)
@@ -67,7 +68,7 @@ def fetch_image(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_IMA
             if hops > MAX_REDIRECTS:
                 raise FetchError("圖片重新導向次數過多。", cur)
             try:
-                cur = check_hop(urljoin(cur, loc))             # same https / known-host policy for every hop
+                cur = check_hop(urljoin(cur, loc), strict_host)   # same policy for every hop
             except FetchError as e:
                 raise FetchError("圖片導向到不允許的網址，已停止。", e.detail or e.message) from e
         try:

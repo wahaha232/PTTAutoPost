@@ -10,7 +10,7 @@ from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QCursor, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
                                QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QMenu, QPlainTextEdit, QPushButton,
                                QProgressBar, QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
@@ -23,13 +23,13 @@ from ..net.client import DEFAULT_URL, State
 from ..terminal.detect import Kind
 from ..net.poster import PostTyper, Target, preflight
 from ..net.session import Login, PttSession
-from ..parsers.extract import ParseResult, parse
+from ..parsers.extract import ParseResult, find_image_urls, parse
 from ..parsers.fetch import fetch
 from ..storage.db import MAX_SIGNATURES, Database
 from ..version import APP_NAME, BUILD_DATE, SPONSOR_TEXT, SPONSOR_URL, __version__
 from . import browser, theme
 from .icon import app_icon, tray_icon
-from .image_viewer import ImageViewer
+from .image_viewer import ImageHoverPreview, ImageViewer
 from .terminal_widget import TerminalWidget
 
 log = get_logger("ui")
@@ -193,6 +193,13 @@ class MainWindow(QMainWindow):
         self._auto_opened: set[str] = set()
         self._auto_open_times: deque[float] = deque()
         self._image_viewer: ImageViewer | None = None
+        self._hover_preview: ImageHoverPreview | None = None
+        self._hover_url = ""
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(450)             # dwell before fetching a hovered image
+        self._hover_timer.timeout.connect(self._show_hover_preview)
+        self._article_image_urls: list[str] = []
         self._parse_kind: str | None = None
         self._article_width_timer = QTimer(self)
         self._article_width_timer.setSingleShot(True)
@@ -211,6 +218,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(tabs)
         self.term.linkActivated.connect(self._open_link)
         self.term.linksChanged.connect(self._on_links_changed)
+        self.term.linkHovered.connect(self._on_link_hovered)
         self.term.pasteStateChanged.connect(self._on_paste_state)
         self._apply_theme(self._theme_choice, save=False)
         try:
@@ -584,19 +592,63 @@ class MainWindow(QMainWindow):
         self._notice("已自動開啟圖片於程式內。")
         return True
 
+    def _open_article_images(self, urls: list[str]) -> bool:
+        """Show images found in the fetched article in the in-app gallery."""
+        if not urls:
+            return False
+        if self._image_viewer is None:
+            self._image_viewer = ImageViewer(self)
+        self._image_viewer.show_images(urls, strict=False)
+        self._notice(f"已開啟文章內的 {len(urls)} 張圖片（可在視窗中切換）。")
+        return True
+
+    def _hover_enabled(self) -> bool:
+        return bool(hasattr(self, "chk_hover_image") and self.chk_hover_image.isChecked())
+
+    def _on_link_hovered(self, url: str) -> None:
+        self._hover_timer.stop()
+        self._hover_url = url
+        if not url or not self._hover_enabled() or not is_auto_open_image_url(url):
+            self._hide_hover_preview()
+            return
+        self._hover_timer.start()
+
+    def _show_hover_preview(self) -> None:
+        url = self._hover_url
+        if not url or not self._hover_enabled() or not is_auto_open_image_url(url):
+            return
+        if self._hover_preview is None:
+            self._hover_preview = ImageHoverPreview()
+        self._hover_preview.show_url(url, QCursor.pos())
+
+    def _hide_hover_preview(self) -> None:
+        self._hover_timer.stop()
+        if self._hover_preview is not None:
+            self._hover_preview.hide_preview()
+
+    def _hover_image_toggled(self, on: bool) -> None:
+        self.db.set_setting("links.image_hover_preview", "1" if on else "0")
+        if not on:
+            self._hide_hover_preview()
+        self._notice("已開啟圖片連結懸停預覽。" if on else "已關閉圖片連結懸停預覽。")
+
+    def _article_images_toggled(self, on: bool) -> None:
+        self.db.set_setting("links.article_images_open", "1" if on else "0")
+        self._notice("已開啟文章內圖片自動顯示。" if on else "已關閉文章內圖片自動顯示。")
+        if on and self._article_image_urls:
+            self._open_article_images(self._article_image_urls)
+
     def _close_image_viewer(self) -> None:
+        self._hide_hover_preview()
         if self._image_viewer is not None:
             self._image_viewer.close()
 
     def _on_links_changed(self, links) -> None:
         if not (hasattr(self, "chk_auto_image") and self.chk_auto_image.isChecked()):
             return
-        session, typer = self._article_session(), self._article_typer()
         images = [link for link in links if is_auto_open_image_url(link.url)]
         if not images:
             return
-        if not session.logged_in or typer.running or session.login_state is Login.LOGGING_IN:
-            return                                        # evaluate again when typing/login finishes
         now = time.monotonic()
         while self._auto_open_times and now - self._auto_open_times[0] >= 60:
             self._auto_open_times.popleft()
@@ -650,14 +702,26 @@ class MainWindow(QMainWindow):
         row_b.addWidget(self.browser_path, 1)
         row_b.addWidget(self.btn_browser_browse)
         row_b.addWidget(self.btn_browser_detect)
-        self.chk_auto_image = QCheckBox("自動開啟圖片連結")
+        self.chk_auto_image = QCheckBox("自動開啟圖片連結（終端機畫面）")
         self.chk_auto_image.setChecked(self.db.get_setting("links.image_auto_open", "0") == "1")
-        self.lbl_auto_image_note = QLabel("預設關閉。只自動開啟 imgur 等已知圖床的 https 連結，並在主程式內顯示，不會另開瀏覽器；自動開啟會讓圖床看到您的 IP，同一連線同一網址只開一次，且有每分鐘上限。")
+        self.lbl_auto_image_note = QLabel("預設關閉。自動開啟 https 圖片（imgur 等圖床，或 .jpg／.png 等副檔名），在主程式內顯示、不會另開瀏覽器；圖床會看到您的 IP，同一連線同一網址只開一次，且有每分鐘上限。")
         self.lbl_auto_image_note.setWordWrap(True)
+        self.chk_hover_image = QCheckBox("滑鼠移到圖片連結時預覽")
+        self.chk_hover_image.setChecked(self.db.get_setting("links.image_hover_preview", "0") == "1")
+        self.lbl_hover_image_note = QLabel("預設關閉。停在終端機的圖片連結約 0.5 秒後，在游標旁顯示小 preview；移開即消失，同一張圖只下載一次。")
+        self.lbl_hover_image_note.setWordWrap(True)
+        self.chk_article_image = QCheckBox("文章內有圖片連結時直接顯示")
+        self.chk_article_image.setChecked(self.db.get_setting("links.article_images_open", "0") == "1")
+        self.lbl_article_image_note = QLabel("預設關閉。擷取文章後，把文章內的 <img> 與圖片連結放進同一個檢視視窗，可切換上一張／下一張；不會另開瀏覽器。")
+        self.lbl_article_image_note.setWordWrap(True)
         bf.addRow("瀏覽器", self.browser_combo)
         bf.addRow("自訂路徑", row_b)
         bf.addRow("", self.chk_auto_image)
         bf.addRow("", self.lbl_auto_image_note)
+        bf.addRow("", self.chk_hover_image)
+        bf.addRow("", self.lbl_hover_image_note)
+        bf.addRow("", self.chk_article_image)
+        bf.addRow("", self.lbl_article_image_note)
         lay.addWidget(bg)
         self._browser_paths: dict[str, str] = {}
         self._reload_browser_combo(self._browser_mode)
@@ -666,6 +730,8 @@ class MainWindow(QMainWindow):
         self.btn_browser_browse.clicked.connect(self._browse_browser)
         self.btn_browser_detect.clicked.connect(self._detect_browsers)
         self.chk_auto_image.toggled.connect(self._auto_image_toggled)
+        self.chk_hover_image.toggled.connect(self._hover_image_toggled)
+        self.chk_article_image.toggled.connect(self._article_images_toggled)
         self._sync_browser_ui()
 
         g = QGroupBox("終端機顯示")
@@ -869,6 +935,8 @@ class MainWindow(QMainWindow):
         self._browser_mode_changed(self.browser_combo.currentIndex())
         self._save_browser_path()
         self.db.set_setting("links.image_auto_open", "1" if self.chk_auto_image.isChecked() else "0")
+        self.db.set_setting("links.image_hover_preview", "1" if self.chk_hover_image.isChecked() else "0")
+        self.db.set_setting("links.article_images_open", "1" if self.chk_article_image.isChecked() else "0")
         if self.chk_auto_image.isChecked():
             self._on_links_changed(self.term.links())
         self._apply_terminal_settings()
@@ -1420,6 +1488,9 @@ class MainWindow(QMainWindow):
         self.preview_manual_reset()
         self.render_preview(force=True)
         self._dirty = True                                 # fetched content is not saved yet
+        self._article_image_urls = find_image_urls(fetched.html, fetched.final_url)
+        if self._article_image_urls and hasattr(self, "chk_article_image") and self.chk_article_image.isChecked():
+            self._open_article_images(self._article_image_urls)
         self.db.event("fetch", self.draft_id, f"{res.status}/{res.body_status}")
 
     # ---------------------------------------------------------------- editing / state labels

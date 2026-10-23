@@ -1,4 +1,4 @@
-from src.links import Link, find_links, is_auto_open_image_url, is_image_url, validate_http_url
+from src.links import Link, find_links, is_article_image_url, is_auto_open_image_url, is_image_url, validate_http_url
 from src.terminal.screen import Screen
 
 
@@ -65,15 +65,26 @@ def test_link_contains_uses_cell_columns():
     assert not link.contains(2, 9) and not link.contains(3, 10)
 
 
-def test_auto_open_requires_https_known_host_and_no_svg():
+def test_auto_open_requires_https_image_and_no_svg():
     assert is_auto_open_image_url("https://i.imgur.com/x.jpg")
     assert is_auto_open_image_url("https://sub.imgur.com/x")
+    assert is_auto_open_image_url("https://example.com/x.png")        # image extension on any public host
+    assert is_auto_open_image_url("https://cdn.example.com/photo.webp")
     assert not is_auto_open_image_url("http://i.imgur.com/x.jpg")
-    assert not is_auto_open_image_url("https://example.com/x.png")
     assert not is_auto_open_image_url("http://example.com/x.jpg")
+    assert not is_auto_open_image_url("https://example.com/article")  # no extension, unknown host
     assert not is_auto_open_image_url("https://example.com/a.svg")
     assert not is_auto_open_image_url("https://i.imgur.com/a.svg")
     assert not is_auto_open_image_url("https://192.168.1.1/x.png")
     assert not is_auto_open_image_url("https://localhost/x.png")
-    assert not is_auto_open_image_url("https://imgur.com.evil.com/x.jpg")
+    assert not is_auto_open_image_url("https://imgur.com.evil.com/x")
     assert not is_image_url("https://example.com/a.svg")
+
+
+def test_article_image_urls_allow_any_public_https_host_but_not_svg():
+    assert is_article_image_url("https://cdn.example.com/image?id=1")
+    assert is_article_image_url("https://i.imgur.com/x.jpg")
+    assert not is_article_image_url("http://cdn.example.com/x.jpg")
+    assert not is_article_image_url("https://cdn.example.com/x.svg")
+    assert not is_article_image_url("https://127.0.0.1/x.jpg")
+    assert not is_article_image_url("https://localhost/x.jpg")
