@@ -1604,10 +1604,10 @@ class MainWindow(QMainWindow):
         self._typing_draft_id = None
         self.chk_nonempty.setChecked(False)               # the "non-empty" allowance never outlives one typing run
         self.type_status.setText(msg)
-        self._notice(msg)
+        self._on_links_changed(self.term.links())
+        self._notice(msg)                                 # keep the typing result in front of an auto-open notice
         self.chk_retype.setChecked(False)
         self._update_type_buttons()
-        self._on_links_changed(self.term.links())
 
     # ================================================================== laptop / desktop adaptation
     @staticmethod

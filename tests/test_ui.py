@@ -1077,6 +1077,7 @@ def test_auto_open_retries_after_typing_finishes(win, monkeypatch):
     win.typer.running = False
     win._typing_finished(True, "done")
     assert calls == [("https://i.imgur.com/a.jpg", True)]
+    assert win.statusBar().currentMessage() == "done"
 
 
 def test_auto_open_retries_after_login_finishes(win, monkeypatch):
