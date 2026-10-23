@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
@@ -93,6 +92,7 @@ class MainWindow(QMainWindow):
         self.compact = self._screen_is_compact()      # typical 1366x768 laptop
         self._init_geometry()
         self._build_article_toggle_action()
+        self._build_menu()
         tabs = QTabWidget()
         tabs.addTab(self._build_terminal_article_tab(), "終端機與文章")
         tabs.addTab(self._build_drafts_tab(), "草稿")
@@ -129,6 +129,24 @@ class MainWindow(QMainWindow):
         self.act_toggle_article.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.act_toggle_article.toggled.connect(self._set_article_panel_visible)
         self.addAction(self.act_toggle_article)
+
+    def _build_menu(self) -> None:
+        view = self.menuBar().addMenu("檢視")
+        view.addAction(self.act_toggle_article)
+        self.act_fullscreen = QAction("全螢幕", self)
+        self.act_fullscreen.setCheckable(True)
+        self.act_fullscreen.setShortcut(QKeySequence("F11"))
+        self.act_fullscreen.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.act_fullscreen.toggled.connect(self._set_fullscreen)
+        self.addAction(self.act_fullscreen)
+        view.addSeparator()
+        view.addAction(self.act_fullscreen)
+
+    def _set_fullscreen(self, on: bool) -> None:
+        if on and not self.isFullScreen():
+            self.showFullScreen()
+        elif not on and self.isFullScreen():
+            self.showNormal()
 
     def _build_terminal_article_tab(self) -> QWidget:
         """One page: terminal on the left, the article panel on the right (collapsible)."""
@@ -235,15 +253,6 @@ class MainWindow(QMainWindow):
         self.tb_size.valueChanged.connect(lambda _v: self._apply_terminal_settings(bar=True))
         self.tb_fill.toggled.connect(lambda _c: self._apply_terminal_settings(bar=True))
         self.tb_stretch.toggled.connect(lambda _c: self._apply_terminal_settings(bar=True))
-        self.msg_log = QPlainTextEdit()
-        self.msg_log.setReadOnly(True)
-        self.msg_log.setMaximumBlockCount(200)
-        self.msg_log.setFixedHeight(48 if self.compact else 90)
-        lay.addWidget(self.msg_log)
-        hint = QLabel("提示：登入可用上方欄位，也可直接在終端機內自行輸入。程式只在您明確操作時才送出內容；任何狀態不明都會停止並提示您。")
-        hint.setWordWrap(True)
-        hint.setVisible(not self.compact)
-        lay.addWidget(hint)
         self.btn_connect.clicked.connect(lambda: self.session.connect_to(self.url_box.currentText().strip() or DEFAULT_URL))
         self.btn_disconnect.clicked.connect(self.session.disconnect_)
         self.btn_login.clicked.connect(self._do_login)
@@ -489,8 +498,12 @@ class MainWindow(QMainWindow):
         self._update_type_buttons()
 
     def _notice(self, msg: str):
-        self.msg_log.appendPlainText(f"[{datetime.now():%H:%M:%S}] {msg}")
         self.statusBar().showMessage(msg, 20000)
+
+    def _error(self, msg: str):
+        """Critical error: status bar plus a dialog (removing msg_log must not hide failures)."""
+        self._notice(msg)
+        QMessageBox.warning(self, "錯誤", msg)
 
     # ================================================================== article tab
     def _build_article_tab(self) -> QWidget:
@@ -1057,7 +1070,7 @@ class MainWindow(QMainWindow):
         try:
             self.draft_id = self.db.save_draft(data, self.draft_id)
         except ToolError as e:
-            self._notice(f"儲存失敗：{e.message}")
+            self._error(f"儲存失敗：{e.message}")
             return None
         self._dirty = False
         self.lbl_draft.setText(f"草稿 #{self.draft_id} 已儲存")
@@ -1186,7 +1199,7 @@ class MainWindow(QMainWindow):
                 self.db.set_input_state(did, "started")
             except ToolError as e:
                 self._typing_draft_id = None
-                self._notice(f"無法記錄輸入狀態，已取消輸入（未送出任何內容）：{e.message}")
+                self._error(f"無法記錄輸入狀態，已取消輸入（未送出任何內容）：{e.message}")
                 return
         reason = typer.start(target, text, self.chk_nonempty.isChecked())
         if reason:
@@ -1211,7 +1224,7 @@ class MainWindow(QMainWindow):
             try:
                 self.db.set_input_state(self._typing_draft_id, "done" if ok else "aborted")
             except ToolError as e:
-                self._notice(f"輸入狀態無法寫入資料庫（{e.message}）。請在終端機人工核對內容，避免重複輸入。")
+                self._error(f"輸入狀態無法寫入資料庫（{e.message}）。請在終端機人工核對內容，避免重複輸入。")
             self.reload_drafts()
         self._typing_draft_id = None
         self.chk_nonempty.setChecked(False)               # the "non-empty" allowance never outlives one typing run
@@ -1376,6 +1389,10 @@ class MainWindow(QMainWindow):
 
     def changeEvent(self, e):
         super().changeEvent(e)
+        if e.type() == QEvent.Type.WindowStateChange and hasattr(self, "act_fullscreen"):
+            self.act_fullscreen.blockSignals(True)
+            self.act_fullscreen.setChecked(self.isFullScreen())
+            self.act_fullscreen.blockSignals(False)
         if (e.type() == QEvent.Type.WindowStateChange and self.isMinimized() and self._tray is not None
                 and self.chk_tray_min.isChecked()):
             QTimer.singleShot(0, self._to_tray)

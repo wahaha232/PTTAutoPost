@@ -19,6 +19,7 @@ from test_extract_fetch import H
 @pytest.fixture
 def win(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
     db = Database(tmp_path / "ui.db")
     w = MainWindow(db, PttSession())
     w._set_article_panel_visible(True)                  # existing tests exercise the article panel; layout tests use their own window
@@ -167,7 +168,7 @@ def test_end_to_end_type_body_then_refuse_duplicate(win, bbs_factory):
     n = len(bbs.after_login)
     win.type_into_ptt(Target.BODY)                                         # second attempt on the same draft
     pump(400)
-    assert len(bbs.after_login) == n and "重複" in win.msg_log.toPlainText()
+    assert len(bbs.after_login) == n and "重複" in win.statusBar().currentMessage()
 
 
 def test_typing_requires_login_and_matching_screen(win, bbs_factory):
@@ -178,7 +179,7 @@ def test_typing_requires_login_and_matching_screen(win, bbs_factory):
     connect_and_login(win, bbs)
     win.type_into_ptt(Target.BODY)                      # logged in but at the main menu
     pump(300)
-    assert bytes(bbs.after_login) == b"" and "無法輸入" in win.msg_log.toPlainText()
+    assert bytes(bbs.after_login) == b"" and "無法輸入" in win.statusBar().currentMessage()
 
 
 def test_crash_leftover_started_marker_becomes_aborted(win):
@@ -294,7 +295,7 @@ def test_goto_board_only_from_main_menu_and_never_posts(win, bbs_factory):
     win.board_combo.setEditText("Gossiping")
     win._board_changed()
     win.goto_board()                                                # not connected: nothing sent
-    assert "主功能表" in win.msg_log.toPlainText()
+    assert "主功能表" in win.statusBar().currentMessage()
     connect_and_login(win, bbs)
     assert win.session.kind is Kind.MAIN_MENU
     win.goto_board()
@@ -370,7 +371,7 @@ def test_launch_pttlogin_starts_separate_process_and_reports_missing(win, tmp_pa
     calls = []
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
     win.pttlogin_path.setText(str(tmp_path / "nope.exe"))
-    assert not win.launch_pttlogin() and not calls and "找不到" in win.msg_log.toPlainText()
+    assert not win.launch_pttlogin() and not calls and "找不到" in win.statusBar().currentMessage()
     exe = tmp_path / "PttAutoLogin.exe"
     exe.write_bytes(b"MZ")
     win.pttlogin_path.setText(str(exe))
@@ -465,7 +466,7 @@ def test_type_with_missing_draft_shows_error_and_sends_nothing(win, bbs_factory)
     win.db.get_draft = lambda _id: None                          # draft vanished (deleted elsewhere)
     win.type_into_ptt(Target.BODY)
     pump(200)
-    assert bytes(bbs.after_login) == b"" and "找不到" in win.msg_log.toPlainText()
+    assert bytes(bbs.after_login) == b"" and "找不到" in win.statusBar().currentMessage()
 
 
 def test_switching_draft_during_typing_is_blocked_and_state_goes_to_original(win, bbs_factory):
@@ -480,7 +481,7 @@ def test_switching_draft_during_typing_is_blocked_and_state_goes_to_original(win
     original = win._typing_draft_id
     assert original and win.typer.running
     win.new_draft()                                              # refused while typing
-    assert win.draft_id == original and "輸入進行中" in win.msg_log.toPlainText()
+    assert win.draft_id == original and "輸入進行中" in win.statusBar().currentMessage()
     assert wait_until(lambda: not win.typer.running, 10000)
     assert win.db.get_draft(original)["input_state"] == "done"
     assert not win.chk_nonempty.isChecked()                      # allowance reset after the run
@@ -525,7 +526,7 @@ def test_terminal_keyboard_is_paused_while_typing_or_logging_in(win, bbs_factory
     win.term.keyPressEvent(ev)
     win._send_key(b"\x1b[A")
     pump(300)
-    assert bytes(bbs.after_login) == b"" and "暫停" in win.msg_log.toPlainText()
+    assert bytes(bbs.after_login) == b"" and "暫停" in win.statusBar().currentMessage()
     win.typer.running = False
     win._update_input_lock()
     assert not win.term.locked
@@ -602,7 +603,7 @@ def test_typing_is_blocked_when_started_state_cannot_be_saved(win, bbs_factory, 
     monkeypatch.setattr(win.db, "set_input_state", boom)
     win.type_into_ptt(Target.BODY)
     pump(300)
-    assert bytes(bbs.after_login) == b"" and not win.typer.running and "未送出任何內容" in win.msg_log.toPlainText()
+    assert bytes(bbs.after_login) == b"" and not win.typer.running and "未送出任何內容" in win.statusBar().currentMessage()
 
 
 def test_partial_body_needs_confirmation_before_typing(win, bbs_factory, monkeypatch):
@@ -617,7 +618,7 @@ def test_partial_body_needs_confirmation_before_typing(win, bbs_factory, monkeyp
     answer(monkeypatch, QMessageBox.StandardButton.No)
     win.type_into_ptt(Target.BODY)
     pump(300)
-    assert bytes(bbs.after_login) == b"" and "疑似不完整" in win.msg_log.toPlainText()
+    assert bytes(bbs.after_login) == b"" and "疑似不完整" in win.statusBar().currentMessage()
     answer(monkeypatch, QMessageBox.StandardButton.Yes)
     win.chk_nonempty.setChecked(True)
     win.type_into_ptt(Target.BODY)
@@ -641,7 +642,7 @@ def test_ime_commit_with_control_characters_is_ignored(win, bbs_factory):
     ev.setCommitString("ab\x1b[A")
     win.term.inputMethodEvent(ev)
     pump(200)
-    assert bytes(bbs.after_login) == b"" and "控制字元" in win.msg_log.toPlainText()
+    assert bytes(bbs.after_login) == b"" and "控制字元" in win.statusBar().currentMessage()
 
 def test_merged_page_layout_and_article_subtabs(win):
     assert win.tabs.count() == 3
@@ -729,3 +730,36 @@ def test_splitter_change_relayouts_terminal(win):
     win._set_article_panel_visible(True)
     assert wait_until(lambda: win.term.width() < collapsed, 2000)
     assert win.term.cw * win.term.s.screen.cols <= win.term.width() + 1
+
+
+def test_no_msg_log_and_notice_goes_to_status_bar(win):
+    assert not hasattr(win, "msg_log")
+    win._notice("狀態列訊息測試")
+    assert "狀態列訊息測試" in win.statusBar().currentMessage()
+
+
+def test_critical_error_uses_dialog_and_status_bar(win, monkeypatch):
+    from src.errors import StorageError
+    calls = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: calls.append(a[2]) or QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(win.db, "save_draft", lambda *a, **k: (_ for _ in ()).throw(StorageError("磁碟已滿")))
+    assert win.save_draft() is None
+    assert calls and "磁碟已滿" in calls[0]
+    assert "磁碟已滿" in win.statusBar().currentMessage()
+
+
+def test_fullscreen_action_and_escape_not_taken(win, monkeypatch):
+    assert win.act_fullscreen.shortcut().toString() == "F11"
+    assert win.act_toggle_article.shortcut().toString() == "Ctrl+Shift+A"
+    menu = win.menuBar().actions()[0].menu()
+    assert win.act_fullscreen in menu.actions() and win.act_toggle_article in menu.actions()
+    full, normal = [], []
+    monkeypatch.setattr(win, "isFullScreen", lambda: False)
+    monkeypatch.setattr(win, "showFullScreen", lambda: full.append(True))
+    win._set_fullscreen(True)
+    assert full
+    monkeypatch.setattr(win, "isFullScreen", lambda: True)
+    monkeypatch.setattr(win, "showNormal", lambda: normal.append(True))
+    win._set_fullscreen(False)
+    assert normal
+    assert key_to_bytes(Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier, "") == (b"\x1b", None)
