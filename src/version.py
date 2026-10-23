@@ -1,10 +1,23 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.6.6"
+__version__ = "0.6.7"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.6.7", "2026/10/23", [
+        "Terminal: mouse selection by cell (drag, double-click word, triple-click line, optional Alt rectangle), with "
+        "double-width characters never split; selected text is drawn with inverted colours. A single click, a screen "
+        "update or a key sent to the BBS clears the selection; dragging from a link selects instead of opening it.",
+        "Terminal copy: Ctrl+Shift+C or the right-click menu copies the selection (trailing spaces removed per line, "
+        "lines joined with newlines), with 'select whole screen' and 'copy whole screen' in the same menu. Copy never "
+        "sends bytes, and Ctrl+C without Shift still sends 0x03.",
+        "Terminal paste: Ctrl+Shift+V or the right-click menu; blocked with a status-bar reason when offline or while "
+        "automatic typing / assisted login holds the terminal. Only strict cp950 text is accepted (no partial paste); "
+        "controls are removed, tabs become four spaces and line breaks become CR. More than one line or 200 characters "
+        "shows a preview; more than 5000 characters is refused. Text is sent in 100-byte chunks on the article typer's "
+        "rhythm, and a disconnect or a lock stops it without retry, reporting how much was sent. Ctrl+V still sends 0x16.",
+    ]),
     ("0.6.6", "2026/10/23", [
         "Links/security: image auto-open now requires https and a known image host (exact host or subdomain); "
         "extension-only URLs are never auto-opened. .svg is excluded, and IP, localhost and private/loopback hosts are "
