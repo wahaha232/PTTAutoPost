@@ -4,8 +4,8 @@
 - 分支：`dev/roadmap`（自 `main` @ `6d390c4` 建立）
 - 基準版本：0.6.2
 - 基準測試：`python -m pytest -q`（`QT_QPA_PLATFORM=offscreen`）→ 168 passed
-- 目前測試：同一指令 → 278 passed（J 組 0.7.0 完成）
-- 目前版本：0.7.0（2026/10/23）
+- 目前測試：同一指令 → 289 passed（階段 1 審查回饋 0.7.1 完成）
+- 目前版本：0.7.1（2026/10/23）
 - 開始時間 T0：2026-10-23 09:13（UTC+8）／2026-10-23 01:13 UTC
 - 額度基準 B：**暫不追蹤**
 
@@ -166,6 +166,17 @@
 - `src/version.py` bump 到 **0.6.7**（2026/10/23），CHANGELOG、README 快捷鍵與限制已更新。
 - 全套 **264 passed**。
 
+### 0.7.1 追加（審查回饋）
+
+- `TerminalWidget` 新增 `pasteStateChanged(bool)`；貼上開始／結束（含失敗、斷線、鎖定中止）都會通知主視窗。
+- 貼上期間主視窗暫停「輸入標題／內文」、登入與「前往看板」：
+  - `_update_type_buttons()` 判斷 `term.pasting`。
+  - `_do_login()` 直接呼叫也拒絕並清空密碼欄；狀態列說明。
+  - `goto_board()` 直接呼叫也拒絕並在狀態列說明。
+  - `type_into_ptt()` 直接呼叫也拒絕；`preflight(..., pasting=True)` 回傳暫停原因。
+  - 登入按鈕依連線狀態與 pasting 恢復；看板按鈕依看板有效性與 pasting 恢復。
+- 新增 `tests/test_paste_locks.py`（4 項，含真實貼上開始／結束的按鈕切換）、終端機 `pasteStateChanged` 測試與 `preflight` pasting 測試。
+
 ### 未完成項目
 
 - 無（Alt 矩形、雙擊、三擊皆已完成）。實際桌面手感與貼上到 PTT 編輯器的行為待使用者驗證。
@@ -201,9 +212,21 @@
 - `src/version.py` bump 到 **0.7.0**（2026/10/23），CHANGELOG、README（打包、授權、贊助、已驗證項目）更新。
 - 全套 **278 passed**。
 
+### 0.7.1 追加（審查回饋）
+
+- `tools/make_portable.py` 新增 `--onefile`（診斷用單檔版，預設仍為 onedir）；spec 依 `PTTAUTOPOST_ONEFILE` 切換 EXE／COLLECT。0.7.1 單檔版實際建置 **33.1 MB**，`--selftest` OK。
+- 新增 `tools/spec_filters.py`：集中 PyInstaller 過濾規則；剔除未使用 Qt 元件，但**保留 `plugins/platforms/qwindows.dll` 與 `plugins/tls/*`**；`libcrypto-3.dll`／`libssl-3.dll` 只保留一份（優先根層）。
+- `--verify` 新增檢查 `_internal\PySide6\plugins\platforms\qwindows.dll` 與 `plugins\tls\*.dll`；`layout_report()` 可單獨測試。
+- 找不到 7-Zip 時，`--archive` 改用 `shutil.make_archive` 產生 ZIP（非 LZMA2，僅備援）；本機有 7-Zip，實際仍產 LZMA2 7z。
+- `LICENSE` 的反向工程限制明確排除 LGPL 第三方元件（可為除錯、修改或替換 Qt 而反向工程），並新增「不構成法律建議」。
+- `tools/PTTAutoPost.iss` 新增 `[InstallDelete]`，升級時先刪除舊 `_internal`，再安裝新檔。
+- 0.7.1 實際重建：資料夾版 **76.6 MB**、LZMA2 7z **22.2 MB**；`--verify` OK（qwindows／tls 均存在、未使用 Qt 檔 0）；單檔版 33.1 MB。
+- 全套 **289 passed**。
+
 ### 未完成項目
 
 - 安裝程式實測（需先安裝 Inno Setup 6）。
+- 無 7-Zip 環境的 ZIP 備援尚未實機驗證（單元測試已涵蓋產生 ZIP）；本機為 7-Zip 路徑。
 - 贊助連結與顯示文字（目前 `SPONSOR_URL` 留空，區塊隱藏）。
 - 專有授權與第三方授權文件的法律覆核（本專案只做工程整理，不構成法律建議）。
 
@@ -220,7 +243,8 @@
 - C 組：`Ctrl+Shift+C`／`Ctrl+Shift+V` 與 Windows／輸入法快捷鍵是否衝突；終端機有焦點時複製不送 `0x03`、貼上不送 `0x16`。
 - C 組：貼上到 PTT 編輯器的實際結果（換行轉 CR 是否正確斷行）、預覽／取消、Big5 無法編碼的對話框、5000 字上限。
 - C 組：長文字分批貼上的節奏與畫面回顯；中途斷線或自動輸入／登入輔助接手時是否停止並回報已送出數量；貼上期間鍵盤暫停是否符合期待。
-- J 組：實際桌面從 `dist\PTTAutoPost-0.7.0-portable\` 啟動、SmartScreen 提示、防毒掃描、`config`／`logs`／`data` 寫入位置；以 7z 解壓後的完整性。
+- J 組：實際桌面從 `dist\PTTAutoPost-0.7.1-portable\` 啟動、SmartScreen 提示、防毒掃描、`config`／`logs`／`data` 寫入位置；以 7z 解壓後的完整性。
+- J 組：在沒有 7-Zip 的機器執行 `--archive`，確認 ZIP 備援檔可解壓與下載說明；`--onefile` 僅為診斷版，確認不需要納入正式散布。
 - J 組：Qt DLL 替換流程（LGPL）與 `_internal` 結構；未使用 Qt 元件剔除後，實際操作（檔案對話框、系統匣、IME、字型、WebSocket 連線）是否仍正常。
 - J 組：Inno Setup 6 安裝／升級／移除後 config／logs／data 是否保留（本機無 ISCC，尚未產出 setup.exe）。
 - J 組：贊助連結與顯示文字（提供後設定 `SPONSOR_URL`／`SPONSOR_TEXT` 並確認只開系統瀏覽器）；專有授權與第三方授權文件請做法律覆核。
@@ -232,7 +256,7 @@
 |---|---|
 | 當天開始 B | 暫不追蹤 |
 | 目前累計用量 | 暫不追蹤 |
-| 最後 commit | `ad271a2`（0.7.0 J 組完成） |
+| 最後 commit | `8766a49`（0.7.1 審查回饋完成） |
 | 下一次要填的組別 | 階段 1 已完成；階段 2（多分頁）待指示 |
 
 > 本檔只記錄開發進度，不另產出報告檔。
