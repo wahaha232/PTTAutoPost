@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.6.7"
+__version__ = "0.7.0"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,18 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.7.0", "2026/10/23", [
+        "Release: the portable package is now an onedir folder instead of a onefile EXE; Qt/PySide6 DLLs stay as "
+        "separate replaceable files. Unused Qt components (Quick/QML/Pdf/OpenGL/Svg, translations and image-format "
+        "plugins) are removed from the collected files; the unpacked package is about 77 MB and the LZMA2 7z about 22 MB.",
+        "Release: added an Inno Setup 6 script (LZMA2, per-user install, user config/logs/data preserved), plus "
+        "make_portable --archive and --installer steps; the package now ships LICENSE, THIRD_PARTY_NOTICES.md, "
+        "licenses/ and a user-facing README.txt.",
+        "Licensing: proprietary LICENSE and third-party notices covering Qt/PySide6 (LGPL-3.0), requests, beautifulsoup4, "
+        "lxml, charset-normalizer, Python and PyInstaller; the folder layout keeps Qt replaceable.",
+        "Settings: optional sponsorship block, hidden unless SPONSOR_URL in src/version.py is a valid http/https URL; "
+        "the default browser is opened only when the user clicks the button.",
+    ]),
     ("0.6.7", "2026/10/23", [
         "Terminal: mouse selection by cell (drag, double-click word, triple-click line, optional Alt rectangle), with "
         "double-width characters never split; selected text is drawn with inverted colours. A single click, a screen "

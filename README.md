@@ -7,17 +7,17 @@ Windows 桌面程式（Python + PySide6）：從新聞網址擷取文章、整�
 ```
 pip install -r requirements.txt   # 第一次：安裝相依套件（Python 3.12）
 python main.py                  # 開啟程式
-dist\PTTAutoPost-<版本>-portable\PTTAutoPost.exe   # 免安裝版（config\ logs\ data\ 與 exe 同層）；版本紀錄見 src/version.py 的 CHANGELOG
+dist\PTTAutoPost-<版本>-portable\PTTAutoPost.exe   # 可攜資料夾版（Qt 在 _internal\；config\ logs\ data\ 與 exe 同層）；版本紀錄見 src/version.py 的 CHANGELOG
 PTTAutoPost.exe --selftest      # 無視窗自我檢測
 PTTAutoPost.exe --probe         # 唯讀檢查 wss://ws.ptt.cc/bbs（連線、看到登入提示後斷線，不送出任何資料）
 ```
-重新打包：`make_portable.bat`（`tools\make_portable.py`：build → 組裝 → 驗證）。測試：`python -m pytest`。
+重新打包：`make_portable.bat`（`tools\make_portable.py`：onedir build → 組裝 → 驗證）；下載壓縮：`python -X utf8 tools\make_portable.py --archive`（LZMA2 7z）；安裝程式：`python -X utf8 tools\make_portable.py --installer`（需先安裝 Inno Setup 6，腳本為 `tools\PTTAutoPost.iss`）。測試：`python -m pytest`。
 
 ## 功能
 
 - **終端機與文章同頁**：左側終端機、右側文章面板（`QSplitter` 可拖曳）；文章面板有「擷取與欄位」「預覽與輸入」子分頁，可用按鈕或 `F12` 收合，寬度與收合狀態會記住；螢幕高度 ≤ 800 px 時預設收合。開啟草稿會自動展開面板並切到預覽。
 - **終端機**：以 `wss://ws.ptt.cc/bbs` 直連 PTT（Big5＋ANSI，80×24）；可在上方欄位輸入帳號密碼登入（密碼只送出一次，不儲存、不寫入日誌），也可直接在終端機內自行輸入。重複登入詢問一律回答「n」，不會踢掉其他連線。連線中斷只會提示，不會自動重連或重送。
-- **設定**：「設定」分頁可選擇終端機字型、字型大小、「填滿可視畫面」（80×24 畫面依視窗大小縮放），主題（淺色／深色／跟隨系統，預設跟隨系統）、終端機配色（永遠深色／跟隨主題，預設永遠深色），以及瀏覽器／圖片自動開啟設定；變更立即套用並存在本機（`data\pttpost.db`），可一鍵還原字型預設。
+- **設定**：「設定」分頁可選擇終端機字型、字型大小、「填滿可視畫面」（80×24 畫面依視窗大小縮放），主題（淺色／深色／跟隨系統，預設跟隨系統）、終端機配色（永遠深色／跟隨主題，預設永遠深色），以及瀏覽器／圖片自動開啟設定；變更立即套用並存在本機（`data\pttpost.db`），可一鍵還原字型預設。若 `src/version.py` 設定了有效的 `SPONSOR_URL`，設定頁會顯示「贊助作者」區塊（預設未設定時整個區塊隱藏）；只有按下按鈕才會用預設瀏覽器開啟連結，程式不追蹤也不上傳資料。
 - **超連結**：終端機畫面上的單列 http/https 網址會自動辨識（含中文雙格寬座標；被換行切斷的網址不猜、不接續）。滑鼠移上去會加底線、游標變手形；按下後原地放開才開啟，拖曳不會開啟，且點擊不會送出任何 BBS bytes。含帳密或其他 scheme 的網址一律拒絕。
 - **瀏覽器與圖片**：設定頁可選系統瀏覽器、偵測到的 Chrome／Edge／Firefox，或自訂執行檔；外部瀏覽器以單一參數接收網址，不經 shell。圖片連結可設定自動開啟（預設關閉，旁有 IP 隱私提醒）；**只自動開啟 imgur 等已知圖床的 https 連結**，任意網站只靠副檔名、`.svg`、IP／localhost／內網主機都不會自動開；同一連線同一網址只開一次、每次畫面最多 1 個、每分鐘最多 3 個，超過上限會提示一次；自動輸入／登入輔助進行中不自動開，手動點擊仍可用。
 - **文章**：貼網址 → 背景擷取標題／媒體／網址／記者／時間／內文；每個欄位顯示「已取得／未取得／推定／已修改」；缺的欄位不補造；遇到登入牆、付費牆、403 只回報原因，不繞過；內文有「可能完整／疑似不完整／不足」判定（**抓到標題不代表抓到全文**）。可修改所有欄位，原文與心得分開；預覽可直接編輯；檢查標題／內文／Big5 編碼／控制字元／行寬；複製全文／內文／標題。
@@ -26,12 +26,23 @@ PTTAutoPost.exe --probe         # 唯讀檢查 wss://ws.ptt.cc/bbs（連線、�
 - **草稿與簽名檔**：SQLite 存於 `data\pttpost.db`；草稿新增／開啟／搜尋／修改／刪除；最多 10 則簽名檔（下拉選擇）（編輯、儲存、每篇勾選套用）。
 - **輸入到 PTT**：只輸入文字。需先連線、已登入、勾選「我已確認」，畫面必須是「標題」提示或空白編輯區；**不按 Enter／Ctrl-X／存檔／送出**；畫面不符、斷線、逾時、取消都會停止，且同一草稿不會被重複輸入整篇。
 
+## 授權與發佈
+
+- 本程式為**專有授權**（不開源），條文見 `LICENSE`；Qt／PySide6 等第三方元件依各自授權提供，詳見 `THIRD_PARTY_NOTICES.md` 與 `licenses\`。Qt／PySide6 為 LGPL-3.0，發行版採資料夾版（`_internal\` 內的 DLL 可替換）。
+- 可攜資料夾版：`dist\PTTAutoPost-<版本>-portable\`（約 77 MB，解壓即用，不寫登錄檔）。
+- LZMA2 下載壓縮：`dist\PTTAutoPost-<版本>-portable.7z`（約 22 MB），以 `python -X utf8 tools\make_portable.py --archive` 產生。
+- LZMA2 安裝程式：`tools\PTTAutoPost.iss`（Inno Setup 6；每人使用者安裝、保留 config／logs／data）；本機未安裝 Inno Setup，尚未實際產出安裝檔。
+- 未使用數位簽章，Windows SmartScreen 可能警告；使用者版說明見打包後的 `README.txt`。贊助連結由 `src/version.py` 的 `SPONSOR_URL` 設定，未設定時不顯示。
+- 授權文件與打包內容為工程整理，**不構成法律建議**；正式公開發佈前請依實際散布方式諮詢專業人士。
+
 ## 已驗證 / 未驗證（2026-10-15）
 
 - ✔ 真實 `wss://ws.ptt.cc/bbs`：握手需帶 `Origin: https://term.ptt.cc`（否則 403）；第一筆訊息以 `HTTP/1.1 200 OK\r\n\r\n` 開頭需剝除；內含 Telnet IAC 序列需過濾；登入畫面末行為「請輸入代號，或以 guest 參觀，或以 new 註冊:」，程式端已辨識（原始碼與打包後的 EXE 皆實測，未登入、未送出任何資料）。SSH 備案（`ssh bbs@ptt.cc`）亦可到達同一登入畫面，**未實作**。
 - ✔ 對本機假 BBS 的登入流程、輸入內容逐位元組比對、斷線／取消／畫面不符／重複輸入防護（`tests\`）。
+- ✔ 0.7.0 資料夾版已在本機建置並通過 `--selftest`（version／frozen／offscreen 畫面繪製）；Qt6Core 等 DLL 位於 `_internal\` 且可替換，未使用的 Qt Quick／QML／Pdf／OpenGL／Svg、翻譯與圖片格式外掛已剔除；產物不含 corpus 檔。LZMA2 7z 已實際產生（約 22 MB）。
 - ✘ **尚未用真實帳號登入過**（沒有您的帳密，也不會代您登入）：登入後的提示處理、「標題：」與「編輯文章」畫面的辨識字串、PTT 標題長度上限、編輯器實際吃字行為都**未實測**；辨識不到一律停止並提示。
 - ✘ 合併頁、面板收合（`F12`）、`F11`、主題、終端機配色、超連結、終端機選取／複製／貼上已在 offscreen 測試；實際桌面（含 1366×768、多螢幕與 DPI 切換）仍待您驗證。超連結目前只認單列，實務上被換行的網址不會自動拼接；自動開圖的實際 IP／隱私效果也需您確認；拖曳選取的手感與貼上到 PTT 編輯器的實際結果（含換行轉 CR）也需您實測。
+- ✘ 資料夾版在實際桌面的啟動、SmartScreen 提示、Qt DLL 替換與 Inno Setup 安裝程式（本機未安裝 ISCC，只完成腳本）仍待您驗證；贊助連結尚未提供，區塊目前隱藏。
 - 限制：PTT 專用（UAO）字元以「？」顯示；貼上只接受 Big5（cp950）可編碼文字，控制字元會被移除；擷取以通用規則為主，部分網站可能殘留版面雜訊（已列警告，請對照原網頁）。
 
 （`docs\` 內是先前的需求／架構規劃文件，僅供參考。）
