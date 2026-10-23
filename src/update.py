@@ -24,6 +24,7 @@ from .version import __version__
 log = get_logger("update")
 GITHUB_REPO = "wahaha232/PTTAutoPost"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
 USER_AGENT = f"PTTAutoPost/{__version__}"
 MAX_RELEASE_BYTES = 2 * 1024 * 1024
 MAX_ASSET_BYTES = 300 * 1024 * 1024

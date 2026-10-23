@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -11,7 +12,7 @@ from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, Qt, QThreadPo
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
                                QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QMenu, QPlainTextEdit, QPushButton,
-                               QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
+                               QProgressBar, QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import boards, compose, sites, update
 from ..errors import ToolError
@@ -24,7 +25,7 @@ from ..net.session import Login, PttSession
 from ..parsers.extract import ParseResult, parse
 from ..parsers.fetch import fetch
 from ..storage.db import MAX_SIGNATURES, Database
-from ..version import APP_NAME, SPONSOR_TEXT, SPONSOR_URL, __version__
+from ..version import APP_NAME, BUILD_DATE, SPONSOR_TEXT, SPONSOR_URL, __version__
 from . import browser, theme
 from .icon import app_icon, tray_icon
 from .terminal_widget import TerminalWidget
@@ -155,6 +156,9 @@ class MainWindow(QMainWindow):
         self._update_download_task = None
         self._update_asset: update.Asset | None = None
         self._update_token: str | None = None
+        self._update_auto = False
+        self._update_force = False
+        self._update_phase = ""
         self._pending_site_url: str | None = None
         self._site_check_task = None
         self._typing_target: Target | None = None
@@ -214,6 +218,8 @@ class MainWindow(QMainWindow):
         self.new_draft()
         self.db.recover_interrupted_inputs()               # before the first list load, so aborted runs show correctly
         self.reload_drafts()
+        if self.chk_auto_update.isChecked() and getattr(sys, "frozen", False):
+            QTimer.singleShot(5000, lambda: self.check_updates(auto=True))
         self._on_conn_state(self.session.client.state)
 
     # ================================================================== terminal tab
@@ -244,8 +250,21 @@ class MainWindow(QMainWindow):
         view.addAction(self.act_fullscreen)
         help_menu = self.menuBar().addMenu("說明")
         self.act_check_update = QAction("檢查更新…", self)
-        self.act_check_update.triggered.connect(self.check_updates)
+        self.act_check_update.triggered.connect(lambda: self.check_updates())
         help_menu.addAction(self.act_check_update)
+        self.act_force_update = QAction("強制更新…", self)
+        self.act_force_update.triggered.connect(lambda: self.check_updates(force=True))
+        help_menu.addAction(self.act_force_update)
+        self.act_manual_download = QAction("手動下載…", self)
+        self.act_manual_download.triggered.connect(self.open_manual_download)
+        help_menu.addAction(self.act_manual_download)
+        help_menu.addSeparator()
+        self.act_about = QAction(f"關於 {APP_NAME}", self)
+        self.act_about.triggered.connect(self.show_about)
+        help_menu.addAction(self.act_about)
+        self.act_sponsor = QAction(f"贊助 {APP_NAME}", self)
+        self.act_sponsor.triggered.connect(self._open_sponsor)
+        help_menu.addAction(self.act_sponsor)
 
     def _set_fullscreen(self, on: bool) -> None:
         if on and not self.isFullScreen():
@@ -528,6 +547,7 @@ class MainWindow(QMainWindow):
         url = SPONSOR_URL.strip()
         if not url:
             self._notice("未設定贊助連結。")
+            QMessageBox.information(self, "贊助作者", "目前沒有設定贊助連結。感謝您的支持！")
             return False
         ok, msg = browser.open_url(url, "system")
         self._notice(msg)
@@ -687,15 +707,28 @@ class MainWindow(QMainWindow):
         self.lbl_update_status.setWordWrap(True)
         urow = QHBoxLayout()
         self.btn_update_check = QPushButton("檢查更新")
+        self.btn_update_force = QPushButton("強制更新")
+        self.btn_update_manual = QPushButton("手動下載")
         self.btn_update_folder = QPushButton("開啟更新資料夾")
-        urow.addWidget(self.btn_update_check)
-        urow.addWidget(self.btn_update_folder)
+        for b in (self.btn_update_check, self.btn_update_force, self.btn_update_manual, self.btn_update_folder):
+            urow.addWidget(b)
         urow.addStretch(1)
+        self.chk_auto_update = QCheckBox("啟動時自動檢查更新（只在背景查詢 GitHub，不下載、不執行）")
+        self.chk_auto_update.setChecked(self.db.get_setting("update.auto_check", "1") == "1")
+        self.update_progress = QProgressBar()
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(0)
+        self.update_progress.setVisible(False)
         ul.addWidget(self.lbl_update_status)
         ul.addLayout(urow)
+        ul.addWidget(self.chk_auto_update)
+        ul.addWidget(self.update_progress)
         lay.addWidget(ug)
-        self.btn_update_check.clicked.connect(self.check_updates)
+        self.btn_update_check.clicked.connect(lambda: self.check_updates())
+        self.btn_update_force.clicked.connect(lambda: self.check_updates(force=True))
+        self.btn_update_manual.clicked.connect(self.open_manual_download)
         self.btn_update_folder.clicked.connect(self.open_update_folder)
+        self.chk_auto_update.toggled.connect(lambda on: self.db.set_setting("update.auto_check", "1" if on else "0"))
         sg = QGroupBox("贊助作者")
         sl = QVBoxLayout(sg)
         sponsor_note = QLabel("贊助出於自願，不影響任何功能；程式不會追蹤或上傳資料，只會在您按下按鈕時用預設瀏覽器開啟贊助頁。")
@@ -789,18 +822,22 @@ class MainWindow(QMainWindow):
 
     def _set_update_busy(self, on: bool) -> None:
         self._update_busy = bool(on)
-        for widget in (getattr(self, "btn_update_check", None), getattr(self, "act_check_update", None)):
+        for widget in (getattr(self, "btn_update_check", None), getattr(self, "act_check_update", None),
+                       getattr(self, "btn_update_force", None), getattr(self, "act_force_update", None)):
             if widget is not None:
                 widget.setEnabled(not on)
 
-    def check_updates(self) -> None:
+    def check_updates(self, auto: bool = False, force: bool = False) -> None:
         if self._update_busy:
-            self._notice("已有更新檢查或下載進行中。")
+            if not auto:
+                self._notice("已有更新檢查或下載進行中。")
             return
+        self._update_auto, self._update_force, self._update_phase = auto, force, "check"
         self._set_update_busy(True)
         if hasattr(self, "lbl_update_status"):
             self.lbl_update_status.setText("正在向 GitHub 檢查更新…")
-        self._notice("正在向 GitHub 檢查更新…")
+        if not auto:
+            self._notice("正在向 GitHub 檢查更新…")
         self._update_token = update.github_token()
         task = UpdateCheckTask(self._update_token)
         task.signals.done.connect(self._on_update_release)
@@ -810,11 +847,17 @@ class MainWindow(QMainWindow):
 
     def _on_update_release(self, release: update.Release) -> None:
         self._set_update_busy(False)
-        if not update.is_newer(release.version, __version__):
+        auto, force = self._update_auto, self._update_force
+        self._update_auto = self._update_force = False
+        self._update_phase = ""
+        newer = update.is_newer(release.version, __version__)
+        forced_same = (force and update.parse_version(release.version) == update.parse_version(__version__))
+        if not newer and not forced_same:
             if hasattr(self, "lbl_update_status"):
                 self.lbl_update_status.setText(f"已是最新版本（{__version__}）。")
             self._notice(f"已是最新版本（{__version__}）。")
-            QMessageBox.information(self, "檢查更新", f"目前版本 {__version__}，已是最新版本。")
+            if not auto:
+                QMessageBox.information(self, "檢查更新", f"目前版本 {__version__}，已是最新版本。")
             return
         installed = update.is_installed()
         asset = update.choose_asset(release.assets, installed)
@@ -826,7 +869,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, "lbl_update_status"):
                 self.lbl_update_status.setText(f"發現 {release.version}，但找不到適合的更新檔。")
             self._notice("找到新版本，但 Release 缺少適合此版本的更新檔。")
-            QMessageBox.information(self, "缺少更新檔", msg)
+            if not auto:
+                QMessageBox.information(self, "缺少更新檔", msg)
             return
         notes = release.notes.strip()
         if len(notes) > 1200:
@@ -849,7 +893,12 @@ class MainWindow(QMainWindow):
 
     def _start_update_download(self, asset: update.Asset) -> None:
         self._update_asset = asset
+        self._update_phase = "download"
         self._set_update_busy(True)
+        if hasattr(self, "update_progress"):
+            self.update_progress.setRange(0, 0)
+            self.update_progress.setValue(0)
+            self.update_progress.setVisible(True)
         if hasattr(self, "lbl_update_status"):
             self.lbl_update_status.setText(f"下載更新檔中… {asset.name}")
         self._notice(f"下載更新檔中… {asset.name}")
@@ -861,6 +910,12 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(task)
 
     def _on_update_progress(self, done: int, total: int) -> None:
+        if hasattr(self, "update_progress"):
+            if total:
+                self.update_progress.setRange(0, total)
+                self.update_progress.setValue(min(done, total))
+            else:
+                self.update_progress.setRange(0, 0)
         if not hasattr(self, "lbl_update_status"):
             return
         mb = done / 1024 / 1024
@@ -869,6 +924,9 @@ class MainWindow(QMainWindow):
 
     def _on_update_downloaded(self, result: update.DownloadResult) -> None:
         self._set_update_busy(False)
+        self._update_phase = ""
+        if hasattr(self, "update_progress"):
+            self.update_progress.setVisible(False)
         verified = "SHA-256 驗證通過" if result.verified else "GitHub 未提供 digest，僅完成下載"
         asset = self._update_asset
         if asset is not None and asset.name.lower().endswith("-setup.exe"):
@@ -884,11 +942,17 @@ class MainWindow(QMainWindow):
                                 "程式不會自動執行下載檔。")
 
     def _on_update_error(self, msg: str) -> None:
+        phase, auto = self._update_phase, self._update_auto
+        self._update_phase = ""
+        self._update_auto = self._update_force = False
         self._set_update_busy(False)
+        if hasattr(self, "update_progress"):
+            self.update_progress.setVisible(False)
         if hasattr(self, "lbl_update_status"):
             self.lbl_update_status.setText("更新檢查或下載失敗。")
         self._notice(msg)
-        QMessageBox.warning(self, "更新失敗", msg)
+        if phase != "check" or not auto:
+            QMessageBox.warning(self, "更新失敗", msg)
 
     def open_update_folder(self) -> None:
         try:
@@ -898,6 +962,19 @@ class MainWindow(QMainWindow):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
         self._notice(f"已開啟更新資料夾：{folder}")
+
+    def open_manual_download(self) -> None:
+        QDesktopServices.openUrl(QUrl(update.RELEASES_PAGE))
+        self._notice(f"已在瀏覽器開啟 GitHub Releases：{update.RELEASES_PAGE}")
+
+    def show_about(self) -> None:
+        QMessageBox.about(
+            self, f"關於 {APP_NAME}",
+            f"<b>{APP_NAME}</b> {__version__}<br>建置日期：{BUILD_DATE}<br><br>"
+            "PTT 發文輔助工具：終端機、文章擷取、預覽、檢查、草稿與站台書籤。<br>"
+            "程式只輸入文字，不會代按 Enter、Ctrl-X、存檔或送出。<br><br>"
+            "專有授權；第三方元件（Qt／PySide6 為 LGPL-3.0 等）見 THIRD_PARTY_NOTICES.md。<br>"
+            f"GitHub：<a href='https://github.com/{update.GITHUB_REPO}'>github.com/{update.GITHUB_REPO}</a>")
 
     def _paste_active(self) -> bool:
         return bool(getattr(getattr(self, "term", None), "pasting", False))

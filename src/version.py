@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,13 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.1", "2026/10/23", [
+        "Updates: optional automatic check on startup (packaged builds; silent when there is no update or the check "
+        "fails), a progress bar for downloads, a '強制更新' path that re-downloads the current/latest release, and a "
+        "'手動下載' action that opens the GitHub Releases page.",
+        "Help: added an About dialog (version, build date, license summary, GitHub link) and a Sponsor action in the "
+        "menu; the sponsor block still hides itself until SPONSOR_URL is configured.",
+    ]),
     ("0.8.0", "2026/10/23", [
         "Updates: Settings and the Help menu can check GitHub Releases, compare versions and download the right "
         "asset (portable ZIP for a folder copy, setup.exe for an installed copy). Downloads use HTTPS, verify "
