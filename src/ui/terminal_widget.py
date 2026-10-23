@@ -13,9 +13,12 @@ import time
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QGuiApplication, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QApplication, QMenu, QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSizePolicy, QWidget
 
 from ..links import Link, find_links
+from ..net.client import State
+from ..net.paster import MAX_PASTE_CHARS, PREVIEW_CHARS, PasteSender, paste_preview, paste_stats, sanitize_paste
+from ..net.poster import encode_big5
 from ..net.session import PttSession
 from ..terminal import selection as termsel
 from ..terminal.screen import BOLD, REVERSE, UNDERLINE, WIDE2
@@ -136,6 +139,9 @@ class TerminalWidget(QWidget):
         self._click_count = 0
         self._last_click_time = 0.0
         self._last_click_pos = QPointF()
+        self.pasting = False
+        self._paster = PasteSender(self.s, self._paste_blocked_reason, self)
+        self._paster.finished.connect(self._paste_finished)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)           # never grabs focus on its own
         self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
@@ -291,6 +297,66 @@ class TerminalWidget(QWidget):
         self.notice.emit(f"已複製整個畫面（{len(text)} 字）。")
         return True
 
+    def _paste_blocked_reason(self) -> str | None:
+        if self.locked:
+            return "自動輸入／登入輔助進行中，無法貼上。"
+        return None
+
+    def _paste_finished(self, _ok: bool, msg: str) -> None:
+        self.pasting = False
+        self.notice.emit(msg)
+
+    def paste_from_clipboard(self) -> bool:
+        if self.pasting or self._paster.running:
+            self.notice.emit("貼上進行中，請稍候。")
+            return False
+        if self.locked:
+            self.notice.emit("自動輸入／登入輔助進行中，無法貼上。")
+            return False
+        if self.s.client.state is not State.CONNECTED:
+            self.notice.emit("尚未連線，無法貼上。")
+            return False
+        raw = QGuiApplication.clipboard().text()
+        if not raw:
+            self.notice.emit("剪貼簿沒有文字。")
+            return False
+        text, removed = sanitize_paste(raw)
+        if not text:
+            self.notice.emit("剪貼簿沒有可貼上的文字（控制字元已忽略）。")
+            return False
+        data, bad = encode_big5(text)
+        if data is None:
+            shown = "、".join(f"「{c}」" for _i, c in bad[:5])
+            msg = f"貼上內容含有 {len(bad)} 個無法以 Big5 編碼的字元（{shown}），已取消貼上；不會只貼一部分。"
+            QMessageBox.warning(self, "無法貼上", msg)
+            self.notice.emit("貼上已取消：內容含有無法以 Big5 編碼的字元。")
+            return False
+        chars, lines = paste_stats(text)
+        if chars > MAX_PASTE_CHARS:
+            msg = f"貼上內容共 {chars} 字，超過上限 {MAX_PASTE_CHARS} 字，已拒絕貼上。請分成較小的段落。"
+            QMessageBox.warning(self, "貼上內容過長", msg)
+            self.notice.emit(msg)
+            return False
+        if lines > 1 or chars > PREVIEW_CHARS:
+            answer = QMessageBox.question(
+                self, "確認貼上",
+                f"將貼上 {chars} 字、{lines} 行（換行會送成 Enter）。\n\n{paste_preview(text)}\n\n確定要貼上嗎？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if answer != QMessageBox.StandardButton.Yes:
+                self.notice.emit("已取消貼上。")
+                return False
+        self.pasting = True
+        why = self._paster.start(text)
+        if why:
+            self.pasting = False
+            self.notice.emit("無法貼上：" + why)
+            return False
+        self.clear_selection()
+        extra = f"，已忽略 {removed} 個控制字元" if removed else ""
+        self.notice.emit(f"貼上中…（{chars} 字、{lines} 行{extra}）")
+        return True
+
     def _build_context_menu(self) -> QMenu:
         menu = QMenu(self)
         act_copy = menu.addAction("複製")
@@ -298,6 +364,8 @@ class TerminalWidget(QWidget):
         act_copy.triggered.connect(self.copy_selection)
         menu.addAction("全選畫面").triggered.connect(self.select_all)
         menu.addAction("複製整個畫面").triggered.connect(self.copy_screen)
+        menu.addSeparator()
+        menu.addAction("貼上").triggered.connect(self.paste_from_clipboard)
         return menu
 
     def contextMenuEvent(self, e):
@@ -475,6 +543,15 @@ class TerminalWidget(QWidget):
             self.copy_selection()
             e.accept()
             return
+        if e.key() == Qt.Key.Key_V and (mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)) == (
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            self.paste_from_clipboard()
+            e.accept()
+            return
+        if self.pasting:
+            self.notice.emit("貼上進行中，鍵盤與捲動已暫停。")
+            e.accept()
+            return
         if self._blocked():
             e.accept()
             return
@@ -492,7 +569,7 @@ class TerminalWidget(QWidget):
 
     def wheelEvent(self, e):
         """Touchpad / mouse wheel scrolls like the arrow keys (laptops have no PgUp/PgDn)."""
-        if self.locked:
+        if self.locked or self.pasting:
             e.accept()
             return
         self._wheel = getattr(self, "_wheel", 0) + e.angleDelta().y()

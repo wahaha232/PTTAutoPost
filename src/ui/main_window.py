@@ -1514,11 +1514,13 @@ class MainWindow(QMainWindow):
         self.keybar.setVisible(on)
 
     def _send_key(self, data: bytes) -> None:
-        if self.term.locked:
-            self._notice("自動輸入／登入進行中，按鍵已暫停。")
+        if self.term.locked or self.term.pasting:
+            self._notice("自動輸入／登入／貼上進行中，按鍵已暫停。")
             return
         if not self.session.send_user_bytes(data):
             self._notice("尚未連線，按鍵未送出。")
+        else:
+            self.term.clear_selection()
 
     # ================================================================== external PTT login helper
     @staticmethod
