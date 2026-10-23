@@ -169,6 +169,7 @@ def test_archive_falls_back_to_zip_without_7zip(monkeypatch, tmp_path):
     monkeypatch.setattr(mp, "PORTABLE", portable)
     monkeypatch.setattr(mp, "DIST", tmp_path)
     monkeypatch.setattr(mp, "ARCHIVE", tmp_path / "out.7z")
+    monkeypatch.setattr(mp, "ZIP_ARCHIVE", tmp_path / "PTTAutoPost-0.0.0-portable.zip")
     monkeypatch.setattr(mp, "find_7z", lambda: "")
     assert mp.archive() == 0
     zips = list(tmp_path.glob("*.zip"))
@@ -180,6 +181,17 @@ def test_archive_falls_back_to_zip_without_7zip(monkeypatch, tmp_path):
 def test_installer_is_refused_cleanly_without_inno_setup(monkeypatch):
     monkeypatch.setattr(mp, "find_iscc", lambda: "")
     assert mp.installer() == 2
+
+
+def test_source_listing_collects_code_and_skips_build_outputs(tmp_path):
+    from tools import make_source_listing as listing
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('x')\n", encoding="utf-8")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "generated.py").write_text("x\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("x\n", encoding="utf-8")
+    files = [p.relative_to(tmp_path).as_posix() for p in listing.collect_files(tmp_path)]
+    assert files == ["src/app.py"]
 
 
 def test_installer_script_keeps_user_data_and_uses_lzma2():

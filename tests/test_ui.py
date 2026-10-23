@@ -736,8 +736,8 @@ def test_ime_commit_with_control_characters_is_ignored(win, bbs_factory):
     assert bytes(bbs.after_login) == b"" and "控制字元" in win.statusBar().currentMessage()
 
 def test_merged_page_layout_and_article_subtabs(win):
-    assert win.tabs.count() == 3
-    assert [win.tabs.tabText(i) for i in range(3)] == ["終端機與文章", "草稿", "設定"]
+    assert win.tabs.count() == 4
+    assert [win.tabs.tabText(i) for i in range(4)] == ["終端機與文章", "站台", "草稿", "設定"]
     assert win.main_splitter.count() == 2
     assert win.main_splitter.widget(0) is win.terminal_panel
     assert win.main_splitter.widget(1) is win.article_panel
@@ -799,7 +799,7 @@ def test_open_draft_expands_panel_and_selects_preview(win):
     win.reload_drafts()
     win.draft_list.setCurrentRow(0)
     win._set_article_panel_visible(False)
-    win.tabs.setCurrentIndex(1)
+    win.tabs.setCurrentIndex(2)
     win.open_selected()
     pump(20)
     assert win.tabs.currentIndex() == 0

@@ -11,9 +11,10 @@ Connection loss is reported once and NEVER retried automatically.
 from __future__ import annotations
 
 import enum
+from urllib.parse import urlparse
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
-from PySide6.QtNetwork import QNetworkRequest
+from PySide6.QtNetwork import QAbstractSocket, QNetworkRequest, QTcpSocket
 from PySide6.QtWebSockets import QWebSocket, QWebSocketHandshakeOptions
 
 from ..logging_setup import get_logger
@@ -28,11 +29,12 @@ _LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
 def endpoint_problem(url: str) -> str | None:
-    """Reason a WebSocket endpoint is refused, or None. wss:// only (ws:// just for loopback / local testing), no userinfo."""
+    """Reason a BBS endpoint is refused, or None. wss/ws(loopback) or telnet; never userinfo."""
     from urllib.parse import urlparse
     try:
         p = urlparse(url)
         host = p.hostname
+        port = p.port
     except ValueError:
         return "端點網址格式錯誤。"
     if not host:
@@ -41,7 +43,9 @@ def endpoint_problem(url: str) -> str | None:
         return "端點網址不可包含帳號或密碼。"
     if p.scheme == "wss" or (p.scheme == "ws" and host in _LOOPBACK):
         return None
-    return "端點必須使用加密的 wss://（僅本機測試允許 ws://）。"
+    if p.scheme == "telnet" and (port is None or 1 <= port <= 65535):
+        return None
+    return "端點必須使用 wss:// 或 telnet://（ws:// 僅限本機測試）。"
 
 
 def login_host_trusted(url: str) -> bool:
@@ -65,6 +69,7 @@ class PttClient(QObject):
         super().__init__(parent)
         self.state = State.DISCONNECTED
         self._ws: QWebSocket | None = None
+        self._tcp: QTcpSocket | None = None
         self.url = DEFAULT_URL
         self._first = True
         self._head = b""
@@ -91,6 +96,11 @@ class PttClient(QObject):
         self.bytes_sent = self.bytes_received = 0
         self._iac = IacFilter()
         self._drop_ws()                                    # never leave a previous socket without an owner
+        self._drop_tcp()
+        parsed = urlparse(url)
+        if parsed.scheme == "telnet":
+            self._connect_telnet(parsed.hostname or "", parsed.port or 23)
+            return
         ws = QWebSocket(ORIGIN)
         ws.setMaxAllowedIncomingFrameSize(256 * 1024)         # PTT frames are a few KB; refuse absurd ones
         ws.setMaxAllowedIncomingMessageSize(1024 * 1024)
@@ -108,7 +118,7 @@ class PttClient(QObject):
         ws.open(QNetworkRequest(QUrl(url)), opts)
 
     def close(self) -> None:
-        """Polite close (sends a WebSocket close frame so PTT frees the session promptly)."""
+        """Polite close (WebSocket close frame / TCP FIN) so the server frees the session promptly."""
         self._intentional_close = True
         self._timer.stop()
         connecting = self.state is State.CONNECTING
@@ -119,6 +129,11 @@ class PttClient(QObject):
                 ws.deleteLater()
             else:
                 self._ws.close()
+        if self._tcp is not None:
+            if connecting:
+                self._drop_tcp()
+            else:
+                self._tcp.disconnectFromHost()
         if connecting:
             self._set_state(State.DISCONNECTED)
 
@@ -129,6 +144,24 @@ class PttClient(QObject):
             ws.abort()
             ws.deleteLater()
 
+    def _drop_tcp(self) -> None:
+        tcp, self._tcp = self._tcp, None
+        if tcp is not None:
+            tcp.abort()
+            tcp.deleteLater()
+
+    def _connect_telnet(self, host: str, port: int) -> None:
+        tcp = QTcpSocket(self)
+        self._tcp = tcp
+        tcp.connected.connect(self._on_tcp_connected)
+        tcp.readyRead.connect(self._on_tcp_ready)
+        tcp.disconnected.connect(self._on_tcp_disconnected)
+        tcp.errorOccurred.connect(self._on_tcp_error)
+        self._set_state(State.CONNECTING)
+        log.info("connecting telnet to %s:%s (plaintext)", host, port)
+        self._timer.start(self._connect_timeout_ms)
+        tcp.connectToHost(host, port)
+
     def _stale(self) -> bool:
         """True for a signal from a socket that was replaced by a newer live one (it must never touch the current state)."""
         s = self.sender()
@@ -136,9 +169,16 @@ class PttClient(QObject):
 
     def send(self, data: bytes) -> bool:
         """Send raw terminal bytes. Returns False (and sends nothing) unless connected."""
-        if self.state is not State.CONNECTED or self._ws is None or not data:
+        if self.state is not State.CONNECTED or not data:
             return False
-        self._ws.sendBinaryMessage(data)
+        if self._tcp is not None:
+            if self._tcp.write(data) < 0:
+                return False
+            self._tcp.flush()
+        elif self._ws is not None:
+            self._ws.sendBinaryMessage(data)
+        else:
+            return False
         self.bytes_sent += len(data)  # only counts; the content is never logged
         return True
 
@@ -168,6 +208,57 @@ class PttClient(QObject):
         data = self._iac.feed(data)
         if data:
             self.dataReceived.emit(data)
+
+    def _stale_tcp(self) -> bool:
+        s = self.sender()
+        return s is not None and self._tcp is not None and s is not self._tcp
+
+    def _on_tcp_connected(self) -> None:
+        if self._stale_tcp():
+            return
+        if self._intentional_close or self.state is not State.CONNECTING:
+            self._drop_tcp()
+            return
+        self._timer.stop()
+        self._set_state(State.CONNECTED)
+        log.info("connected (telnet)")
+
+    def _on_tcp_ready(self) -> None:
+        if self._stale_tcp() or self._tcp is None:
+            return
+        data = bytes(self._tcp.readAll())
+        if not data:
+            return
+        self.bytes_received += len(data)
+        data, replies = self._iac.feed_with_replies(data)
+        if replies and self._tcp is not None:
+            self._tcp.write(replies)
+            self._tcp.flush()
+        if data:
+            self.dataReceived.emit(data)
+
+    def _on_tcp_error(self, _err) -> None:
+        if self._intentional_close or self._stale_tcp() or self._tcp is None:
+            return
+        msg = self._tcp.errorString()
+        log.warning("telnet socket error: %s", msg)
+        self._timer.stop()
+        self.failed.emit(f"連線錯誤：{msg}")
+        if self.state is State.CONNECTING:
+            self._intentional_close = True
+            self._drop_tcp()
+            self._set_state(State.DISCONNECTED)
+
+    def _on_tcp_disconnected(self) -> None:
+        if self._stale_tcp():
+            return
+        self._timer.stop()
+        was = self.state
+        self._drop_tcp()
+        self._set_state(State.DISCONNECTED)
+        if was is State.CONNECTED and not self._intentional_close:
+            log.warning("telnet connection lost by remote")
+            self.failed.emit("連線已中斷（伺服器關閉連線）。程式不會自動重連或重送任何內容。")
 
     def _on_error(self, err) -> None:
         if self._intentional_close or self._stale():
@@ -199,6 +290,7 @@ class PttClient(QObject):
         self.failed.emit(f"連線逾時（{self._connect_timeout_ms // 1000} 秒）。")
         self._intentional_close = True
         self._drop_ws()
+        self._drop_tcp()
         self._set_state(State.DISCONNECTED)
 
     def _set_state(self, st: State) -> None:

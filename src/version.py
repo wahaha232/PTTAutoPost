@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.7.2"
+__version__ = "0.8.0"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,17 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.0", "2026/10/23", [
+        "Updates: Settings and the Help menu can check GitHub Releases, compare versions and download the right "
+        "asset (portable ZIP for a folder copy, setup.exe for an installed copy). Downloads use HTTPS, verify "
+        "SHA-256 when GitHub provides a digest, and are never executed automatically; a token env var supports "
+        "private repositories.",
+        "Sites: a new '站台' tab with 13 bookmarks verified on 2026-10-23 (add/edit/delete, copy address, read-only "
+        "TCP check). WSS and Telnet sites can be opened in the built-in terminal; SSH entries remain bookmarks.",
+        "Telnet: the transport now supports telnet:// URLs through QTcpSocket, with IAC negotiation replies, the same "
+        "Big5 screen and a plaintext warning. The assisted login still only sends credentials to ws.ptt.cc.",
+        "Packaging: --archive now also writes a portable ZIP (the update asset) alongside the LZMA2 7z.",
+    ]),
     ("0.7.2", "2026/10/23", [
         "Article fetch: every successful fetch starts a fresh article context. It detaches the previous draft, clears "
         "personal notes, the opened-draft signature snapshot, preview/manual state and the confirmation/typing "

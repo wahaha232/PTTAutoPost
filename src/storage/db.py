@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..errors import StorageError
+from ..sites import DEFAULT_SITES, normalize_site, validate_site
 from ..logging_setup import get_logger
 from ..paths import data_dir
 
@@ -221,6 +222,32 @@ class Database:
         if on:
             favs.append(board)
         self.set_setting("boards.favorites", json.dumps(favs, ensure_ascii=False))
+
+    def site_bookmarks(self) -> list[dict]:
+        """Saved BBS sites; verified defaults are returned until the user edits the list."""
+        raw = self.get_setting("sites.bookmarks", "")
+        if not raw:
+            return [dict(s) for s in DEFAULT_SITES]
+        items = self._json_setting("sites.bookmarks")
+        if not isinstance(items, list):
+            log.warning("sites.bookmarks has an unexpected shape; using defaults")
+            return [dict(s) for s in DEFAULT_SITES]
+        out = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            site = normalize_site(item)
+            if validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"]) is None:
+                out.append(site)
+        return out
+
+    def save_site_bookmarks(self, items: list[dict]) -> None:
+        clean = []
+        for item in items:
+            site = normalize_site(item)
+            if validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"]) is None:
+                clean.append(site)
+        self.set_setting("sites.bookmarks", json.dumps(clean, ensure_ascii=False))
 
     @property
     def signature(self) -> str:

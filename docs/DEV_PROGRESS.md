@@ -4,8 +4,8 @@
 - 分支：`dev/roadmap`（自 `main` @ `6d390c4` 建立）
 - 基準版本：0.6.2
 - 基準測試：`python -m pytest -q`（`QT_QPA_PLATFORM=offscreen`）→ 168 passed
-- 目前測試：同一指令 → 298 passed（0.7.2 使用者回報修正完成）
-- 目前版本：0.7.2（2026/10/23）
+- 目前測試：同一指令 → 332 passed（0.8.0 雲端更新、站台書籤、Telnet 完成）
+- 目前版本：0.8.0（2026/10/23）
 - 開始時間 T0：2026-10-23 09:13（UTC+8）／2026-10-23 01:13 UTC
 - 額度基準 B：**暫不追蹤**
 
@@ -260,6 +260,48 @@
 
 - 全套 **298 passed**；0.7.2 新增 9 項 UI／連結測試。
 
+## 0.8.0 追加（雲端更新、站台書籤、Telnet）
+
+### 雲端更新
+
+- 新增 `src/update.py`：讀取 `wahaha232/PTTAutoPost` 的 GitHub Releases、版本比較、依安裝型態選擇資產（資料夾版 `-portable.zip`／`-portable.7z`、安裝版 `-setup.exe`）。
+- 下載只接受 HTTPS 與允許的 GitHub 主機；串流上限 300 MB，GitHub 有 `digest` 時驗證 SHA-256（沒有 digest 會明確標示未驗證），下載到 `updates\`（不可寫時改用 `%LOCALAPPDATA%\PTT AutoPost\updates`）。
+- 下載後**不自動執行**：資料夾版顯示解壓縮指示，安裝版顯示 setup.exe 指示；設定頁可開啟更新資料夾。私人儲存庫可用 `PTTAUTOPOST_GITHUB_TOKEN`（只讀環境變數，不寫日誌）。
+- UI：設定頁「更新」區塊、「說明 → 檢查更新…」；背景執行檢查／下載，狀態列與更新區塊顯示進度。
+- `--archive` 現在同時產出 LZMA2 `.7z` 與更新用 `.zip`。
+- 注意：目前尚未在 GitHub 建立 Release，實際端到端下載／安裝待驗證。
+
+### 站台書籤（2026-10-23 實測）
+
+- 新增「站台」分頁與 `src/sites.py`、DB `sites.bookmarks`（預設 13 站；可新增／修改／刪除／複製位址／唯讀 TCP 測試）。
+- 實測結果（只做 DNS／TCP／TLS，未登入、未送帳密）：
+  - PTT `ws.ptt.cc:443/bbs`：TCP/TLS 有回應；WebSocket 握手以測試腳本送 403，實際連線仍需內建客戶端驗證。
+  - PTT2 `ws.ptt2.cc:443/bbs`：TCP/TLS 有回應；WebSocket 握手 403，實際連線待驗證。
+  - 夢之大地、楓橋驛站、巴哈姆特、紫丁香、新水木清華、未來最舊小棧、華年小集、網際新世界：TCP 23 可連（網際新世界 3 秒內無 banner）。
+  - 淒美燈塔、七月七日晴、鳴蟬：TCP 22 可連，SSH banner 正常；BBS 入口待確認。
+- 13 站全部加入預設書籤；主機與備註記在 `src/sites.py`。
+
+### Telnet 傳輸
+
+- `PttClient` 支援 `telnet://host[:port]`，使用 `QTcpSocket`；`endpoint_problem()` 允許 Telnet、仍拒絕帳密與其他 scheme。
+- `IacFilter` 新增 `feed_with_replies()`：過濾 IAC 並以 DONT／WONT 回應伺服器 WILL／DO，避免 Telnet 協商卡住。
+- 終端機、Big5 畫面、輸入與貼上流程沿用；Telnet 為**明文**，連線時狀態列提示，且在公用網路輸入重要密碼的風險由使用者承擔。
+- 輔助登入仍只信任 `ws.ptt.cc`，不會把帳密送到 Telnet 站台。
+- SSH 目前僅保存書籤，尚未實作傳輸；非 Big5 站台可能亂碼。
+
+### 測試
+
+- 新增 `tests/test_update.py`、`tests/test_update_ui.py`、`tests/test_sites.py`、`tests/test_net_telnet.py`；更新分頁數量與既有測試。
+- 新增 `tools/make_source_listing.py`：輸出純文字原始碼清單（`dist\PTTAutoPost-0.8.0-source.txt`，78 個檔案、862.9 KB），供審閱／備份。
+- 全套 **332 passed**。
+
+### 未完成／待辦
+
+- GitHub Release 尚未建立，更新功能沒有真實 Release 可測；建 Release 時請上傳 `PTTAutoPost-<版本>-portable.zip` 與 `PTTAutoPost-<版本>-setup.exe`。
+- 私人儲存庫的 Token 流程與速率限制未實測。
+- Telnet 站台的實際登入、按鍵、Big5 顯示與非 Big5 站台編碼待使用者實測；SSH 連線尚未實作。
+- 圖片／多媒體（開圖模式、GIF、內嵌播放、圖床、YouTube）與 IP 地理位置／Proxy／VPN 等功能尚未開始，屬於後續階段。
+
 ## 待使用者驗證（不在本次自動測試範圍）
 
 - B 組已完成項目：實際桌面（含 1366×768）的合併頁比例、面板收合／還原、`F12`、開啟草稿後的面板展開。
@@ -281,6 +323,9 @@
 - 0.7.2：連續貼上兩個不同網址，確認第二篇欄位、心得、簽名與確認狀態都是新的，且第一篇草稿仍保留。
 - 0.7.2：開啟舊草稿後改選簽名檔（含完成貼文後）確認預覽與實際輸入都使用新簽名；設定頁「套用」的實際桌面對話框。
 - 0.7.2：真實 PTT 畫面的超連結底線是否清楚、選取反白時是否仍可辨識；圖片自動開啟在「已登入、捲動到圖片」與「輸入完成後」的實際行為與隱私提醒。
+- 0.8.0：建立 GitHub Release 後，分別用資料夾版與安裝版測試「檢查更新 → 下載 → SHA-256 → 自行安裝／解壓」；私人儲存庫請測 `PTTAUTOPOST_GITHUB_TOKEN`。
+- 0.8.0：實際從「站台」連 PTT／PTT2（WSS）與至少一個 Telnet 站台，確認連線、登入畫面、Big5 顯示、鍵盤／貼上與斷線；SSH 書籤目前不連線。
+- 0.8.0：Telnet 明文風險提示與非 Big5 站台（例如新水木清華）的編碼限制是否符合期待。
 - 真實 PTT 登入後畫面仍從未驗證；本階段不需要登入真實帳號。
 
 ## 額度與提交紀錄

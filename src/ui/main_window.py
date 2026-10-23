@@ -7,13 +7,13 @@ import time
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QAction, QFont, QFontDatabase, QGuiApplication, QKeySequence
+from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
                                QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QMenu, QPlainTextEdit, QPushButton,
                                QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
-from .. import boards, compose
+from .. import boards, compose, sites, update
 from ..errors import ToolError
 from ..links import is_auto_open_image_url, validate_http_url
 from ..logging_setup import get_logger
@@ -64,6 +64,72 @@ class FetchTask(QRunnable):
             self.signals.failed.emit("擷取時發生未預期的錯誤。", f"{type(e).__name__}: {e}")
 
 
+class _UpdateSignals(QObject):
+    done = Signal(object)             # update.Release
+    failed = Signal(str)
+
+
+class UpdateCheckTask(QRunnable):
+    """GitHub API call off the GUI thread; never downloads in this task."""
+
+    def __init__(self, token: str | None):
+        super().__init__()
+        self.token = token
+        self.signals = _UpdateSignals()
+
+    def run(self):
+        try:
+            self.signals.done.emit(update.fetch_latest_release(self.token))
+        except update.UpdateError as e:
+            self.signals.failed.emit(str(e))
+        except Exception:  # noqa: BLE001
+            log.exception("unexpected error while checking updates")
+            self.signals.failed.emit("檢查更新時發生未預期的錯誤。")
+
+
+class _DownloadSignals(QObject):
+    progress = Signal(int, int)
+    done = Signal(object)             # update.DownloadResult
+    failed = Signal(str)
+
+
+class UpdateDownloadTask(QRunnable):
+    """Download one verified update asset; the UI never executes it automatically."""
+
+    def __init__(self, asset: update.Asset, token: str | None):
+        super().__init__()
+        self.asset, self.token = asset, token
+        self.signals = _DownloadSignals()
+
+    def run(self):
+        try:
+            result = update.download_asset(self.asset, token=self.token,
+                                           progress=lambda done, total: self.signals.progress.emit(done, total))
+            self.signals.done.emit(result)
+        except update.UpdateError as e:
+            self.signals.failed.emit(str(e))
+        except Exception:  # noqa: BLE001
+            log.exception("unexpected error while downloading an update")
+            self.signals.failed.emit("下載更新檔時發生未預期的錯誤。")
+
+
+class _SiteCheckSignals(QObject):
+    done = Signal(bool, str)
+
+
+class SiteCheckTask(QRunnable):
+    """Read-only TCP reachability check; no login bytes are sent."""
+
+    def __init__(self, site: dict):
+        super().__init__()
+        self.site = site
+        self.signals = _SiteCheckSignals()
+
+    def run(self):
+        ok, msg = sites.check_site(self.site)
+        self.signals.done.emit(ok, msg)
+
+
 def _mono() -> QFont:
     f = QFont("MingLiU")
     f.setStyleHint(QFont.StyleHint.Monospace)
@@ -84,6 +150,13 @@ class MainWindow(QMainWindow):
         self._setting_preview = False
         self._last_result: ParseResult | None = None
         self._busy = False
+        self._update_busy = False
+        self._update_check_task = None
+        self._update_download_task = None
+        self._update_asset: update.Asset | None = None
+        self._update_token: str | None = None
+        self._pending_site_url: str | None = None
+        self._site_check_task = None
         self._typing_target: Target | None = None
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         self.setWindowIcon(app_icon())
@@ -114,6 +187,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         tabs = QTabWidget()
         tabs.addTab(self._build_terminal_article_tab(), "終端機與文章")
+        tabs.addTab(self._build_sites_tab(), "站台")
         tabs.addTab(self._build_drafts_tab(), "草稿")
         tabs.addTab(self._build_settings_tab(), "設定")
         self.tabs = tabs
@@ -168,6 +242,10 @@ class MainWindow(QMainWindow):
         self.addAction(self.act_fullscreen)
         view.addSeparator()
         view.addAction(self.act_fullscreen)
+        help_menu = self.menuBar().addMenu("說明")
+        self.act_check_update = QAction("檢查更新…", self)
+        self.act_check_update.triggered.connect(self.check_updates)
+        help_menu.addAction(self.act_check_update)
 
     def _set_fullscreen(self, on: bool) -> None:
         if on and not self.isFullScreen():
@@ -603,6 +681,21 @@ class MainWindow(QMainWindow):
         self.btn_pttlogin_browse.clicked.connect(self._browse_pttlogin)
         self.btn_pttlogin_open.clicked.connect(self.launch_pttlogin)
         self.pttlogin_path.editingFinished.connect(lambda: self.db.set_setting("pttlogin.path", self.pttlogin_path.text().strip()))
+        ug = QGroupBox("更新")
+        ul = QVBoxLayout(ug)
+        self.lbl_update_status = QLabel(f"目前版本 {__version__}。從 GitHub Releases 檢查更新；攜帶版下載 ZIP，安裝版下載 setup.exe。程式只會下載並驗證檔案，不會自動執行。")
+        self.lbl_update_status.setWordWrap(True)
+        urow = QHBoxLayout()
+        self.btn_update_check = QPushButton("檢查更新")
+        self.btn_update_folder = QPushButton("開啟更新資料夾")
+        urow.addWidget(self.btn_update_check)
+        urow.addWidget(self.btn_update_folder)
+        urow.addStretch(1)
+        ul.addWidget(self.lbl_update_status)
+        ul.addLayout(urow)
+        lay.addWidget(ug)
+        self.btn_update_check.clicked.connect(self.check_updates)
+        self.btn_update_folder.clicked.connect(self.open_update_folder)
         sg = QGroupBox("贊助作者")
         sl = QVBoxLayout(sg)
         sponsor_note = QLabel("贊助出於自願，不影響任何功能；程式不會追蹤或上傳資料，只會在您按下按鈕時用預設瀏覽器開啟贊助頁。")
@@ -694,6 +787,118 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "設定已套用", "設定已成功套用並儲存。")
         self._notice("設定已套用並儲存。")
 
+    def _set_update_busy(self, on: bool) -> None:
+        self._update_busy = bool(on)
+        for widget in (getattr(self, "btn_update_check", None), getattr(self, "act_check_update", None)):
+            if widget is not None:
+                widget.setEnabled(not on)
+
+    def check_updates(self) -> None:
+        if self._update_busy:
+            self._notice("已有更新檢查或下載進行中。")
+            return
+        self._set_update_busy(True)
+        if hasattr(self, "lbl_update_status"):
+            self.lbl_update_status.setText("正在向 GitHub 檢查更新…")
+        self._notice("正在向 GitHub 檢查更新…")
+        self._update_token = update.github_token()
+        task = UpdateCheckTask(self._update_token)
+        task.signals.done.connect(self._on_update_release)
+        task.signals.failed.connect(self._on_update_error)
+        self._update_check_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_update_release(self, release: update.Release) -> None:
+        self._set_update_busy(False)
+        if not update.is_newer(release.version, __version__):
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(f"已是最新版本（{__version__}）。")
+            self._notice(f"已是最新版本（{__version__}）。")
+            QMessageBox.information(self, "檢查更新", f"目前版本 {__version__}，已是最新版本。")
+            return
+        installed = update.is_installed()
+        asset = update.choose_asset(release.assets, installed)
+        if asset is None:
+            need = "setup.exe" if installed else "portable ZIP（或 7z）"
+            msg = (f"發現新版本 {release.version}，但 Release 沒有適合"
+                   f"{'安裝版' if installed else '攜帶版'}的更新檔（需要 {need}）。\n\n"
+                   f"請到 Release 頁面手動下載：\n{release.html_url or '(沒有頁面網址)'}")
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(f"發現 {release.version}，但找不到適合的更新檔。")
+            self._notice("找到新版本，但 Release 缺少適合此版本的更新檔。")
+            QMessageBox.information(self, "缺少更新檔", msg)
+            return
+        notes = release.notes.strip()
+        if len(notes) > 1200:
+            notes = notes[:1200] + "…"
+        size = f"{asset.size / 1024 / 1024:.1f} MB" if asset.size else "大小未知"
+        target = "安裝版 setup.exe" if installed else "攜帶版壓縮檔"
+        msg = (f"目前版本 {__version__}，最新版本 {release.version}。\n\n"
+               f"更新檔（{target}）：{asset.name}（{size}）\n\n{notes}\n\n"
+               "下載後不會自動安裝或執行；完成後請關閉本程式，再依指示更新。\n\n要下載嗎？")
+        if hasattr(self, "lbl_update_status"):
+            self.lbl_update_status.setText(f"發現新版本 {release.version}，等待下載確認。")
+        self._notice(f"發現新版本 {release.version}。")
+        if QMessageBox.question(self, "發現更新", msg,
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(f"已取消下載 {release.version}。")
+            return
+        self._start_update_download(asset)
+
+    def _start_update_download(self, asset: update.Asset) -> None:
+        self._update_asset = asset
+        self._set_update_busy(True)
+        if hasattr(self, "lbl_update_status"):
+            self.lbl_update_status.setText(f"下載更新檔中… {asset.name}")
+        self._notice(f"下載更新檔中… {asset.name}")
+        task = UpdateDownloadTask(asset, self._update_token)
+        task.signals.progress.connect(self._on_update_progress)
+        task.signals.done.connect(self._on_update_downloaded)
+        task.signals.failed.connect(self._on_update_error)
+        self._update_download_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_update_progress(self, done: int, total: int) -> None:
+        if not hasattr(self, "lbl_update_status"):
+            return
+        mb = done / 1024 / 1024
+        text = f"{mb:.1f} / {total / 1024 / 1024:.1f} MB" if total else f"{mb:.1f} MB"
+        self.lbl_update_status.setText(f"下載更新檔中… {text}")
+
+    def _on_update_downloaded(self, result: update.DownloadResult) -> None:
+        self._set_update_busy(False)
+        verified = "SHA-256 驗證通過" if result.verified else "GitHub 未提供 digest，僅完成下載"
+        asset = self._update_asset
+        if asset is not None and asset.name.lower().endswith("-setup.exe"):
+            how = "請關閉本程式，執行下載的 setup.exe。安裝程式會保留 config／logs／data。"
+        else:
+            how = ("請關閉本程式，將壓縮檔解壓縮覆蓋目前資料夾（保留 config／logs／data），"
+                   "或解壓到新的資料夾。")
+        if hasattr(self, "lbl_update_status"):
+            self.lbl_update_status.setText(f"更新檔已下載：{result.path.name}（{verified}）")
+        self._notice(f"更新檔已下載：{result.path}")
+        QMessageBox.information(self, "更新檔已下載",
+                                f"更新檔已下載：\n{result.path}\n\n{verified}。\n\n{how}\n\n"
+                                "程式不會自動執行下載檔。")
+
+    def _on_update_error(self, msg: str) -> None:
+        self._set_update_busy(False)
+        if hasattr(self, "lbl_update_status"):
+            self.lbl_update_status.setText("更新檢查或下載失敗。")
+        self._notice(msg)
+        QMessageBox.warning(self, "更新失敗", msg)
+
+    def open_update_folder(self) -> None:
+        try:
+            folder = update.updates_dir()
+        except update.UpdateError as e:
+            QMessageBox.warning(self, "更新資料夾", str(e))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        self._notice(f"已開啟更新資料夾：{folder}")
+
     def _paste_active(self) -> bool:
         return bool(getattr(getattr(self, "term", None), "pasting", False))
 
@@ -720,6 +925,9 @@ class MainWindow(QMainWindow):
             self._auto_open_times.clear()
         self._update_tray(c)
         self._update_type_buttons()
+        if st is State.DISCONNECTED and self._pending_site_url:
+            url, self._pending_site_url = self._pending_site_url, None
+            self.session.connect_to(url)
 
     def _on_paste_state(self, on: bool) -> None:
         """Pasting owns the connection text stream: pause every other text/navigation action."""
@@ -1341,6 +1549,215 @@ class MainWindow(QMainWindow):
         self._schedule_preview(False)
 
     # ================================================================== drafts
+    def _build_sites_tab(self) -> QWidget:
+        w = QWidget()
+        outer = QHBoxLayout(w)
+        left = QVBoxLayout()
+        left.addWidget(QLabel("站台書籤（預設清單為 2026-10-23 唯讀連線實測結果）"))
+        self.site_list = QListWidget()
+        self.site_list.currentRowChanged.connect(self._site_selected)
+        self.site_list.itemDoubleClicked.connect(lambda _i: self.connect_site())
+        left.addWidget(self.site_list, 1)
+        self.lbl_site_status = QLabel("")
+        self.lbl_site_status.setWordWrap(True)
+        left.addWidget(self.lbl_site_status)
+        hint = QLabel("WSS 與 Telnet 可使用內建終端機連線；SSH 目前只保存書籤，連線功能待後續版本。"
+                      "Telnet 是明文傳輸，請避免在公用網路輸入重要密碼。測試連線只建立 TCP 連線，不送出帳密或任何 BBS 指令。")
+        hint.setWordWrap(True)
+        left.addWidget(hint)
+        outer.addLayout(left, 1)
+
+        box = QGroupBox("站台資料")
+        form = QFormLayout(box)
+        self.site_name = QLineEdit()
+        self.site_protocol = QComboBox()
+        for key in sites.PROTOCOLS:
+            self.site_protocol.addItem(sites.PROTOCOL_LABELS[key], key)
+        self.site_host = QLineEdit()
+        self.site_host.setPlaceholderText("例如 ws.ptt.cc 或 bbs.example.edu.tw")
+        self.site_port = QSpinBox()
+        self.site_port.setRange(1, 65535)
+        self.site_port.setValue(443)
+        self.site_path = QLineEdit()
+        self.site_path.setPlaceholderText("WSS 路徑，例如 /bbs")
+        self.site_note = QLineEdit()
+        self.site_note.setPlaceholderText("備註（選填）")
+        form.addRow("名稱", self.site_name)
+        form.addRow("協定", self.site_protocol)
+        form.addRow("主機", self.site_host)
+        form.addRow("連接埠", self.site_port)
+        form.addRow("路徑", self.site_path)
+        form.addRow("備註", self.site_note)
+        browse = QHBoxLayout()
+        self.btn_site_connect = QPushButton("連線此站台")
+        self.btn_site_test = QPushButton("測試連線")
+        self.btn_site_copy = QPushButton("複製位址")
+        for b in (self.btn_site_connect, self.btn_site_test, self.btn_site_copy):
+            browse.addWidget(b)
+        form.addRow(browse)
+        manage = QHBoxLayout()
+        self.btn_site_add = QPushButton("新增書籤")
+        self.btn_site_save = QPushButton("儲存變更")
+        self.btn_site_delete = QPushButton("刪除")
+        for b in (self.btn_site_add, self.btn_site_save, self.btn_site_delete):
+            manage.addWidget(b)
+        form.addRow(manage)
+        self.lbl_site_test = QLabel("")
+        self.lbl_site_test.setWordWrap(True)
+        form.addRow(self.lbl_site_test)
+        outer.addWidget(box, 1)
+
+        self.btn_site_connect.clicked.connect(self.connect_site)
+        self.btn_site_test.clicked.connect(self.test_site)
+        self.btn_site_copy.clicked.connect(self.copy_site)
+        self.btn_site_add.clicked.connect(self.add_site_bookmark)
+        self.btn_site_save.clicked.connect(self.save_site_bookmark)
+        self.btn_site_delete.clicked.connect(self.delete_site_bookmark)
+        self._reload_sites()
+        return w
+
+    def _reload_sites(self, select: int = 0) -> None:
+        items = self.db.site_bookmarks()
+        self.site_list.blockSignals(True)
+        self.site_list.clear()
+        for site in items:
+            label = sites.PROTOCOL_LABELS.get(site["protocol"], site["protocol"])
+            it = QListWidgetItem(f"{site['name']}  [{label}]\n{sites.site_address(site)}")
+            it.setData(Qt.ItemDataRole.UserRole, dict(site))
+            it.setToolTip(site.get("note", ""))
+            self.site_list.addItem(it)
+        self.site_list.blockSignals(False)
+        self.lbl_site_status.setText(f"共 {len(items)} 個站台書籤。")
+        if items:
+            self.site_list.setCurrentRow(max(0, min(select, len(items) - 1)))
+        else:
+            self._clear_site_form()
+
+    def _clear_site_form(self) -> None:
+        self.site_name.clear()
+        self.site_protocol.setCurrentIndex(0)
+        self.site_host.clear()
+        self.site_port.setValue(443)
+        self.site_path.setText("/bbs")
+        self.site_note.clear()
+
+    def _site_selected(self, row: int) -> None:
+        if row < 0:
+            return
+        site = self.site_list.item(row).data(Qt.ItemDataRole.UserRole)
+        if not isinstance(site, dict):
+            return
+        self.site_name.setText(site.get("name", ""))
+        idx = self.site_protocol.findData(site.get("protocol"))
+        self.site_protocol.setCurrentIndex(max(0, idx))
+        self.site_host.setText(site.get("host", ""))
+        self.site_port.setValue(int(site.get("port") or 443))
+        self.site_path.setText(site.get("path", ""))
+        self.site_note.setText(site.get("note", ""))
+
+    def _site_from_form(self) -> dict:
+        return sites.normalize_site({
+            "name": self.site_name.text(), "protocol": self.site_protocol.currentData(),
+            "host": self.site_host.text(), "port": self.site_port.value(),
+            "path": self.site_path.text(), "note": self.site_note.text(),
+        })
+
+    def _site_error(self, msg: str) -> None:
+        self.lbl_site_test.setText(f"錯誤：{msg}")
+        self._notice(msg)
+
+    def add_site_bookmark(self) -> None:
+        site = self._site_from_form()
+        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"])
+        if err:
+            self._site_error(err)
+            return
+        items = self.db.site_bookmarks()
+        if any(s["protocol"] == site["protocol"] and s["host"].lower() == site["host"].lower()
+               and int(s["port"]) == site["port"] for s in items):
+            self._site_error("已有相同協定、主機與連接埠的書籤。")
+            return
+        items.append(site)
+        self.db.save_site_bookmarks(items)
+        self._reload_sites(len(items) - 1)
+        self._notice(f"已新增站台書籤：{site['name']}。")
+
+    def save_site_bookmark(self) -> None:
+        row = self.site_list.currentRow()
+        if row < 0:
+            self._site_error("請先選擇要儲存的書籤。")
+            return
+        site = self._site_from_form()
+        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"])
+        if err:
+            self._site_error(err)
+            return
+        items = self.db.site_bookmarks()
+        items[row] = site
+        self.db.save_site_bookmarks(items)
+        self._reload_sites(row)
+        self._notice(f"已儲存站台書籤：{site['name']}。")
+
+    def delete_site_bookmark(self) -> None:
+        row = self.site_list.currentRow()
+        if row < 0:
+            self._site_error("請先選擇要刪除的書籤。")
+            return
+        site = self.db.site_bookmarks()[row]
+        if QMessageBox.question(self, "刪除站台書籤", f"確定刪除「{site['name']}」？") != QMessageBox.StandardButton.Yes:
+            return
+        items = self.db.site_bookmarks()
+        del items[row]
+        self.db.save_site_bookmarks(items)
+        self._reload_sites(max(0, row - 1))
+        self._notice(f"已刪除站台書籤：{site['name']}。")
+
+    def copy_site(self) -> None:
+        site = self._site_from_form()
+        address = sites.site_address(site)
+        QGuiApplication.clipboard().setText(address)
+        self.lbl_site_test.setText(f"已複製：{address}")
+        self._notice(f"已複製站台位址：{address}")
+
+    def test_site(self) -> None:
+        site = self._site_from_form()
+        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"])
+        if err:
+            self._site_error(err)
+            return
+        self.lbl_site_test.setText("測試連線中…")
+        task = SiteCheckTask(site)
+        task.signals.done.connect(self._on_site_checked)
+        self._site_check_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_site_checked(self, ok: bool, msg: str) -> None:
+        self.lbl_site_test.setText(msg)
+        self._notice(msg)
+
+    def connect_site(self) -> None:
+        site = self._site_from_form()
+        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"])
+        if err:
+            self._site_error(err)
+            return
+        if site["protocol"] not in ("wss", "telnet"):
+            self._notice("此版本尚未支援 SSH 連線；站台書籤仍保留，可手動使用其他 SSH 客戶端。")
+            self.lbl_site_test.setText("SSH 連線尚未支援；書籤資料保留。")
+            return
+        url = sites.site_address(site)
+        self.url_box.setEditText(url)
+        if self.session.client.state is not State.DISCONNECTED:
+            self._pending_site_url = url
+            self.session.disconnect_()
+        else:
+            self.session.connect_to(url)
+        self.tabs.setCurrentIndex(0)
+        if site["protocol"] == "telnet":
+            self._notice(f"正在以 Telnet（明文）連線 {site['name']}：{url}；請勿在公用網路輸入重要密碼。")
+        else:
+            self._notice(f"正在連線 {site['name']}：{url}")
+
     def _build_drafts_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)

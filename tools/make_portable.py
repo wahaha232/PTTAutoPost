@@ -30,6 +30,7 @@ PORTABLE = DIST / f"PTTAutoPost-{__version__}-portable"
 EXE = "PTTAutoPost.exe"
 DOCS = ("LICENSE", "THIRD_PARTY_NOTICES.md")
 ARCHIVE = DIST / f"PTTAutoPost-{__version__}-portable.7z"
+ZIP_ARCHIVE = DIST / f"PTTAutoPost-{__version__}-portable.zip"
 ISCC_CANDIDATES = (
     Path(os.environ.get("ProgramFiles", "")) / "Inno Setup 6/ISCC.exe",
     Path(os.environ.get("ProgramFiles(x86)", "")) / "Inno Setup 6/ISCC.exe",
@@ -129,15 +130,23 @@ def find_7z() -> str:
     return str(default) if default.is_file() else ""
 
 
+def make_zip():
+    if ZIP_ARCHIVE.exists():
+        ZIP_ARCHIVE.unlink()
+    path = shutil.make_archive(str(ZIP_ARCHIVE.with_suffix("")), "zip",
+                               root_dir=str(PORTABLE.parent), base_dir=PORTABLE.name)
+    print("zip", path, f"{Path(path).stat().st_size / 1024 / 1024:.1f} MB")
+    return path
+
+
 def archive():
     if not (PORTABLE / EXE).exists():
         print("missing", PORTABLE / EXE, "- run --assemble first")
         return 1
     seven = find_7z()
     if not seven:
-        target = DIST / f"PTTAutoPost-{__version__}-portable"
-        path = shutil.make_archive(str(target), "zip", root_dir=str(PORTABLE.parent), base_dir=PORTABLE.name)
-        print("7-Zip not found; wrote ZIP fallback instead:", path, f"{Path(path).stat().st_size / 1024 / 1024:.1f} MB")
+        make_zip()
+        print("7-Zip not found; ZIP is the fallback (not LZMA2).")
         return 0
     if ARCHIVE.exists():
         ARCHIVE.unlink()
@@ -146,6 +155,7 @@ def archive():
     rc = subprocess.call(cmd, cwd=DIST)
     if rc == 0:
         print("archive", ARCHIVE, f"{ARCHIVE.stat().st_size / 1024 / 1024:.1f} MB")
+        make_zip()
     return rc
 
 
