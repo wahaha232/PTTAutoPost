@@ -13,7 +13,7 @@ from src.net.client import State
 from src.net.session import Login
 from src.terminal.detect import Kind
 from src.ui import browser
-from src.ui.main_window import MainWindow
+from src.ui.main_window import FIELDS, MainWindow
 from src.ui.terminal_widget import key_to_bytes
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QResizeEvent
@@ -63,6 +63,49 @@ def test_fetch_through_ui_fills_fields_with_states(win, http_server):
     win.w["author"].setText("改過")
     win.w["author"].textEdited.emit("改過")
     assert win.states["author"] == "edited"
+
+
+def test_second_fetch_starts_a_fresh_article(win, http_server):
+    win.url_in.setText(http_server + "/ok")
+    win.start_fetch()
+    assert wait_until(lambda: not win._busy, 8000)
+    assert "測試新聞標題" in win.preview.toPlainText()
+    win.notes.setPlainText("第一篇心得")
+    win.chk_confirm.setChecked(True)
+    assert win.save_draft()
+    win.url_in.setText(http_server + "/second")
+    win.start_fetch()
+    assert wait_until(lambda: not win._busy, 8000)
+    assert win.draft_id is None                                  # the new article is a new, unsaved draft
+    assert win.notes.toPlainText() == ""                         # no commentary from the first article
+    assert not win.chk_confirm.isChecked()                       # must confirm the new article again
+    assert win.w["title"].text() == "第二則新聞標題"
+    assert win.w["author"].text() == "陳大華"
+    assert win.w["site"].text() == "第二新聞網"
+    assert "第二篇獨有內容" in win.preview.toPlainText()
+    assert "測試新聞標題" not in win.preview.toPlainText()
+    assert win.db.list_drafts()                                  # the saved first draft is kept
+
+
+def test_clear_all_fields_resets_everything_but_keeps_saved_drafts(win):
+    fill_article(win)
+    assert win.save_draft()
+    win.chk_confirm.setChecked(True)
+    win.preview.setPlainText("手動修改的預覽")
+    assert win._preview_manual and win._dirty
+
+    win.btn_clear.click()                                        # fixture answers Yes
+
+    assert win.draft_id is None
+    assert win.db.list_drafts()                                  # saved draft is not deleted
+    assert all(win.w[f].text() == "" for f in FIELDS)
+    assert win.body.toPlainText() == "" and win.notes.toPlainText() == "" and win.url_in.text() == ""
+    preview = win.preview.toPlainText()
+    assert "手動修改的預覽" not in preview and "某報" not in preview and "第一段內容" not in preview
+    assert not win.chk_confirm.isChecked()
+    assert win.parse_status.text() == "尚未擷取" and win.parse_warn.toPlainText() == ""
+    assert win.lbl_draft.text() == "未儲存"
+    assert not win._dirty and not win._preview_manual
 
 
 def test_fetch_failure_is_shown_not_faked(win, http_server):
@@ -249,6 +292,29 @@ def test_terminal_settings_apply_and_persist(qapp, tmp_path, monkeypatch):
     w2.btn_font_default.click()
     assert w2.term.fill and w2.term.font_.pixelSize() == 17 and db2.get_setting("terminal.fill") == "1"
     w2.db.close()
+
+
+def test_apply_settings_button_saves_values_and_shows_success(win, monkeypatch):
+    info = []
+    monkeypatch.setattr(QMessageBox, "information",
+                        staticmethod(lambda *a, **k: info.append((a[1], a[2])) or QMessageBox.StandardButton.Ok))
+    win.set_size.setValue(21)
+    win.browser_path.setText(r"C:\Tools\browser.exe")
+    idx = win.browser_combo.findData("custom")
+    assert idx >= 0
+    win.browser_combo.setCurrentIndex(idx)
+    win.chk_auto_image.setChecked(True)
+    win.pttlogin_path.setText(r"C:\Tools\PttAutoLogin.exe")
+
+    win.btn_apply_settings.click()
+
+    assert win.db.get_setting("terminal.font_px") == "21"
+    assert win.db.get_setting("browser.path") == r"C:\Tools\browser.exe"
+    assert win.db.get_setting("browser.mode") == "custom"
+    assert win.db.get_setting("links.image_auto_open") == "1"
+    assert win.db.get_setting("pttlogin.path") == r"C:\Tools\PttAutoLogin.exe"
+    assert info and "成功" in info[-1][1]
+    assert "設定已套用" in win.statusBar().currentMessage()
 
 
 def test_main_window_is_freely_resizable(win):
@@ -560,6 +626,27 @@ def test_draft_keeps_signature_snapshot_when_signature_changes(win):
     win.use_current_signature()
     win.render_preview(force=True)
     assert win.preview.toPlainText().endswith("簽名乙") and not win.lbl_sig_snap.isVisibleTo(win)
+
+
+def test_picking_signature_clears_draft_snapshot_and_applies(win):
+    fill_article(win)
+    for name, text in (("甲", "簽名甲"), ("乙", "簽名乙"), ("丙", "簽名丙")):
+        win.new_signature()
+        win.sig_name.setText(name)
+        win.sig_edit.setPlainText(text)
+        win.save_signature()
+    win._pick_signature(0)
+    win.chk_sig.setChecked(True)
+    assert win.save_draft()
+    win._pick_signature(1)                                       # active signature is 乙
+    win.draft_list.setCurrentRow(0)
+    win.open_selected()
+    assert win._draft_sig == "簽名甲" and win.lbl_sig_snap.isVisibleTo(win)
+    win._pick_signature(2)                                       # explicit choice must override the snapshot
+    assert win._draft_sig is None and not win.lbl_sig_snap.isVisibleTo(win)
+    win.render_preview(force=True)
+    assert win.preview.toPlainText().endswith("簽名丙")
+    assert win._dirty
 
 
 def test_recovered_draft_shows_aborted_in_first_list(qapp, tmp_path, monkeypatch):
@@ -975,6 +1062,59 @@ def test_auto_image_ignores_non_image_links(win, monkeypatch):
     win.session.logged_in = True
     win._on_links_changed([_image_link("https://example.com/article")])
     assert calls == []
+
+
+def test_auto_open_retries_after_typing_finishes(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "_open_link", lambda url, auto=False: calls.append((url, auto)) or True)
+    win.chk_auto_image.setChecked(True)
+    win.session.logged_in = True
+    win.session.login_state = Login.LOGGED_IN
+    win.typer.running = True
+    win.term.s.screen.feed(b"https://i.imgur.com/a.jpg")
+    win.term._on_screen_changed()
+    assert calls == []
+    win.typer.running = False
+    win._typing_finished(True, "done")
+    assert calls == [("https://i.imgur.com/a.jpg", True)]
+
+
+def test_auto_open_retries_after_login_finishes(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "_open_link", lambda url, auto=False: calls.append((url, auto)) or True)
+    win.chk_auto_image.setChecked(True)
+    win.session.logged_in = False
+    win.session.login_state = Login.LOGGING_IN
+    win.term.s.screen.feed(b"https://i.imgur.com/b.jpg")
+    win.term._on_screen_changed()
+    assert calls == []
+    win.session.logged_in = True
+    win.session.login_state = Login.LOGGED_IN
+    win._on_login_state(Login.LOGGED_IN)
+    assert calls == [("https://i.imgur.com/b.jpg", True)]
+
+
+def test_enabling_auto_open_processes_images_already_on_screen(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "_open_link", lambda url, auto=False: calls.append((url, auto)) or True)
+    win.session.logged_in = True
+    win.session.login_state = Login.LOGGED_IN
+    win.term.s.screen.feed(b"see https://i.imgur.com/a.jpg")
+    win.term._on_screen_changed()
+    assert calls == []
+    win.chk_auto_image.setChecked(True)
+    assert calls == [("https://i.imgur.com/a.jpg", True)]
+
+
+def test_auto_open_works_from_a_real_terminal_screen(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "_open_link", lambda url, auto=False: calls.append((url, auto)) or True)
+    win.chk_auto_image.setChecked(True)
+    win.session.logged_in = True
+    win.session.login_state = Login.LOGGED_IN
+    win.term.s.screen.feed(b"see \x1b[4mhttps://i.imgur.com/a.jpg\x1b[0m today")
+    win.term._on_screen_changed()
+    assert calls == [("https://i.imgur.com/a.jpg", True)]
 
 
 def test_auto_open_only_known_hosts_and_limit_notice(win, monkeypatch):

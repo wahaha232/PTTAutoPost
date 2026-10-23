@@ -33,6 +33,7 @@ log = get_logger("ui")
 STATE_TEXT = {"found": "已取得", "missing": "未取得", "inferred": "推定（請確認）", "edited": "已修改", "manual": "手動輸入"}
 BODY_TEXT = {"likely_complete": "內文可能完整（仍請對照原網頁）", "suspect_partial": "內文疑似不完整", "insufficient": "內文不足或沒有內文"}
 STATUS_TEXT = {"success": "擷取成功", "partial": "部分成功", "failed": "擷取失敗"}
+TYPE_HELP = "操作順序：在終端機進到「標題：」提示 → 輸入標題 → 自行按 Enter → 進入編輯畫面 → 輸入內文 → 自行檢查並存檔／發文。"
 MAX_AUTO_OPEN_PER_MINUTE = 3
 MAX_AUTO_OPEN_PER_SCREEN = 1
 FIELDS = ("post_title", "title", "site", "author", "published", "url")
@@ -441,6 +442,8 @@ class MainWindow(QMainWindow):
 
     def _auto_image_toggled(self, on: bool) -> None:
         self.db.set_setting("links.image_auto_open", "1" if on else "0")
+        if on and hasattr(self, "term"):
+            self._on_links_changed(self.term.links())          # apply to images already on screen
         self._notice("已開啟圖片連結自動開啟；圖床會看到您的 IP。" if on else "已關閉圖片連結自動開啟。")
 
     def _open_sponsor(self) -> bool:
@@ -470,10 +473,8 @@ class MainWindow(QMainWindow):
         images = [link for link in links if is_auto_open_image_url(link.url)]
         if not images:
             return
-        if (not session.logged_in or typer.running or session.login_state is Login.LOGGING_IN):
-            for link in images:                       # no delayed auto-open after typing/login ends
-                self._auto_opened.add(link.url)
-            return
+        if not session.logged_in or typer.running or session.login_state is Login.LOGGING_IN:
+            return                                        # evaluate again when typing/login finishes
         now = time.monotonic()
         while self._auto_open_times and now - self._auto_open_times[0] >= 60:
             self._auto_open_times.popleft()
@@ -613,10 +614,17 @@ class MainWindow(QMainWindow):
         self.sponsor_box = sg
         sg.setVisible(bool(SPONSOR_URL.strip() and validate_http_url(SPONSOR_URL.strip())))
         lay.addWidget(sg)
-        note = QLabel("終端機是等寬格線（80×24），中文字佔 2 格；建議使用 MingLiU、NSimSun 等等寬中文字型。變更會立即套用並儲存在本機。")
+        note = QLabel("終端機是等寬格線（80×24），中文字佔 2 格；建議使用 MingLiU、NSimSun 等等寬中文字型。變更會立即套用並儲存在本機，也可按「套用」一次確認並儲存。")
         note.setWordWrap(True)
         lay.addWidget(note)
+        apply_row = QHBoxLayout()
+        apply_row.addStretch(1)
+        self.btn_apply_settings = QPushButton("套用")
+        self.btn_apply_settings.setToolTip("套用目前所有設定、儲存到本機，並顯示成功訊息。")
+        apply_row.addWidget(self.btn_apply_settings)
+        lay.addLayout(apply_row)
         lay.addStretch(1)
+        self.btn_apply_settings.clicked.connect(self.apply_settings)
         self.set_font.currentFontChanged.connect(lambda _f: self._apply_terminal_settings())
         self.set_size.valueChanged.connect(lambda _v: self._apply_terminal_settings())
         self.set_fill.toggled.connect(lambda _c: self._apply_terminal_settings())
@@ -669,6 +677,23 @@ class MainWindow(QMainWindow):
             wdg.blockSignals(False)
         self._apply_terminal_settings()
 
+    def apply_settings(self):
+        self._apply_theme(self.theme_combo.currentData() or "system")
+        palette = self.terminal_palette_combo.currentData()
+        self._terminal_palette_choice = palette if palette in theme.TERMINAL_PALETTE_KEYS else "dark"
+        self.term.set_theme(self._terminal_theme_name())
+        self.db.set_setting("ui.terminal_palette", self._terminal_palette_choice)
+        self._browser_mode_changed(self.browser_combo.currentIndex())
+        self._save_browser_path()
+        self.db.set_setting("links.image_auto_open", "1" if self.chk_auto_image.isChecked() else "0")
+        if self.chk_auto_image.isChecked():
+            self._on_links_changed(self.term.links())
+        self._apply_terminal_settings()
+        self._tray_settings_changed()
+        self.db.set_setting("pttlogin.path", self.pttlogin_path.text().strip())
+        QMessageBox.information(self, "設定已套用", "設定已成功套用並儲存。")
+        self._notice("設定已套用並儲存。")
+
     def _paste_active(self) -> bool:
         return bool(getattr(getattr(self, "term", None), "pasting", False))
 
@@ -713,6 +738,8 @@ class MainWindow(QMainWindow):
         self._update_input_lock()
         self.lbl_login.setText(f"登入：{st.value}")
         self._update_type_buttons()
+        if st is Login.LOGGED_IN and hasattr(self, "term"):
+            self._on_links_changed(self.term.links())
 
     def _notice(self, msg: str):
         self.statusBar().showMessage(msg, 20000)
@@ -814,6 +841,9 @@ class MainWindow(QMainWindow):
         row.addWidget(self.url_in, 1)
         row.addWidget(self.btn_fetch)
         row.addWidget(self.chk_robots)
+        self.btn_clear = QPushButton("清除全部欄位")
+        self.btn_clear.setToolTip("清除所有欄位、預覽與程式暫存狀態；不會刪除已儲存的草稿。")
+        row.addWidget(self.btn_clear)
         ll.addLayout(row)
         self.parse_status = QLabel("尚未擷取")
         self.parse_status.setWordWrap(True)
@@ -939,13 +969,14 @@ class MainWindow(QMainWindow):
         for b in (self.btn_type_title, self.btn_type_body, self.btn_type_cancel):
             r3.addWidget(b)
         tl.addLayout(r3)
-        self.type_status = QLabel("操作順序：在終端機進到「標題：」提示 → 輸入標題 → 自行按 Enter → 進入編輯畫面 → 輸入內文 → 自行檢查並存檔／發文。")
+        self.type_status = QLabel(TYPE_HELP)
         self.type_status.setWordWrap(True)
         tl.addWidget(self.type_status)
         rl.addWidget(tg)
         self.article_tabs.addTab(right, "預覽與輸入")
 
         self.btn_fetch.clicked.connect(self.start_fetch)
+        self.btn_clear.clicked.connect(self.clear_all_fields)
         self.url_in.returnPressed.connect(self.start_fetch)
         self.btn_regen.clicked.connect(self.regen_preview)
         self.btn_check.clicked.connect(self.run_checks)
@@ -1005,6 +1036,18 @@ class MainWindow(QMainWindow):
     def _fetch_done(self, fetched, res: ParseResult):
         self._busy = False
         self.btn_fetch.setEnabled(True)
+        self._refresh_timer.stop()
+        self.draft_id = None
+        if not self._article_typer().running:
+            self._typing_target = None
+            self._typing_draft_id = None
+        self._draft_sig = None
+        self._sync_sig_snapshot_ui()
+        self.chk_confirm.setChecked(False)
+        self.chk_nonempty.setChecked(False)
+        self.chk_retype.setChecked(False)
+        self.type_status.setText(TYPE_HELP)
+        self.lbl_draft.setText("未儲存（新擷取）")
         self._last_result = res
         self._loading = True
         try:
@@ -1013,6 +1056,7 @@ class MainWindow(QMainWindow):
                 self.w[name].setText(f.value or "")
                 self.states[name] = f.status if f.value else "missing"
             self.body.setPlainText(res.body.value or "")
+            self.notes.setPlainText("")
             self.states["body"] = res.body.status if res.body.value else "missing"
             t = res.title.value or ""
             self.w["post_title"].setText("" if not t else t if t.lstrip().startswith("[") else "[新聞] " + t)
@@ -1266,8 +1310,13 @@ class MainWindow(QMainWindow):
             self.sig_edit.setPlainText("")
 
     def _pick_signature(self, idx: int) -> None:
+        had_snapshot = self._draft_sig is not None
+        self._draft_sig = None
+        self._sync_sig_snapshot_ui()
         self.db.set_active_signature(idx)
         self._show_signature(idx)
+        if had_snapshot:
+            self._dirty = True
         self._schedule_preview(False)
 
     def new_signature(self):
@@ -1326,20 +1375,44 @@ class MainWindow(QMainWindow):
             return
         if not self._confirm_unsaved("新增草稿"):
             return
+        self._reset_article_fields()
+
+    def clear_all_fields(self):
+        if self._article_typer().running:
+            self._notice("輸入進行中，請先取消輸入再清除欄位。")
+            return
+        if self._busy:
+            self._notice("擷取進行中，請等擷取結束再清除欄位。")
+            return
+        if QMessageBox.question(self, "清除全部欄位",
+                                "確定要清除所有欄位、預覽與程式暫存狀態嗎？\n已儲存的草稿不會被刪除。",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self._reset_article_fields()
+        self._notice("已清除所有欄位與預覽暫存；已儲存的草稿未刪除。")
+
+    def _reset_article_fields(self):
+        self._refresh_timer.stop()
         self.draft_id = None
+        self._typing_target = None
+        self._typing_draft_id = None
         self.chk_nonempty.setChecked(False)
         self._loading = True
-        for f in FIELDS:
-            self.w[f].setText("")
-            self.states[f] = "missing"
-        self.body.setPlainText("")
-        self.notes.setPlainText("")
-        self.url_in.setText("")
-        self.chk_sig.setChecked(bool(self.db.signature.strip()))
+        try:
+            for f in FIELDS:
+                self.w[f].setText("")
+                self.states[f] = "missing"
+            self.body.setPlainText("")
+            self.notes.setPlainText("")
+            self.url_in.setText("")
+            self.chk_sig.setChecked(bool(self.db.signature.strip()))
+        finally:
+            self._loading = False
         self._draft_sig = None
         self._sync_sig_snapshot_ui()
-        self._loading = False
         self._last_result = None
+        self._preview_manual = False
         for f in FIELDS:
             self._paint_state(f)
         self.parse_status.setText("尚未擷取")
@@ -1348,8 +1421,10 @@ class MainWindow(QMainWindow):
         self.parse_warn.setPlainText("")
         self.chk_confirm.setChecked(False)
         self.chk_retype.setChecked(False)
+        self.type_status.setText(TYPE_HELP)
         self.lbl_draft.setText("未儲存")
         self.render_preview(force=True)
+        self._dirty = False
         self._update_type_buttons()
 
     def save_draft(self) -> int | None:
@@ -1532,6 +1607,7 @@ class MainWindow(QMainWindow):
         self._notice(msg)
         self.chk_retype.setChecked(False)
         self._update_type_buttons()
+        self._on_links_changed(self.term.links())
 
     # ================================================================== laptop / desktop adaptation
     @staticmethod

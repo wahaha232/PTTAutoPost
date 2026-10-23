@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,19 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.7.2", "2026/10/23", [
+        "Article fetch: every successful fetch starts a fresh article context. It detaches the previous draft, clears "
+        "personal notes, the opened-draft signature snapshot, preview/manual state and the confirmation/typing "
+        "checkboxes, so a second pasted URL no longer carries data from the first article.",
+        "Article tab: new '清除全部欄位' button clears all fields, the preview and transient state after confirmation; "
+        "saved drafts are kept.",
+        "Signatures: choosing an entry from the drop-down now clears the opened draft's signature snapshot and applies "
+        "the new choice immediately; previously the snapshot silently kept the old signature.",
+        "Settings: new '套用' button re-applies and saves all current settings and shows a success dialog.",
+        "Links: every detected hyperlink is underlined, not only the hovered one; hover still thickens it.",
+        "Image auto-open: enabling the option processes images already on screen; images seen during typing or assisted "
+        "login are no longer marked as handled forever — they are evaluated again when the run/login finishes.",
+    ]),
     ("0.7.1", "2026/10/23", [
         "Paste: while a chunked paste is running, the article title/body input buttons, login and 'go to board' are "
         "disabled; their direct handlers and preflight refuse with a status-bar reason. Everything is restored when "

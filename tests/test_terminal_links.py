@@ -35,6 +35,17 @@ def test_hover_underlines_link_and_changes_cursor(qapp):
     assert term.cursor().shape() != Qt.CursorShape.PointingHandCursor
 
 
+def test_detected_links_are_underlined_without_hover(qapp):
+    term = make_term()
+    assert term.links()
+    with_link = term.grab().toImage()
+    term._links = []
+    term._hover_link = None
+    term.update()
+    without_link = term.grab().toImage()
+    assert with_link != without_link
+
+
 def test_click_opens_once_and_does_not_send_terminal_bytes(qapp, monkeypatch):
     term = make_term()
     link = term.links()[0]

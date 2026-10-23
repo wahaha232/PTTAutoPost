@@ -20,6 +20,9 @@ ARTICLE = f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <article><h1>測試新聞標題</h1>{''.join(f'<p>{PARA}第{i}段。</p>' for i in range(6))}
 <div class="related-news"><p>延伸閱讀：不要這個</p></div></article><footer>版權所有</footer></body></html>"""
 
+SECOND = (ARTICLE.replace("測試新聞標題", "第二則新聞標題").replace("某某新聞網", "第二新聞網")
+          .replace("王小明", "陳大華").replace(PARA + "第1段。", "第二篇獨有內容。"))
+
 
 def test_generic_article_all_fields_found():
     r = parse(ARTICLE, "https://news.example/a/1")
@@ -113,6 +116,8 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", "text/plain"); self.end_headers(); self.wfile.write(body); return
         if p == "/ok":
             self._send(ARTICLE.encode("utf-8"), "text/html; charset=utf-8")
+        elif p == "/second":
+            self._send(SECOND.encode("utf-8"), "text/html; charset=utf-8")
         elif p == "/big5":
             page = "<html><head><title>大五碼測試</title></head><body><p>繁體中文內容：批踢踢實業坊。</p></body></html>"
             self._send(page.encode("cp950"), "text/html; charset=big5")

@@ -680,6 +680,11 @@ class TerminalWidget(QWidget):
                     p.restore()
                     if fl & UNDERLINE:
                         p.drawLine(int(left), int(top + ch - 2), int(left + w), int(top + ch - 2))
+        if self._links:
+            p.setPen(QPen(QColor(*self.colors.cursor), max(1.0, ch / 18)))
+            for link in self._links:
+                p.drawLine(int(link.start_col * cw), int(link.row * ch + ch - 2),
+                           int(link.end_col * cw), int(link.row * ch + ch - 2))
         if self._hover_link is not None:
             link = self._hover_link
             p.setPen(QPen(QColor(*self.colors.cursor), max(1.0, ch / 14)))
