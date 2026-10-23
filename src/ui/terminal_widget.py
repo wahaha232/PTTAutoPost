@@ -9,6 +9,7 @@ Two layouts: fixed (cell size from the chosen font size) and fit (the font size 
 from __future__ import annotations
 
 import math
+import time
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QPainter, QPen, QPolygonF
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QSizePolicy, QWidget
 
 from ..links import Link, find_links
 from ..net.session import PttSession
+from ..terminal import selection as termsel
 from ..terminal.screen import BOLD, REVERSE, UNDERLINE, WIDE2
 from .theme import terminal_palette
 _K = Qt.Key
@@ -126,6 +128,14 @@ class TerminalWidget(QWidget):
         self._press_link: Link | None = None
         self._press_pos = QPointF()
         self._press_dragged = False
+        self._press_multi = False
+        self._sel_anchor: tuple[int, int] | None = None
+        self._sel_cursor: tuple[int, int] | None = None
+        self._sel_rect = False
+        self._sel_selecting = False
+        self._click_count = 0
+        self._last_click_time = 0.0
+        self._last_click_pos = QPointF()
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)           # never grabs focus on its own
         self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
@@ -176,6 +186,7 @@ class TerminalWidget(QWidget):
     linksChanged = Signal(object)
 
     def _on_screen_changed(self) -> None:
+        self.clear_selection()
         self._refresh_links()
         self.update()
 
@@ -199,6 +210,69 @@ class TerminalWidget(QWidget):
             return None
         return next((link for link in self._links if link.contains(row, col)), None)
 
+    def _cell_at(self, pos, clamp_to_grid: bool = False) -> tuple[int, int] | None:
+        if self.cw <= 0 or self.ch <= 0:
+            return None
+        x = (pos.x() - self.ox) / self.cw
+        y = (pos.y() - self.oy) / self.ch
+        rows, cols = self.s.screen.rows, self.s.screen.cols
+        if not clamp_to_grid and (x < 0 or y < 0 or x >= cols or y >= rows):
+            return None
+        return termsel.clamp((int(y), int(x)), cols, rows)
+
+    def _next_click_count(self, pos) -> int:
+        now = time.monotonic()
+        near = abs(pos.x() - self._last_click_pos.x()) + abs(pos.y() - self._last_click_pos.y()) <= QApplication.startDragDistance()
+        within = now - self._last_click_time <= QApplication.doubleClickInterval() / 1000.0
+        if near and within:
+            count = self._click_count + 1
+            if count > 3:
+                count = 1
+        else:
+            count = 1
+        self._click_count, self._last_click_time, self._last_click_pos = count, now, pos
+        return count
+
+    def _apply_click_selection(self, count: int, pos) -> None:
+        cell = self._cell_at(pos)
+        if cell is None:
+            self.clear_selection()
+            return
+        row, col = cell
+        if count >= 3:
+            self._sel_anchor, self._sel_cursor = (row, 0), (row, len(self.s.screen.grid[row]) - 1)
+        else:
+            span = termsel.word_span(self.s.screen.grid, row, col)
+            if span is None:
+                self.clear_selection()
+                return
+            self._sel_anchor, self._sel_cursor = (row, span[0]), (row, span[1])
+        self._sel_rect = False
+        self._sel_selecting = False
+        self.update()
+
+    def has_selection(self) -> bool:
+        return self._sel_anchor is not None and self._sel_cursor is not None
+
+    def selection_text(self) -> str:
+        if not self.has_selection():
+            return ""
+        return termsel.selection_text(self.s.screen.grid, self._sel_anchor, self._sel_cursor, self._sel_rect)
+
+    def clear_selection(self) -> None:
+        if self._sel_anchor is None and self._sel_cursor is None:
+            return
+        self._sel_anchor = self._sel_cursor = None
+        self._sel_rect = False
+        self.update()
+
+    def _selection_spans(self) -> dict[int, list[tuple[int, int]]]:
+        spans: dict[int, list[tuple[int, int]]] = {}
+        if self.has_selection():
+            for row, start, end in termsel.selection_rows(self.s.screen.grid, self._sel_anchor, self._sel_cursor, self._sel_rect):
+                spans.setdefault(row, []).append((start, end))
+        return spans
+
     def mouseMoveEvent(self, e):
         link = self.link_at(e.position())
         if link != self._hover_link:
@@ -208,24 +282,78 @@ class TerminalWidget(QWidget):
             else:
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
             self.update()
-        if self._press_link is not None:
+        if e.buttons() & Qt.MouseButton.LeftButton:
             dx, dy = e.position().x() - self._press_pos.x(), e.position().y() - self._press_pos.y()
             if abs(dx) + abs(dy) > QApplication.startDragDistance():
                 self._press_dragged = True
+            if self._sel_selecting and self._sel_anchor is not None:
+                cell = self._cell_at(e.position(), clamp_to_grid=True)
+                if cell is not None:
+                    self._sel_cursor = cell
+                    self._sel_rect = bool(e.modifiers() & Qt.KeyboardModifier.AltModifier)
+                    self.update()
         super().mouseMoveEvent(e)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            self._press_link = self.link_at(e.position())
-            self._press_pos = e.position()
+            pos = e.position()
+            self._press_link = self.link_at(pos)
+            self._press_pos = pos
             self._press_dragged = False
+            self._press_multi = False
+            count = self._next_click_count(pos)
+            if count >= 2:
+                self._apply_click_selection(count, pos)
+                self._press_multi = True
+                self._press_dragged = True
+            else:
+                cell = self._cell_at(pos)
+                if cell is None:
+                    self.clear_selection()
+                    self._sel_selecting = False
+                else:
+                    self._sel_anchor = self._sel_cursor = cell
+                    self._sel_rect = bool(e.modifiers() & Qt.KeyboardModifier.AltModifier)
+                    self._sel_selecting = True
+                    self.update()
         super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            pos = e.position()
+            count = self._next_click_count(pos)
+            if count < 2:
+                count = self._click_count = 2
+            self._press_link = self.link_at(pos)
+            self._press_pos = pos
+            self._press_dragged = True
+            self._press_multi = True
+            self._apply_click_selection(count, pos)
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            link, dragged = self._press_link, self._press_dragged
-            self._press_link, self._press_dragged = None, False
-            if link is not None and not dragged and self.link_at(e.position()) == link:
+            pos = e.position()
+            link, dragged, multi = self._press_link, self._press_dragged, self._press_multi
+            self._press_link, self._press_dragged, self._press_multi = None, False, False
+            if multi:
+                self._sel_selecting = False
+                e.accept()
+                return
+            if dragged:
+                if self._sel_selecting and self._sel_anchor is not None:
+                    cell = self._cell_at(pos, clamp_to_grid=True)
+                    if cell is not None:
+                        self._sel_cursor = cell
+                    self.update()
+                self._sel_selecting = False
+                e.accept()
+                return
+            self._sel_selecting = False
+            self.clear_selection()
+            if link is not None and self.link_at(pos) == link:
                 self.linkActivated.emit(link.url)
                 e.accept()
                 return
@@ -312,6 +440,8 @@ class TerminalWidget(QWidget):
         if data:
             if not self.s.send_user_bytes(data):
                 self.notice.emit("尚未連線，按鍵未送出。")
+            else:
+                self.clear_selection()
             e.accept()
         else:
             super().keyPressEvent(e)
@@ -327,6 +457,8 @@ class TerminalWidget(QWidget):
             self._wheel -= steps * 60
             if self.s.send_user_bytes((b"\x1b[A" if steps > 0 else b"\x1b[B") * min(abs(steps), 5)) is False:
                 self.notice.emit("尚未連線，捲動未送出。")
+            else:
+                self.clear_selection()
         e.accept()
 
     def inputMethodEvent(self, e):
@@ -345,6 +477,8 @@ class TerminalWidget(QWidget):
             else:
                 if not self.s.send_user_bytes(data):
                     self.notice.emit("尚未連線，輸入未送出。")
+                else:
+                    self.clear_selection()
         e.accept()
 
     def focusInEvent(self, e):
@@ -377,8 +511,16 @@ class TerminalWidget(QWidget):
         p.translate(self.ox, self.oy)
         sx = self.sx
         center = int(Qt.AlignmentFlag.AlignCenter)
+        selection = self._selection_spans()
         for y, row in enumerate(scr.grid):
             top = y * ch
+            spans = selection.get(y)
+            picked = None
+            if spans:
+                picked = [False] * len(row)
+                for start, end in spans:
+                    for i in range(max(0, start), min(len(row) - 1, end) + 1):
+                        picked[i] = True
             for x, (c, fg, bg, fl) in enumerate(row):
                 if fl & WIDE2:
                     continue
@@ -388,7 +530,10 @@ class TerminalWidget(QWidget):
                 b = self.colors.bg_colors[bg]
                 if fl & REVERSE:
                     f, b = b, f
-                if b != self.colors.bg:
+                selected = bool(picked is not None and (picked[x] or (cells == 2 and x + 1 < len(row) and picked[x + 1])))
+                if selected:
+                    f, b = b, f
+                if selected or b != self.colors.bg:
                     p.fillRect(QRectF(left, top, w + 0.6, ch + 0.6), QColor(*b))   # +0.6: no hairline gaps between cells
                 if c.strip():
                     p.setPen(QColor(*f))
