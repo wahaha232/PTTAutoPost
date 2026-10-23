@@ -42,7 +42,7 @@ PTTAutoPost.exe --probe         # 唯讀檢查 wss://ws.ptt.cc/bbs（連線、�
 - ✔ 真實 `wss://ws.ptt.cc/bbs`：握手需帶 `Origin: https://term.ptt.cc`（否則 403）；第一筆訊息以 `HTTP/1.1 200 OK\r\n\r\n` 開頭需剝除；內含 Telnet IAC 序列需過濾；登入畫面末行為「請輸入代號，或以 guest 參觀，或以 new 註冊:」，程式端已辨識（原始碼與打包後的 EXE 皆實測，未登入、未送出任何資料）。SSH 備案（`ssh bbs@ptt.cc`）亦可到達同一登入畫面，**未實作**。
 - ✔ 對本機假 BBS 的登入流程、輸入內容逐位元組比對、斷線／取消／畫面不符／重複輸入防護（`tests\`）。
 - ✔ 0.7.0 資料夾版已在本機建置並通過 `--selftest`（version／frozen／offscreen 畫面繪製）；Qt6Core 等 DLL 位於 `_internal\` 且可替換，未使用的 Qt Quick／QML／Pdf／OpenGL／Svg、翻譯與圖片格式外掛已剔除；產物不含 corpus 檔。LZMA2 7z 已實際產生（約 22 MB）。
-- ✔ 0.8.0：13 個站台已完成 2026-10-23 的 DNS／TCP／TLS 唯讀實測（未登入、未送帳密）；雲端更新（GitHub API 解析、資產選擇、SHA-256、下載與 UI）與 Telnet 傳輸（IAC 協商、QTcpSocket、字元畫面）已在 offscreen 測試；全套 331 passed。
+- ✔ 0.8.0：13 個站台已完成 2026-10-23 的 DNS／TCP／TLS 唯讀實測（未登入、未送帳密）；雲端更新（GitHub API 解析、資產選擇、SHA-256、下載與 UI）與 Telnet 傳輸（IAC 協商、QTcpSocket、字元畫面）已在 offscreen 測試；全套 332 passed。資料夾版 76.6 MB、7z 22.2 MB、ZIP 33.1 MB 已實際建置；Telnet 對夢之大地唯讀連線收到 3,399 bytes Big5 畫面。
 - ✘ GitHub Release 尚未建立，更新功能沒有真實 Release 可端到端測試；Telnet 站台的實際登入與非 Big5 編碼、SSH 連線也尚未驗證。
 - ✘ **尚未用真實帳號登入過**（沒有您的帳密，也不會代您登入）：登入後的提示處理、「標題：」與「編輯文章」畫面的辨識字串、PTT 標題長度上限、編輯器實際吃字行為都**未實測**；辨識不到一律停止並提示。
 - ✘ 合併頁、面板收合（`F12`）、`F11`、主題、終端機配色、超連結、終端機選取／複製／貼上已在 offscreen 測試；實際桌面（含 1366×768、多螢幕與 DPI 切換）仍待您驗證。超連結目前只認單列，實務上被換行的網址不會自動拼接；自動開圖的實際 IP／隱私效果也需您確認；拖曳選取的手感與貼上到 PTT 編輯器的實際結果（含換行轉 CR）也需您實測。

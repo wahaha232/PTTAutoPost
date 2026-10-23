@@ -294,6 +294,8 @@
 - 新增 `tests/test_update.py`、`tests/test_update_ui.py`、`tests/test_sites.py`、`tests/test_net_telnet.py`；更新分頁數量與既有測試。
 - 新增 `tools/make_source_listing.py`：輸出純文字原始碼清單（`dist\PTTAutoPost-0.8.0-source.txt`，78 個檔案、862.9 KB），供審閱／備份。
 - 全套 **332 passed**。
+- 本機 0.8.0 建置：資料夾版 76.6 MB、LZMA2 7z 22.2 MB、更新用 ZIP 33.1 MB；`--selftest` OK。
+- Telnet 唯讀實測：`telnet://bbs.ccns.ncku.edu.tw:23` 成功連線，7 秒內收到 3,399 bytes Big5／ANSI 畫面資料；未登入、未送帳密。
 
 ### 未完成／待辦
 
