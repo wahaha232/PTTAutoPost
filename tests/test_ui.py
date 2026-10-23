@@ -869,3 +869,27 @@ def test_f12_toggles_panel_and_ctrl_shift_a_stays_terminal_input(win, bbs_factor
                    Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier, "")
     win.term.keyPressEvent(ev)
     assert wait_until(lambda: bytes(bbs.after_login) == b"\x01")
+
+
+def test_browser_settings_defaults_and_persist(win):
+    assert win.browser_combo.currentData() == "system"
+    assert not win.chk_auto_image.isChecked()
+    assert win.db.get_setting("browser.mode", "") == ""
+    win.browser_combo.setCurrentIndex(win.browser_combo.findData("custom"))
+    win.browser_path.setText("C:/Tools/browser.exe")
+    win._save_browser_path()
+    assert win.db.get_setting("browser.mode") == "custom"
+    assert win.db.get_setting("browser.path") == "C:/Tools/browser.exe"
+    assert win.browser_path.isEnabled()
+    win.chk_auto_image.setChecked(True)
+    assert win.db.get_setting("links.image_auto_open") == "1"
+
+
+def test_browser_settings_corrupt_fall_back(qapp, tmp_path):
+    db = Database(tmp_path / "browser.db")
+    db.set_setting("browser.mode", "not-a-browser")
+    db.set_setting("links.image_auto_open", "maybe")
+    w = MainWindow(db, PttSession())
+    assert w.browser_combo.currentData() == "system"
+    assert not w.chk_auto_image.isChecked()
+    w.db.close()

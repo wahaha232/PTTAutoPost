@@ -22,7 +22,7 @@ from ..parsers.extract import ParseResult, parse
 from ..parsers.fetch import fetch
 from ..storage.db import MAX_SIGNATURES, Database
 from ..version import APP_NAME, __version__
-from . import theme
+from . import browser, theme
 from .icon import app_icon, tray_icon
 from .terminal_widget import TerminalWidget
 
@@ -93,6 +93,8 @@ class MainWindow(QMainWindow):
         self._theme_name = self._resolve_theme(self._theme_choice)
         self._theme_data = theme.get_theme(self._theme_name)
         self._terminal_palette_choice = self._load_terminal_palette_choice()
+        self._browser_mode = self._load_browser_mode()
+        self._browser_path_value = self.db.get_setting("browser.path", "")
         self._parse_kind: str | None = None
         self._article_width_timer = QTimer(self)
         self._article_width_timer.setSingleShot(True)
@@ -375,6 +377,63 @@ class MainWindow(QMainWindow):
         return self.typer
 
     # ================================================================== settings tab
+    def _load_browser_mode(self) -> str:
+        raw = self.db.get_setting("browser.mode", "system")
+        return raw if raw in browser.BROWSER_KEYS else "system"
+
+    def _reload_browser_combo(self, select: str) -> None:
+        self._browser_paths = browser.detect_browsers()
+        combo = self.browser_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for key in ("system", "chrome", "edge", "firefox", "custom"):
+            label = browser.BROWSER_LABELS[key]
+            if key in ("chrome", "edge", "firefox") and key not in self._browser_paths:
+                label += "（找不到）"
+            combo.addItem(label, key)
+        idx = combo.findData(select if select in browser.BROWSER_KEYS else "system")
+        combo.setCurrentIndex(max(0, idx))
+        combo.blockSignals(False)
+        self._sync_browser_ui()
+
+    def _sync_browser_ui(self) -> None:
+        custom = self.browser_combo.currentData() == "custom"
+        self.browser_path.setEnabled(custom)
+        self.btn_browser_browse.setEnabled(custom)
+
+    def _browser_mode_changed(self, _index: int) -> None:
+        self._browser_mode = self.browser_combo.currentData() or "system"
+        self._browser_path_value = self.browser_path.text()
+        self.db.set_setting("browser.mode", self._browser_mode)
+        if self._browser_mode == "custom":
+            self.db.set_setting("browser.path", self._browser_path_value)
+        self._sync_browser_ui()
+
+    def _save_browser_path(self) -> None:
+        self._browser_path_value = self.browser_path.text().strip()
+        self.db.set_setting("browser.path", self._browser_path_value)
+
+    def _browse_browser(self) -> None:
+        start = str(Path(self.browser_path.text()).parent) if self.browser_path.text().strip() else ""
+        f, _ = QFileDialog.getOpenFileName(self, "選擇瀏覽器執行檔", start, "程式 (*.exe);;所有檔案 (*)")
+        if not f:
+            return
+        self.browser_path.setText(f)
+        idx = self.browser_combo.findData("custom")
+        if idx >= 0:
+            self.browser_combo.setCurrentIndex(idx)
+        self._save_browser_path()
+        self._browser_mode_changed(self.browser_combo.currentIndex())
+
+    def _detect_browsers(self) -> None:
+        self._reload_browser_combo(self._browser_mode)
+        self._notice("已重新偵測瀏覽器（找不到的項目會標示）。")
+
+    def _auto_image_toggled(self, on: bool) -> None:
+        self.db.set_setting("links.image_auto_open", "1" if on else "0")
+        self._notice("已開啟圖片連結自動開啟；圖床會看到您的 IP。" if on else "已關閉圖片連結自動開啟。")
+
+    # ================================================================== settings tab
     def _build_settings_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -397,6 +456,36 @@ class MainWindow(QMainWindow):
         af.addRow("終端機配色", self.terminal_palette_combo)
         af.addRow(QLabel("只影響終端機；「永遠深色」固定黑底，「跟隨主題」在淺色主題使用淺色配色。"))
         lay.addWidget(ap)
+
+        bg = QGroupBox("連結與瀏覽器")
+        bf = QFormLayout(bg)
+        self.browser_combo = QComboBox()
+        self.browser_path = QLineEdit(self._browser_path_value)
+        self.browser_path.setPlaceholderText("自訂瀏覽器執行檔路徑（僅在「自訂執行檔」時使用）")
+        self.btn_browser_browse = QPushButton("瀏覽…")
+        self.btn_browser_detect = QPushButton("重新偵測")
+        row_b = QHBoxLayout()
+        row_b.addWidget(self.browser_path, 1)
+        row_b.addWidget(self.btn_browser_browse)
+        row_b.addWidget(self.btn_browser_detect)
+        self.chk_auto_image = QCheckBox("自動開啟圖片連結")
+        self.chk_auto_image.setChecked(self.db.get_setting("links.image_auto_open", "0") == "1")
+        self.lbl_auto_image_note = QLabel("預設關閉。自動開啟會讓圖床看到您的 IP；同一連線同一網址只開一次，且有每分鐘上限。")
+        self.lbl_auto_image_note.setWordWrap(True)
+        bf.addRow("瀏覽器", self.browser_combo)
+        bf.addRow("自訂路徑", row_b)
+        bf.addRow("", self.chk_auto_image)
+        bf.addRow("", self.lbl_auto_image_note)
+        lay.addWidget(bg)
+        self._browser_paths: dict[str, str] = {}
+        self._reload_browser_combo(self._browser_mode)
+        self.browser_combo.currentIndexChanged.connect(self._browser_mode_changed)
+        self.browser_path.editingFinished.connect(self._save_browser_path)
+        self.btn_browser_browse.clicked.connect(self._browse_browser)
+        self.btn_browser_detect.clicked.connect(self._detect_browsers)
+        self.chk_auto_image.toggled.connect(self._auto_image_toggled)
+        self._sync_browser_ui()
+
         g = QGroupBox("終端機顯示")
         form = QFormLayout(g)
         self.set_font = QFontComboBox()
