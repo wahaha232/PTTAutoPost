@@ -446,6 +446,8 @@ class MainWindow(QMainWindow):
         mode = self.browser_combo.currentData() if hasattr(self, "browser_combo") else "system"
         path = self.browser_path.text().strip() if hasattr(self, "browser_path") else ""
         ok, msg = browser.open_url(url, mode or "system", path)
+        if ok:
+            self._auto_opened.add(url)                 # a manual click also counts for this connection
         if ok and auto:
             msg = "已自動開啟圖片連結。"
         self._notice(msg)

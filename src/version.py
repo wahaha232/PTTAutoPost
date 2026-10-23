@@ -1,10 +1,20 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.6.5", "2026/10/23", [
+        "Links: detect single-row http/https URLs on the terminal grid (correct cell positions for Chinese "
+        "double-width text); wrapped URLs are deliberately not guessed. Other schemes and URLs with userinfo are rejected.",
+        "Links: hovering underlines the URL and shows a hand cursor; a click opens the browser only when the pointer is "
+        "released without dragging. Link clicks never send bytes to the BBS. Browser selection supports system, Chrome, "
+        "Edge, Firefox or a custom executable, always passed the URL as one argument without a shell.",
+        "Links: optional image-link auto-open (default off) with an IP warning; once per URL per connection, at most one "
+        "per screen update and three per rolling minute; disabled while automatic typing or assisted login is active "
+        "(manual clicks still work). Invalid settings fall back to safe defaults.",
+    ]),
     ("0.6.4", "2026/10/23", [
         "UI: terminal palette is now a separate option (always dark / follow theme; default always dark), applied live "
         "and persisted as ui.terminal_palette; missing or invalid values fall back to dark",
