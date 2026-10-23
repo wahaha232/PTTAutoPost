@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -53,16 +54,25 @@ class FetchTask(QRunnable):
         super().__init__()
         self.url, self.ignore_robots = url, ignore_robots
         self.signals = _Signals()
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        """Ask a running fetch to stop at the next safe point (sleep / chunk boundary)."""
+        self._cancel.set()
 
     def run(self):
         try:
-            f = fetch(self.url, ignore_robots=self.ignore_robots)
+            f = fetch(self.url, ignore_robots=self.ignore_robots, cancel=self._cancel)
+            if self._cancel.is_set():                         # the window is closing: do not touch anything
+                return
             self.signals.done.emit(f, parse(f.html, f.final_url, f.warnings))
         except ToolError as e:
-            self.signals.failed.emit(e.message, e.detail)
+            if not self._cancel.is_set():
+                self.signals.failed.emit(e.message, e.detail)
         except Exception as e:  # noqa: BLE001  (a parser bug must never kill the app)
             log.exception("unexpected error while fetching/parsing")
-            self.signals.failed.emit("擷取時發生未預期的錯誤。", f"{type(e).__name__}: {e}")
+            if not self._cancel.is_set():
+                self.signals.failed.emit("擷取時發生未預期的錯誤。", f"{type(e).__name__}: {e}")
 
 
 class _UpdateSignals(QObject):
@@ -161,6 +171,7 @@ class MainWindow(QMainWindow):
         self._update_phase = ""
         self._pending_site_url: str | None = None
         self._site_check_task = None
+        self._task = None                                  # running FetchTask (cancelled on close)
         self._typing_target: Target | None = None
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         self.setWindowIcon(app_icon())
@@ -729,6 +740,26 @@ class MainWindow(QMainWindow):
         self.btn_update_manual.clicked.connect(self.open_manual_download)
         self.btn_update_folder.clicked.connect(self.open_update_folder)
         self.chk_auto_update.toggled.connect(lambda on: self.db.set_setting("update.auto_check", "1" if on else "0"))
+        dg = QGroupBox("資料位置")
+        dl = QVBoxLayout(dg)
+        self.lbl_data_path = QLabel(f"草稿與設定資料庫：{self.db.path}")
+        self.lbl_data_path.setWordWrap(True)
+        self.lbl_data_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        dl.addWidget(self.lbl_data_path)
+        drow = QHBoxLayout()
+        self.btn_data_folder = QPushButton("開啟資料資料夾")
+        self.btn_data_folder.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.db.path.parent))))
+        self.btn_data_backup = QPushButton("備份資料…")
+        self.btn_data_backup.clicked.connect(self.backup_data)
+        drow.addWidget(self.btn_data_folder)
+        drow.addWidget(self.btn_data_backup)
+        drow.addStretch(1)
+        dl.addLayout(drow)
+        dl.addWidget(QLabel("可攜版資料在程式資料夾的 data/；若該位置不可寫入，會改用 %LOCALAPPDATA%\\PTTAutoPost\\data。"
+                            "備份使用 SQLite 線上備份（包含 WAL 中已提交的資料）。還原時請先關閉程式、保留目前資料庫，"
+                            "再以備份檔覆蓋 data\\pttpost.db。程式在升級資料庫結構前也會先保留備份。"))
+        lay.addWidget(dg)
         sg = QGroupBox("贊助作者")
         sl = QVBoxLayout(sg)
         sponsor_note = QLabel("贊助出於自願，不影響任何功能；程式不會追蹤或上傳資料，只會在您按下按鈕時用預設瀏覽器開啟贊助頁。")
@@ -758,6 +789,19 @@ class MainWindow(QMainWindow):
         self.btn_font_default.clicked.connect(self._reset_terminal_settings)
         self.set_dfyuan.clicked.connect(self.use_dfyuan)
         return w
+
+    def backup_data(self) -> None:
+        default = self.db.path.with_name(f"PTTAutoPost-backup-{time.strftime('%Y%m%d-%H%M%S')}.db")
+        path, _ = QFileDialog.getSaveFileName(self, "備份資料庫", str(default),
+                                              "SQLite 資料庫 (*.db);;所有檔案 (*)")
+        if not path:
+            return
+        try:
+            target = self.db.backup_to(path)
+        except ToolError as e:
+            self._error(f"備份失敗：{e.message}")
+            return
+        self._notice(f"已備份資料庫：{target}")
 
     def _apply_terminal_settings(self, bar: bool = False):
         src = (self.tb_font, self.tb_size, self.tb_fill, self.tb_stretch) if bar else (self.set_font, self.set_size, self.set_fill, self.set_stretch)
@@ -927,7 +971,8 @@ class MainWindow(QMainWindow):
         self._update_phase = ""
         if hasattr(self, "update_progress"):
             self.update_progress.setVisible(False)
-        verified = "SHA-256 驗證通過" if result.verified else "GitHub 未提供 digest，僅完成下載"
+        verified = ("已核對 GitHub 提供的 SHA-256（僅確認檔案與該 digest 相符，不代表發布者身分）"
+                    if result.verified else "GitHub 未提供 digest，未完成雜湊核對（僅完成下載）")
         asset = self._update_asset
         if asset is not None and asset.name.lower().endswith("-setup.exe"):
             how = "請關閉本程式，執行下載的 setup.exe。安裝程式會保留 config／logs／data。"
@@ -1310,6 +1355,7 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(task)
 
     def _fetch_failed(self, msg: str, detail: str):
+        self._task = None
         self._busy = False
         self.btn_fetch.setEnabled(True)
         self.parse_status.setText(f"擷取失敗：{msg}")
@@ -1319,6 +1365,7 @@ class MainWindow(QMainWindow):
         log.info("fetch failed: %s | %s", msg, detail)
 
     def _fetch_done(self, fetched, res: ParseResult):
+        self._task = None
         self._busy = False
         self.btn_fetch.setEnabled(True)
         self._refresh_timer.stop()
@@ -1822,6 +1869,17 @@ class MainWindow(QMainWindow):
             self._notice("此版本尚未支援 SSH 連線；站台書籤仍保留，可手動使用其他 SSH 客戶端。")
             self.lbl_site_test.setText("SSH 連線尚未支援；書籤資料保留。")
             return
+        if site["protocol"] == "telnet":
+            if QMessageBox.warning(
+                    self, "Telnet 明文傳輸警告",
+                    f"「{site['name']}」使用 Telnet，帳號、密碼與文章內容都會以明文在網路上傳輸，"
+                    "可能被同一網路上的他人攔截。\n\n建議改用 WSS（加密）站台；若仍要連線，"
+                    "請避免在公用網路輸入重要密碼。\n\n確定要以 Telnet 連線嗎？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                self._notice("已取消 Telnet 連線。")
+                self.lbl_site_test.setText("已取消：Telnet 為明文傳輸。")
+                return
         url = sites.site_address(site)
         self.url_box.setEditText(url)
         if self.session.client.state is not State.DISCONNECTED:
@@ -2070,7 +2128,7 @@ class MainWindow(QMainWindow):
                 self._typing_draft_id = None
                 self._error(f"無法記錄輸入狀態，已取消輸入（未送出任何內容）：{e.message}")
                 return
-        reason = typer.start(target, text, self.chk_nonempty.isChecked())
+        reason = typer.start(target, text, self.chk_nonempty.isChecked(), pasting=self._paste_active())
         if reason:
             self._typing_draft_id = None
             if target is Target.BODY:
@@ -2270,6 +2328,27 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._to_tray)
 
     # ================================================================== lifecycle
+    @staticmethod
+    def _disconnect_task_signals(task, names) -> None:
+        if task is None:
+            return
+        for name in names:
+            try:
+                getattr(task.signals, name).disconnect()
+            except (RuntimeError, TypeError):
+                pass
+
+    def _cancel_background_tasks(self) -> None:
+        """Stop touching widgets after destruction: cancel fetch sleeps and cut every signal."""
+        task = getattr(self, "_task", None)
+        if task is not None:
+            task.cancel()
+            self._disconnect_task_signals(task, ("done", "failed"))
+            self._task = None
+        self._disconnect_task_signals(getattr(self, "_update_check_task", None), ("done", "failed"))
+        self._disconnect_task_signals(getattr(self, "_update_download_task", None), ("progress", "done", "failed"))
+        self._disconnect_task_signals(getattr(self, "_site_check_task", None), ("done",))
+
     def closeEvent(self, e):
         if (not self._quitting and self._tray is not None and self.chk_tray_close.isChecked()):
             e.ignore()
@@ -2279,6 +2358,7 @@ class MainWindow(QMainWindow):
             self._quitting = False
             e.ignore()
             return
+        self._cancel_background_tasks()
         if self.typer.running:
             self.typer.cancel()
         self._save_geometry()

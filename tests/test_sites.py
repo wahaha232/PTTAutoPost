@@ -15,6 +15,7 @@ def test_default_sites_are_the_verified_list():
     assert sum(1 for s in items if s["protocol"] == "telnet") == 8
     assert sum(1 for s in items if s["protocol"] == "ssh") == 3
     assert all(s["note"].startswith("2026-10-23") for s in items)
+    assert sites.PROTOCOL_LABELS["telnet"] == "Telnet（明文）"
 
 
 def test_site_address_and_validation():
@@ -135,13 +136,28 @@ def test_connect_wss_sets_endpoint_and_switches_tab(win, monkeypatch):
 def test_connect_telnet_is_supported_with_plaintext_warning(win, monkeypatch):
     calls = []
     notices = []
+    warnings = []
     monkeypatch.setattr(win.session, "connect_to", lambda url: calls.append(url))
     monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warnings.append(a[2]) or QMessageBox.StandardButton.Yes))
     win.site_list.setCurrentRow(2)
     win.btn_site_connect.click()
     assert calls == ["telnet://bbs.ccns.ncku.edu.tw:23"]
-    assert notices and "明文" in notices[-1]
+    assert warnings and "明文" in warnings[-1] and "帳號、密碼" in warnings[-1]
     assert win.url_box.currentText() == "telnet://bbs.ccns.ncku.edu.tw:23"
+
+
+def test_telnet_connection_can_be_cancelled_at_the_warning(win, monkeypatch):
+    calls = []
+    notices = []
+    monkeypatch.setattr(win.session, "connect_to", lambda url: calls.append(url))
+    monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    win.site_list.setCurrentRow(2)
+    win.btn_site_connect.click()
+    assert calls == []
+    assert notices and "取消" in notices[-1]
 
 
 def test_connect_ssh_is_refused_but_bookmark_remains(win, monkeypatch):

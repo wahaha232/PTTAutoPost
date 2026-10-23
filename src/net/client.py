@@ -49,9 +49,21 @@ def endpoint_problem(url: str) -> str | None:
 
 
 def login_host_trusted(url: str) -> bool:
+    """True only for the exact official endpoint (or a local test endpoint).
+
+    A suffix match is not enough: a crafted host such as ws.ptt.cc.evil.example must
+    never receive the user's credentials, and neither should another port or path.
+    """
     from urllib.parse import urlparse
-    host = (urlparse(url).hostname or "").lower()
-    return host in TRUSTED_LOGIN_HOSTS or host in _LOOPBACK
+    try:
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+    except ValueError:
+        return False
+    if host in _LOOPBACK:
+        return True                                        # local fake BBS used by the tests
+    return (p.scheme == "wss" and host in TRUSTED_LOGIN_HOSTS and p.port in (None, 443)
+            and (p.path or "/") in ("/", "/bbs") and not p.username and not p.password)
 
 
 class State(enum.Enum):
@@ -118,24 +130,18 @@ class PttClient(QObject):
         ws.open(QNetworkRequest(QUrl(url)), opts)
 
     def close(self) -> None:
-        """Polite close (WebSocket close frame / TCP FIN) so the server frees the session promptly."""
+        """Drop the socket and report DISCONNECTED immediately.
+
+        Waiting for the peer's disconnected signal left the client in CONNECTED after a
+        half-closed TCP session, so connect_to() refused to start a new connection.  The
+        connection is aborted on purpose: the user explicitly asked to disconnect and an
+        immediate reconnect must always be possible.
+        """
         self._intentional_close = True
         self._timer.stop()
-        connecting = self.state is State.CONNECTING
-        if self._ws is not None:
-            if connecting:                                  # handshake not finished: abort and forget this socket
-                ws, self._ws = self._ws, None
-                ws.abort()
-                ws.deleteLater()
-            else:
-                self._ws.close()
-        if self._tcp is not None:
-            if connecting:
-                self._drop_tcp()
-            else:
-                self._tcp.disconnectFromHost()
-        if connecting:
-            self._set_state(State.DISCONNECTED)
+        self._drop_ws()
+        self._drop_tcp()
+        self._set_state(State.DISCONNECTED)
 
     def _drop_ws(self) -> None:
         """Single cleanup path: forget the current socket, abort it and let Qt delete it."""

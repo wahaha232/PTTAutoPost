@@ -18,6 +18,7 @@ from ..logging_setup import get_logger
 from ..terminal.detect import Kind, classify
 from ..terminal.screen import Screen
 from .client import PttClient, State, login_host_trusted
+from .sendlock import SendLock
 
 log = get_logger("session")
 
@@ -49,6 +50,7 @@ class PttSession(QObject):
     def __init__(self, parent=None, client: PttClient | None = None):
         super().__init__(parent)
         self.client = client or PttClient(self)
+        self.send_lock = SendLock()          # one writer at a time: automatic typing vs clipboard paste
         self.screen = Screen()
         self.login_state = Login.OFFLINE
         self.logged_in = False

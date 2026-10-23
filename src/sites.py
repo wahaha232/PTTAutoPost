@@ -9,7 +9,7 @@ import re
 import socket
 
 PROTOCOLS = ("wss", "telnet", "ssh")
-PROTOCOL_LABELS = {"wss": "WSS", "telnet": "Telnet", "ssh": "SSH"}
+PROTOCOL_LABELS = {"wss": "WSS（加密）", "telnet": "Telnet（明文）", "ssh": "SSH（加密）"}
 VERIFIED = "2026-10-23"
 
 DEFAULT_SITES = (

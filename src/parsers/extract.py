@@ -277,19 +277,56 @@ def _link_density(el: Tag) -> float:
     return sum(len(a.get_text(strip=True)) for a in el.find_all("a")) / total
 
 
-def _strip_noise(root: Tag):
-    for t in root.find_all(["script", "style", "noscript", "iframe", "form", "nav", "aside", "footer", "figcaption",
-                            "button", "svg", "template", "select"]):
-        t.decompose()
+_STRIP_TAGS = ("script", "style", "noscript", "iframe", "form", "nav", "aside", "footer", "figcaption",
+               "button", "svg", "template", "select")
+
+
+def _noise_ident(el: Tag) -> str:
+    cls = el.get("class", [])
+    return " ".join([" ".join(cls if isinstance(cls, list) else [str(cls or "")]), str(el.get("id") or "")])
+
+
+def _candidate_is_noise(el: Tag, page_text_len: int) -> bool:
+    """A candidate that the sanitizer would delete anyway must not protect itself."""
+    if el.name in _STRIP_TAGS:
+        return True
+    ident = _noise_ident(el)
+    if not ident.strip() or not (NOISE_ATTR.search(ident) or NOISE_CAMEL.search(ident)):
+        return False
+    return not (page_text_len > 300 and len(el.get_text(strip=True)) > 0.6 * page_text_len)
+
+
+def _strip_noise(root: Tag, protected: set[int] | None = None):
+    """Remove non-content elements, but never a candidate container or one of its ancestors.
+
+    `protected` holds the ids of the selected candidates and their ancestors.  Without it,
+    a page-wide <form>/<nav>/<aside> wrapper would be removed before candidate selection
+    and its article would disappear with it.
+    """
+    protected = protected or set()
+    for t in root.find_all(_STRIP_TAGS):
+        if id(t) not in protected:
+            t.decompose()
     total = len(root.get_text(strip=True))
+    scope_lengths: dict[int, int] = {}
+
+    def scope_len(el: Tag) -> int:
+        """Text size of the nearest protected ancestor, matching the old per-candidate guard."""
+        for anc in el.parents:
+            if id(anc) in protected:
+                if id(anc) not in scope_lengths:
+                    scope_lengths[id(anc)] = len(anc.get_text(strip=True))
+                return scope_lengths[id(anc)]
+        return total
+
     for t in list(root.find_all(True)):
-        if t.attrs is None or t.name in ("article", "main", "body", "html"):
+        if id(t) in protected or t.attrs is None or t.name in ("article", "main", "body", "html"):
             continue
-        cls = t.get("class", [])
-        ident = " ".join([" ".join(cls if isinstance(cls, list) else [str(cls or "")]), str(t.get("id") or "")])
+        ident = _noise_ident(t)
         if ident.strip() and (NOISE_ATTR.search(ident) or NOISE_CAMEL.search(ident)):
-            if total > 300 and len(t.get_text(strip=True)) > 0.6 * total:
-                continue                      # that block IS (most of) the page text: never throw the content away
+            scope = scope_len(t)
+            if scope > 300 and len(t.get_text(strip=True)) > 0.6 * scope:
+                continue                      # that block IS (most of) the candidate text: never throw it away
             t.decompose()
 
 
@@ -354,10 +391,8 @@ def _candidates(doc, selectors):
     return out
 
 
-def _paragraphs_of(el):
-    root_doc = BeautifulSoup(str(el), "lxml")                 # work on a copy
-    root = root_doc.body or root_doc
-    _strip_noise(root)
+def _paragraphs_of(root: Tag):
+    """Paragraphs of an already-sanitised container (the work copy is made once per page)."""
     paras, prev = [], None
     raw = _paragraph_texts(root)
     raw_tail = " | ".join(raw[-6:])
@@ -404,14 +439,27 @@ KIND_RANK = {"profile": 0, "itemprop": 1, "article": 2, "dense": 3, "generic": 4
 
 
 def _extract_body(doc, selectors, warnings, hint_len=0, title=None):
+    # One serialisation + parse per page, then strip noise once.  The previous code
+    # re-parsed up to 18 candidate subtrees with BeautifulSoup(str(el)), which dominated
+    # CPU time on large news pages.
+    work = BeautifulSoup(str(doc), "lxml")
+    page_text_len = len((work.body or work).get_text(strip=True))
+    candidates = [(el, kind) for el, kind in _candidates(work, selectors)
+                  if not _candidate_is_noise(el, page_text_len)][:18]
+    protected: set[int] = set()
+    for el, _kind in candidates:
+        for node in (el, *el.parents):
+            if isinstance(node, Tag):
+                protected.add(id(node))
+    _strip_noise(work.body or work, protected)
     scored = []
-    for el, kind in _candidates(doc, selectors)[:18]:
-        paras, root, raw_tail = _paragraphs_of(el)
+    for el, kind in candidates:
+        paras, container, raw_tail = _paragraphs_of(el)
         chars = sum(len(p) for p in paras)
         if chars == 0:
             continue
-        scored.append({"kind": kind, "paras": paras, "chars": chars, "score": chars * max(0.1, 1 - _link_density(el)), "root": root,
-                       "raw_tail": raw_tail})
+        scored.append({"kind": kind, "paras": paras, "chars": chars, "score": chars * max(0.1, 1 - _link_density(el)),
+                       "root": container, "raw_tail": raw_tail})
     if not scored:
         return [], "none", None, False
 

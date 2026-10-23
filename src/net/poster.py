@@ -16,6 +16,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from ..logging_setup import get_logger
 from ..terminal.detect import Kind, editor_is_empty, title_prompt_is_empty
 from .client import State
+from .sendlock import PASTE, TYPING
 from .session import PttSession
 
 log = get_logger("poster")
@@ -31,6 +32,10 @@ class Target(enum.Enum):
 
 def encode_big5(text: str) -> tuple[bytes | None, list[tuple[int, str]]]:
     """Strict cp950 encode. Returns (bytes, []) or (None, [(index, char), ...unencodable])."""
+    try:
+        return text.encode("cp950"), []                  # the normal case: one C-level call
+    except UnicodeEncodeError:
+        pass
     bad = []
     for i, ch in enumerate(text):
         try:
@@ -64,8 +69,11 @@ def build_chunks(text: str, limit: int = CHUNK_BYTES) -> list[bytes]:
 def preflight(session: PttSession, target: Target, text: str, allow_nonempty: bool = False,
               pasting: bool = False) -> str | None:
     """Return None when typing is allowed, else the (user-facing) reason it is not."""
-    if pasting:
+    lock = getattr(session, "send_lock", None)
+    if pasting or (lock is not None and lock.owned_by(PASTE)):
         return "貼上進行中，已暫停自動輸入；請等貼上結束後再試。"
+    if lock is not None and lock.owner() == TYPING:
+        return "已有自動輸入進行中。"
     if session.client.state is not State.CONNECTED:
         return "尚未連線。"
     if not session.logged_in:
@@ -119,14 +127,18 @@ class PostTyper(QObject):
         self.s.client.dataReceived.connect(self._on_data)
         self.s.client.stateChanged.connect(self._on_state)
 
-    def start(self, target: Target, text: str, allow_nonempty: bool = False) -> str | None:
+    def start(self, target: Target, text: str, allow_nonempty: bool = False,
+              pasting: bool = False) -> str | None:
         """Begin typing. Returns None if started, else the reason it was refused (nothing sent)."""
         if self.running:
             return "已有輸入進行中。"
-        why = preflight(self.s, target, text, allow_nonempty)
+        why = preflight(self.s, target, text, allow_nonempty, pasting)
         if why:
             log.info("typing refused (%s): %s", target.value, why)
             return why
+        lock = getattr(self.s, "send_lock", None)
+        if lock is not None and not lock.acquire(TYPING):
+            return f"{lock.label()}進行中，已暫停自動輸入；請等它結束後再試。"
         self._target, self._i, self.bytes_sent = target, 0, 0
         self._chunks = build_chunks(text)
         self.running = True
@@ -155,6 +167,7 @@ class PostTyper(QObject):
             return
         if self._i >= len(self._chunks):
             self.running = False
+            self._release()
             self.finished.emit(True, "傳送完成：程式只確認資料已送出，並不代表伺服器已完整收到。請在終端機逐行核對內容；程式不會代按存檔或送出，請自行確認／送出。")
             return
         if not self._screen_ok():
@@ -178,11 +191,17 @@ class PostTyper(QObject):
         if self.running and st is not State.CONNECTED:
             self._abort("連線中斷；不會自動重連或重送。請重新連線並目視檢查編輯區現況。")
 
+    def _release(self) -> None:
+        lock = getattr(self.s, "send_lock", None)
+        if lock is not None:
+            lock.release(TYPING)
+
     def _abort(self, why: str) -> None:
         if not self.running:
             return
         self.running = False
         self._quiet.stop()
         self._cap.stop()
+        self._release()
         log.warning("typing aborted after %d/%d chunks: %s", self._i, len(self._chunks), why)
         self.finished.emit(False, f"{why}（已送出 {self.bytes_sent} bytes，共 {len(self._chunks)} 段中的 {self._i} 段）")

@@ -203,3 +203,18 @@ def test_title_typing_stops_when_screen_leaves_title_prompt_mid_way(rig, monkeyp
 def test_preflight_refuses_while_pasting(qapp):
     why = preflight(PttSession(), Target.BODY, "hello", pasting=True)
     assert why and "\u8cbc\u4e0a\u9032\u884c\u4e2d" in why
+
+
+def test_shared_send_lock_blocks_typing_while_paste_owns_the_stream(qapp):
+    from src.net.sendlock import PASTE
+    sess = PttSession()
+    assert sess.send_lock.acquire(PASTE)
+    try:
+        why = preflight(sess, Target.BODY, "hello")
+        assert why and "\u8cbc\u4e0a" in why
+        typer = PostTyper(sess)
+        assert typer.start(Target.BODY, "hello")
+        assert not typer.running and typer.bytes_sent == 0
+    finally:
+        sess.send_lock.release(PASTE)
+    assert preflight(sess, Target.BODY, "hello") is not None          # now refused for being offline, not for pasting

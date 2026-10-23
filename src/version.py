@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.1"
+__version__ = "0.8.2"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,21 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.2", "2026/10/23", [
+        "Security: article fetching now fails closed when DNS resolution fails and pins the validated addresses for "
+        "every redirect hop through a Session-scoped urllib3 transport (no process-wide socket patch), closing the "
+        "DNS-rebinding window; robots.txt decisions expire (1 hour on success, 60 seconds on failure) and the cache "
+        "is bounded.",
+        "Reliability: disconnect is immediate and a quick reconnect is always possible; automatic typing and clipboard "
+        "paste share one send lock; closing the window cancels the fetch task and cuts its signals; SQLite runs in WAL "
+        "mode, pre-migration backups are WAL-consistent, and Settings can write a consistent online database backup.",
+        "Safety/UX: Telnet connections require an explicit plaintext warning and the site list labels encrypted vs "
+        "plaintext; download messages distinguish a matching SHA-256 from publisher identity; build versions are "
+        "recorded in constraints-build.txt.",
+        "Extraction: one DOM copy per page instead of re-parsing up to 18 candidate subtrees; candidate containers "
+        "inside page-wide forms/navs are preserved; cp950 checks use a single-pass fast path; RIS keeps byte/bell "
+        "statistics. Removed the stale 0.6.2 source dump and a leaked local path.",
+    ]),
     ("0.8.1", "2026/10/23", [
         "Updates: optional automatic check on startup (packaged builds; silent when there is no update or the check "
         "fails), a progress bar for downloads, a '強制更新' path that re-downloads the current/latest release, and a "

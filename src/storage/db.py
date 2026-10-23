@@ -25,6 +25,12 @@ def now() -> str:
 
 
 class Database:
+    """SQLite access bound to the thread that creates it (the UI thread).
+
+    Do not hand this connection to a QRunnable; open a separate connection there if
+    background DB work becomes necessary.
+    """
+
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else data_dir() / "pttpost.db"
         try:
@@ -35,6 +41,8 @@ class Database:
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA foreign_keys=ON")
             self.conn.execute("PRAGMA busy_timeout=5000")           # a second instance waits instead of failing at once
+            self.conn.execute("PRAGMA journal_mode=WAL")            # readers and writers no longer block each other
+            self.conn.execute("PRAGMA synchronous=NORMAL")          # WAL + NORMAL: durable enough, far fewer fsync stalls
             self._migrate()
         except sqlite3.Error as e:                          # corrupt / read-only / disk full / bad schema
             self.conn.close()
@@ -46,15 +54,40 @@ class Database:
     def close(self) -> None:
         self.conn.close()
 
+    def backup_to(self, path: str | Path) -> Path:
+        """Write a consistent online backup (including WAL data) to `path`."""
+        target = Path(path)
+        try:
+            if target.resolve() == self.path.resolve():
+                raise StorageError("備份路徑不可與目前資料庫相同。")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            dest = sqlite3.connect(str(target))
+            try:
+                self.conn.backup(dest)
+            finally:
+                dest.close()
+            return target
+        except StorageError:
+            raise
+        except (sqlite3.Error, OSError) as e:
+            raise StorageError("備份資料庫失敗（請確認目標資料夾可寫入）。", str(e)) from e
+
     def _migrate(self) -> None:
         v = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if v > SCHEMA_VERSION:
             raise StorageError("資料庫版本比程式新，請使用較新的程式版本。", f"db={v} app={SCHEMA_VERSION}")
         if 0 < v < SCHEMA_VERSION and self.path.is_file():       # keep a copy before touching an existing schema
-            import shutil
+            backup = self.path.with_name(f"{self.path.name}.bak-v{v}")
             try:
-                shutil.copy2(self.path, self.path.with_name(f"{self.path.name}.bak-v{v}"))
-            except OSError as e:
+                # Connection.backup() takes a consistent snapshot including everything
+                # still sitting in the -wal file; copying only the main file after
+                # enabling WAL could silently miss recently committed drafts.
+                dest = sqlite3.connect(str(backup))
+                try:
+                    self.conn.backup(dest)
+                finally:
+                    dest.close()
+            except (sqlite3.Error, OSError) as e:
                 raise StorageError("無法在升級資料庫前建立備份，已停止升級。", str(e)) from e
         if v < 1:
             with self.conn:

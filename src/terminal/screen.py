@@ -14,7 +14,6 @@ from dataclasses import dataclass
 
 BOLD, REVERSE, UNDERLINE, BLINK, WIDE2 = 1, 2, 4, 8, 16
 DEFAULT_FG, DEFAULT_BG = 7, 0
-BLANK = (" ", DEFAULT_FG, DEFAULT_BG, 0)
 
 
 @dataclass
@@ -26,6 +25,12 @@ class Cursor:
 class Screen:
     def __init__(self, cols: int = 80, rows: int = 24):
         self.cols, self.rows = cols, rows
+        self.reset_state()
+        self.bytes_fed = 0
+        self.bell = 0
+
+    def reset_state(self) -> None:
+        """RIS (ESC c): clear the screen and attributes, but keep session statistics."""
         self.cur = Cursor()
         self.fg, self.bg, self.flags = DEFAULT_FG, DEFAULT_BG, 0
         self._saved = (0, 0)
@@ -33,9 +38,11 @@ class Screen:
         self._state = "ground"
         self._csi = bytearray()
         self._lead: int | None = None
-        self.grid: list[list[tuple]] = [[BLANK] * cols for _ in range(rows)]
-        self.bytes_fed = 0
-        self.bell = 0
+        self.grid: list[list[tuple]] = [self._blank_row() for _ in range(self.rows)]
+
+    def _blank_row(self) -> list[tuple]:
+        """A fresh blank row using the current background (erase semantics)."""
+        return [(" ", DEFAULT_FG, self.bg, 0)] * self.cols
 
     # ------------------------------------------------------------------ queries
     def row_text(self, y: int) -> str:
@@ -135,7 +142,7 @@ class Screen:
             self.cur.x = 0
             self._linefeed()
         elif c == "c":
-            self.__init__(self.cols, self.rows)
+            self.reset_state()
 
     def _linefeed(self) -> None:
         self._wrap_pending = False
@@ -147,12 +154,12 @@ class Screen:
     def _scroll_up(self, n: int) -> None:
         for _ in range(n):
             self.grid.pop(0)
-            self.grid.append([(" ", DEFAULT_FG, self.bg, 0)] * self.cols)
+            self.grid.append(self._blank_row())
 
     def _scroll_down(self, n: int) -> None:
         for _ in range(n):
             self.grid.pop()
-            self.grid.insert(0, [(" ", DEFAULT_FG, self.bg, 0)] * self.cols)
+            self.grid.insert(0, self._blank_row())
 
     def _attr(self, extra: int = 0) -> tuple[int, int, int]:
         return self.fg, self.bg, self.flags | extra
@@ -263,7 +270,7 @@ class Screen:
         else:
             rows = range(self.rows)
         for r in rows:
-            self.grid[r] = [(" ", DEFAULT_FG, self.bg, 0)] * self.cols
+            self.grid[r] = self._blank_row()
 
     def _sgr(self, params: list[int]) -> None:
         it = iter(params)

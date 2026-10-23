@@ -1145,3 +1145,17 @@ def test_manual_click_still_opens_extension_only_http_url(win, monkeypatch):
     monkeypatch.setattr(browser, "open_url", lambda url, mode, path: calls.append(url) or (True, "ok"))
     win.term.linkActivated.emit("http://example.com/x.jpg")
     assert calls == ["http://example.com/x.jpg"]
+
+
+def test_backup_data_writes_a_restorable_database(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+    target = tmp_path / "ui-backup.db"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
+    win.db.save_draft({"title": "UI備份"})
+    win.backup_data()
+    assert target.is_file()
+    b = Database(target)
+    try:
+        assert [d["title"] for d in b.list_drafts()] == ["UI備份"]
+    finally:
+        b.close()

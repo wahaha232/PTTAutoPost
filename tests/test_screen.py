@@ -79,6 +79,13 @@ def test_erase_uses_current_background():
     assert s.grid[0][79][2] == 4
 
 
+def test_ris_clears_the_screen_but_keeps_session_statistics():
+    s = Screen()
+    s.feed(b"hello\x07\x1bc")
+    assert s.bytes_fed == 8 and s.bell == 1                          # ESC c must not re-run __init__
+    assert s.text().strip() == "" and s.cur.x == 0 and s.cur.y == 0
+
+
 def test_sgr_colors_and_reset():
     s = Screen()
     s.feed(b"\x1b[1;31;42mA\x1b[0mB")

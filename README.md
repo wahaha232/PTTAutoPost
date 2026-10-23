@@ -11,7 +11,7 @@ dist\PTTAutoPost-<版本>-portable\PTTAutoPost.exe   # 可攜資料夾版（Qt �
 PTTAutoPost.exe --selftest      # 無視窗自我檢測
 PTTAutoPost.exe --probe         # 唯讀檢查 wss://ws.ptt.cc/bbs（連線、看到登入提示後斷線，不送出任何資料）
 ```
-重新打包：`make_portable.bat`（`tools\make_portable.py`：onedir build → 組裝 → 驗證）；單檔診斷版：加 `--onefile`（預設仍是資料夾版）；下載壓縮：`python -X utf8 tools\make_portable.py --archive`（有 7-Zip 時為 LZMA2 7z，否則自動改產 ZIP）；安裝程式：`python -X utf8 tools\make_portable.py --installer`（需先安裝 Inno Setup 6，腳本為 `tools\PTTAutoPost.iss`）。測試：`python -m pytest`。
+重新打包：`make_portable.bat`（`tools\make_portable.py`：onedir build → 組裝 → 驗證）；單檔診斷版：加 `--onefile`（預設仍是資料夾版）；下載壓縮：`python -X utf8 tools\make_portable.py --archive`（有 7-Zip 時為 LZMA2 7z，否則自動改產 ZIP）；安裝程式：`python -X utf8 tools\make_portable.py --installer`（需先安裝 Inno Setup 6，腳本為 `tools\PTTAutoPost.iss`）。測試：`python -m pytest`。可重現建置環境記錄於 `constraints-build.txt`（Python 3.12.10、PySide6 6.11.2、PyInstaller 6.22.2 等）。
 
 ## 功能
 
@@ -44,6 +44,7 @@ PTTAutoPost.exe --probe         # 唯讀檢查 wss://ws.ptt.cc/bbs（連線、�
 - ✔ 0.7.0 資料夾版已在本機建置並通過 `--selftest`（version／frozen／offscreen 畫面繪製）；Qt6Core 等 DLL 位於 `_internal\` 且可替換，未使用的 Qt Quick／QML／Pdf／OpenGL／Svg、翻譯與圖片格式外掛已剔除；產物不含 corpus 檔。LZMA2 7z 已實際產生（約 22 MB）。
 - ✔ 0.8.0：13 個站台已完成 2026-10-23 的 DNS／TCP／TLS 唯讀實測（未登入、未送帳密）；雲端更新（GitHub API 解析、資產選擇、SHA-256、下載與 UI）與 Telnet 傳輸（IAC 協商、QTcpSocket、字元畫面）已在 offscreen 測試；Telnet 對夢之大地唯讀連線收到 3,399 bytes Big5 畫面。
 - ✔ 0.8.1：自動檢查（打包版）、強制更新、手動下載、進度條、關於與贊助選單已完成並通過測試；全套 339 passed。資料夾版 76.6 MB、7z 22.2 MB、ZIP 33.1 MB 已實際建置。
+- ✔ 0.8.2：Session-scoped DNS pinning（不改全域 `socket.getaddrinfo`）、DNS 失敗 fail-closed、robots 快取 TTL、立即斷線／快速重連、輸入與貼上互斥、關閉時取消擷取、SQLite WAL 與一致性備份、設定頁「備份資料…」、Telnet 明文連線警告、單次 DOM 解析與 Big5 快路徑；全套 351 passed。資料夾版 76.6 MB、7z 22.2 MB、ZIP 33.1 MB 已實際建置；以 pinned transport 實測 `https://example.com/` 得到 HTTP 200，凍結版 `--selftest` 回報 0.8.2。
 - ✘ GitHub Release 尚未建立，更新功能沒有真實 Release 可端到端測試；Telnet 站台的實際登入與非 Big5 編碼、SSH 連線也尚未驗證。
 - ✘ **尚未用真實帳號登入過**（沒有您的帳密，也不會代您登入）：登入後的提示處理、「標題：」與「編輯文章」畫面的辨識字串、PTT 標題長度上限、編輯器實際吃字行為都**未實測**；辨識不到一律停止並提示。
 - ✘ 合併頁、面板收合（`F12`）、`F11`、主題、終端機配色、超連結、終端機選取／複製／貼上已在 offscreen 測試；實際桌面（含 1366×768、多螢幕與 DPI 切換）仍待您驗證。超連結目前只認單列，實務上被換行的網址不會自動拼接；自動開圖的實際 IP／隱私效果也需您確認；拖曳選取的手感與貼上到 PTT 編輯器的實際結果（含換行轉 CR）也需您實測。

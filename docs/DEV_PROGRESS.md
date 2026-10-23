@@ -4,8 +4,8 @@
 - 分支：`dev/roadmap`（自 `main` @ `6d390c4` 建立）
 - 基準版本：0.6.2
 - 基準測試：`python -m pytest -q`（`QT_QPA_PLATFORM=offscreen`）→ 168 passed
-- 目前測試：同一指令 → 339 passed（0.8.1 更新／贊助介面完成）
-- 目前版本：0.8.1（2026/10/23）
+- 目前測試：同一指令 → 351 passed（0.8.2 安全／可靠性修正）
+- 目前版本：0.8.2（2026/10/23）
 - 開始時間 T0：2026-10-23 09:13（UTC+8）／2026-10-23 01:13 UTC
 - 額度基準 B：**暫不追蹤**
 
@@ -318,6 +318,25 @@
 - 全套 **339 passed**。
 - 本機 0.8.1 建置：資料夾版 76.6 MB、7z 22.2 MB、更新用 ZIP 33.1 MB；`--selftest` OK。
 - 純文字原始碼清單：`dist\PTTAutoPost-0.8.1-source.txt`（78 檔、871.0 KB）。
+
+## 0.8.2 修正（安全／可靠性）
+
+- 擷取：DNS 解析失敗改為 fail-closed；每個 redirect hop 都重新驗證，並透過 Session 專屬的 urllib3 transport pin 住已驗證 IP（防 DNS rebinding）。不再全域替換 `socket.getaddrinfo`。
+- robots.txt：成功快取 1 小時、失敗 60 秒，快取上限 128 筆；`requests.Session` 以 context manager 關閉。
+- 連線：`PttClient.close()` 立即進入 `DISCONNECTED`，可馬上重連；輔助登入只接受精確的官方 WSS 端點（scheme/host/port/path）。
+- 輸入：新增 `SendLock`，自動輸入與剪貼簿貼上共用同一個 writer，避免 bytes 交錯。
+- 關閉：`closeEvent` 取消背景 `FetchTask` 並斷開所有背景訊號；等待中的 polite delay 可被取消。
+- 資料：SQLite 啟用 WAL／`synchronous=NORMAL`；遷移前備份與設定頁「備份資料…」都使用 `Connection.backup()`，包含 WAL 中已提交的資料；文件中加入備份／還原步驟。
+- 安全提示：Telnet 連線前顯示明文警告（可取消），站台清單標示「加密／明文」；更新下載訊息區分「已核對 SHA-256」與「發布者身分」。
+- 解析：每頁只做一次 DOM 複製；表單／導覽容器若包住候選內文不會被誤刪；Big5 檢查走整段快路徑。
+- 終端機：`ESC c` 重設保留 `bytes_fed`／`bell` 統計；空白列統一由 `_blank_row()` 建立。
+- 專案：移除 0.6.2 舊彙整快照、加入 `.gitignore`、移除文件中的本機路徑；新增 `constraints-build.txt` 記錄可重現建置版本。
+- 全套 **351 passed**；`--selftest` OK。
+- 驗收環境：Windows 11 10.0.26200、Python 3.12.10、PySide6 6.11.2、pytest 9.1.1（2026-10-23）。
+- 本機 0.8.2 建置：資料夾版 76.6 MB、7z 22.2 MB、更新用 ZIP 33.1 MB；凍結版 `--selftest` 回報 0.8.2。
+- 純文字原始碼清單：`dist\PTTAutoPost-0.8.2-source.txt`（79 檔、695.0 KB）。
+- 實際以 pinned transport 擷取 `https://example.com/`：HTTP 200、577 bytes；凍結版 `--selftest` 回報 0.8.2。
+- 本次 0.8.2 變更尚未 commit。
 
 ## 待使用者驗證（不在本次自動測試範圍）
 

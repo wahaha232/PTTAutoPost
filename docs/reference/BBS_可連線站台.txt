@@ -1,6 +1,6 @@
 ﻿BBS 可連線站台清單
 測試時間：2026-10-21 23:00（本機 TCP 測試，未實際登入）
-來源：C:\Users\wahah\Desktop\PCManCB\PCMan Combo\BBSList
+來源：PCMan Combo 內建 BBSList
 
 編號	站台名稱	位址	可用連線	備註
 1	臺大批踢踢實業坊 (PTT)	ptt.cc	WSS wss://ws.ptt.cc/bbs；SSH 22	Telnet 23 已關閉

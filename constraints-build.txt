@@ -1,0 +1,9 @@
+# Recorded build/test environment (2026-10-23, Windows 11, Python 3.12.10).
+# Use with: pip install -r requirements.txt -c constraints-build.txt
+PySide6==6.11.2
+requests==2.34.2
+beautifulsoup4==4.15.0
+lxml==6.1.1
+charset-normalizer==3.4.9
+pytest==9.1.1
+pyinstaller==6.22.2

@@ -104,6 +104,16 @@ def test_ptt_web_page():
     assert "推文" not in r.body.value and "發信站" not in r.body.value and "第二行內文" in r.body.value
 
 
+def test_article_inside_a_page_wide_form_is_still_extracted():
+    paragraphs = "".join(
+        f"<p>這是第 {i} 段完整的內文，包含足夠的字數與標點，用來確認表單容器不會被誤刪。</p>" for i in range(8))
+    html = (f"<html><head><title>表單頁</title></head><body><form id='aspnetForm'>"
+            f"<div class='article-content'>{paragraphs}</div></form></body></html>")
+    r = parse(html, "https://x.example/form")
+    assert "第 7 段" in (r.body.value or "")
+    assert r.body_status == "likely_complete"
+
+
 # ------------------------------------------------------------------ fetch (local server)
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -374,6 +384,40 @@ def test_ssrf_guard_blocks_loopback_private_and_metadata_hosts(monkeypatch):
     assert F.fetch("http://pub.example/x", min_interval=0).status == 200 and seen == ["http://pub.example/x"]
 
 
+def test_pinned_adapter_uses_the_pinned_ip_and_keeps_the_host_header(server):
+    import requests
+    from src.parsers.fetch import _PinnedAdapter
+    port = int(server.rsplit(":", 1)[1])
+    sess = requests.Session()
+    sess.trust_env = False
+    adapter = _PinnedAdapter()
+    sess.mount("http://", adapter)
+    sess.mount("https://", adapter)
+    try:
+        adapter.pin("pinned.invalid", "127.0.0.1")       # the name cannot resolve; only the pin can connect
+        r = sess.get(f"http://pinned.invalid:{port}/ok", timeout=5)
+        assert r.status_code == 200 and "text/html" in r.headers.get("Content-Type", "")
+    finally:
+        sess.close()
+
+
+def test_dns_failure_fails_closed_without_an_unpinned_request(monkeypatch):
+    import requests
+    import socket
+    monkeypatch.setattr(F, "ALLOW_PRIVATE_HOSTS", False)
+
+    def no_dns(*_a, **_k):
+        raise socket.gaierror("temporary failure")
+    monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+
+    def must_not_request(*_a, **_k):
+        raise AssertionError("a request was made without a validated, pinned address")
+    monkeypatch.setattr(requests.Session, "get", must_not_request)
+    with pytest.raises(FetchError) as e:
+        F.fetch("http://rebind.example/x", min_interval=0)
+    assert "DNS" in e.value.message
+
+
 def test_redirect_to_internal_host_is_blocked_before_any_request(monkeypatch):
     import socket
     monkeypatch.setattr(F, "ALLOW_PRIVATE_HOSTS", False)
@@ -427,6 +471,25 @@ def test_oversized_robots_txt_is_not_read_forever(monkeypatch):
     F._robots_cache.pop("https://big.example", None)
     allowed, note, _delay = F._robots("https://big.example/x", 5)
     assert allowed is None and "robots" in note
+
+
+def test_robots_failure_is_retried_after_its_short_ttl(monkeypatch):
+    import requests
+    monkeypatch.setattr(F, "_resolve_public", lambda url: None)      # no real DNS in this test
+    monkeypatch.setattr(F, "ROBOTS_FAIL_TTL", 0)
+    calls = []
+
+    class R(FakeResp):
+        pass
+
+    def fake_get(self, url, **kw):
+        calls.append(url)
+        return R(503) if len(calls) == 1 else R(200, body=b"User-agent: *\nAllow: /\n")
+    monkeypatch.setattr(requests.Session, "get", fake_get)
+    F._robots_cache.pop("http://retry.example", None)
+    assert F._robots("http://retry.example/a", 5)[0] is None          # transient 5xx: do not allow
+    assert F._robots("http://retry.example/a", 5)[0] is True          # retried after the TTL, then allowed
+    assert len(calls) == 2
 
 
 def test_robots_txt_redirects_get_the_same_ssrf_checks(monkeypatch):

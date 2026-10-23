@@ -214,6 +214,52 @@ def test_draft_search_treats_percent_and_underscore_literally(tmp_path):
     assert [r["title"] for r in d.list_drafts("snake_case")] == ["snake_case 說明"]
 
 
+def test_migration_backup_includes_rows_still_in_the_wal(tmp_path):
+    p = tmp_path / "wal.db"
+    writer = sqlite3.connect(p)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.executescript("""
+        CREATE TABLE drafts(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL DEFAULT '', post_title TEXT NOT NULL DEFAULT '',
+          site TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', published TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+          body TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', board TEXT NOT NULL DEFAULT '', use_signature INTEGER NOT NULL DEFAULT 0,
+          preview_override TEXT, parse_status TEXT NOT NULL DEFAULT '', body_status TEXT NOT NULL DEFAULT '', field_states TEXT NOT NULL DEFAULT '',
+          input_state TEXT NOT NULL DEFAULT 'none', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, kind TEXT NOT NULL, draft_id INTEGER, detail TEXT NOT NULL DEFAULT '');
+        INSERT INTO drafts(title, created_at, updated_at) VALUES('WAL 草稿', 'x', 'x');
+        PRAGMA user_version=1;""")
+    writer.commit()                                      # keep the connection open: the row is still in -wal
+    d = Database(p)
+    try:
+        bak = sqlite3.connect(str(p.with_name(p.name + ".bak-v1")))
+        try:
+            assert bak.execute("SELECT title FROM drafts").fetchone()[0] == "WAL 草稿"
+        finally:
+            bak.close()
+        assert d.get_draft(1)["title"] == "WAL 草稿"
+    finally:
+        d.close()
+        writer.close()
+
+
+def test_backup_to_is_a_restorable_copy_and_refuses_the_live_path(tmp_path):
+    d = Database(tmp_path / "live.db")
+    try:
+        did = d.save_draft({"title": "備份草稿", "body": "內容"})
+        out = d.backup_to(tmp_path / "backup.db")
+        assert out.is_file()
+        b = Database(out)
+        try:
+            assert b.get_draft(did)["title"] == "備份草稿"
+        finally:
+            b.close()
+        with pytest.raises(StorageError):
+            d.backup_to(d.path)
+    finally:
+        d.close()
+
+
 def test_database_waits_for_a_locked_file_instead_of_failing_immediately(tmp_path):
     d = Database(tmp_path / "w.db")
     assert d.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000

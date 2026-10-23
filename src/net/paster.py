@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from ..logging_setup import get_logger
 from .client import State
 from .poster import CHUNK_BYTES, IDLE_MS, MAX_WAIT_MS, build_chunks
+from .sendlock import PASTE
 from .session import PttSession
 
 log = get_logger("paster")
@@ -87,6 +88,9 @@ class PasteSender(QObject):
             return why
         if not text:
             return "沒有可貼上的文字。"
+        lock = getattr(self.s, "send_lock", None)
+        if lock is not None and not lock.acquire(PASTE):
+            return f"{lock.label()}進行中，已暫停貼上；請等它結束後再試。"
         self._chunks = build_chunks(text, CHUNK_BYTES)
         self._i = 0
         self.chars_sent = 0
@@ -115,6 +119,7 @@ class PasteSender(QObject):
             return
         if self._i >= len(self._chunks):
             self.running = False
+            self._release()
             self.finished.emit(True, f"貼上完成：已送出 {self.chars_sent} 字（{len(self._chunks)} 段）。"
                                      "程式只送出文字，未按 Enter／存檔；請在終端機確認內容。")
             return
@@ -136,12 +141,18 @@ class PasteSender(QObject):
         if self.running and st is not State.CONNECTED:
             self._abort("連線已中斷，已停止貼上；不會重送。")
 
+    def _release(self) -> None:
+        lock = getattr(self.s, "send_lock", None)
+        if lock is not None:
+            lock.release(PASTE)
+
     def _abort(self, why: str) -> None:
         if not self.running:
             return
         self.running = False
         self._quiet.stop()
         self._cap.stop()
+        self._release()
         log.warning("paste aborted after %d/%d chunks: %s", self._i, len(self._chunks), why)
         self.finished.emit(False, f"{why}（已送出 {self.chars_sent}／{self.total_chars} 字，"
                                   f"共 {len(self._chunks)} 段中的 {self._i} 段）")

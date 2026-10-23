@@ -64,7 +64,7 @@ def display_width(s: str) -> int:
 
 
 def byte_len(s: str) -> int:
-    return sum(len(c.encode("cp950", "replace")) for c in s)
+    return len(s.encode("cp950", "replace"))          # one C-level call, same replace semantics
 
 
 _TOKEN = re.compile(r"https?://\S+|[A-Za-z0-9_.,;:!?'\"()\[\]/@#%&*+=<>~$^|\\-]+|\s+|.", re.S)

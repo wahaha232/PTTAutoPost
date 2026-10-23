@@ -174,6 +174,19 @@ def test_endpoint_policy_wss_only_no_userinfo_and_login_only_to_ptt():
         assert endpoint_problem(bad), bad
     assert login_host_trusted("wss://ws.ptt.cc/bbs") and login_host_trusted("ws://127.0.0.1:1/bbs")
     assert not login_host_trusted("wss://evil.example/bbs") and not login_host_trusted("wss://ws.ptt.cc.evil.example/bbs")
+    assert not login_host_trusted("wss://ws.ptt.cc:8443/bbs")        # other port
+    assert not login_host_trusted("wss://ws.ptt.cc/other")           # other path
+
+
+def test_disconnect_is_immediate_and_a_quick_reconnect_is_possible(sess, bbs_factory):
+    bbs = bbs_factory()
+    connect(sess, bbs)
+    sess.disconnect_()
+    assert sess.client.state is State.DISCONNECTED                   # not waiting for the peer's FIN
+    sess.connect_to(bbs.url)                                         # must not be refused by the old socket
+    assert wait_until(lambda: sess.client.state is State.CONNECTED)
+    sess.disconnect_()
+    pump(50)
 
 
 def test_connect_to_refuses_insecure_endpoint_and_login_refused_for_other_host(qapp, bbs_factory):

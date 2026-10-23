@@ -180,6 +180,19 @@ def test_open_update_folder_uses_the_updates_directory(win, monkeypatch, tmp_pat
     assert notices and str(tmp_path) in notices[-1]
 
 
+def test_download_verification_wording_is_explicit(win, monkeypatch, tmp_path):
+    infos = []
+    monkeypatch.setattr(QMessageBox, "information",
+                        staticmethod(lambda *a, **k: infos.append(a[2]) or QMessageBox.StandardButton.Ok))
+    path = tmp_path / "x.zip"
+    path.write_bytes(b"x")
+    win._update_asset = update.Asset("x.zip", "https://github.com/x.zip", 1)
+    win._on_update_downloaded(update.DownloadResult(path=path, sha256="a" * 64, verified=True, size=1))
+    assert "已核對" in infos[-1] and "不代表發布者身分" in infos[-1]
+    win._on_update_downloaded(update.DownloadResult(path=path, sha256="", verified=False, size=1))
+    assert "未提供 digest" in infos[-1] and "未完成雜湊核對" in infos[-1]
+
+
 def test_update_check_is_ignored_while_busy(win, monkeypatch):
     notices = []
     monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
