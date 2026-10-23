@@ -12,8 +12,9 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QSizePolicy, QWidget
 
+from ..links import Link, find_links
 from ..net.session import PttSession
 from ..terminal.screen import BOLD, REVERSE, UNDERLINE, WIDE2
 from .theme import terminal_palette
@@ -120,11 +121,18 @@ class TerminalWidget(QWidget):
         self.locked = False                             # True while an automatic typing / login run owns the keyboard
         self.stretch = False                            # True: distort glyphs so the grid fills the area completely
         self._adv: dict[str, float] = {}
+        self._links: list[Link] = []
+        self._hover_link: Link | None = None
+        self._press_link: Link | None = None
+        self._press_pos = QPointF()
+        self._press_dragged = False
+        self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)           # never grabs focus on its own
         self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         self.apply_font(family, px)
         self.set_fill(fill)
-        self.s.screenChanged.connect(self.update)
+        self.s.screenChanged.connect(self._on_screen_changed)
+        self._refresh_links()
 
     @classmethod
     def default_family(cls) -> str:
@@ -162,6 +170,73 @@ class TerminalWidget(QWidget):
         self.theme_name = name if name in ("light", "dark") else "dark"
         self.colors = terminal_palette(self.theme_name)
         self.update()
+
+    # ----------------------------------------------------------------- links / mouse
+    linkActivated = Signal(str)
+    linksChanged = Signal(object)
+
+    def _on_screen_changed(self) -> None:
+        self._refresh_links()
+        self.update()
+
+    def _refresh_links(self) -> None:
+        self._links = find_links(self.s.screen)
+        if self._hover_link is not None and self._hover_link not in self._links:
+            self._hover_link = None
+            self.unsetCursor()
+        self.linksChanged.emit(list(self._links))
+
+    def links(self) -> list[Link]:
+        return list(self._links)
+
+    def link_at(self, pos) -> Link | None:
+        x = (pos.x() - self.ox) / self.cw if self.cw else -1
+        y = (pos.y() - self.oy) / self.ch if self.ch else -1
+        if x < 0 or y < 0:
+            return None
+        col, row = int(x), int(y)
+        if row >= self.s.screen.rows or col >= self.s.screen.cols:
+            return None
+        return next((link for link in self._links if link.contains(row, col)), None)
+
+    def mouseMoveEvent(self, e):
+        link = self.link_at(e.position())
+        if link != self._hover_link:
+            self._hover_link = link
+            if link is None:
+                self.unsetCursor()
+            else:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.update()
+        if self._press_link is not None:
+            dx, dy = e.position().x() - self._press_pos.x(), e.position().y() - self._press_pos.y()
+            if abs(dx) + abs(dy) > QApplication.startDragDistance():
+                self._press_dragged = True
+        super().mouseMoveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._press_link = self.link_at(e.position())
+            self._press_pos = e.position()
+            self._press_dragged = False
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            link, dragged = self._press_link, self._press_dragged
+            self._press_link, self._press_dragged = None, False
+            if link is not None and not dragged and self.link_at(e.position()) == link:
+                self.linkActivated.emit(link.url)
+                e.accept()
+                return
+        super().mouseReleaseEvent(e)
+
+    def leaveEvent(self, e):
+        if self._hover_link is not None:
+            self._hover_link = None
+            self.unsetCursor()
+            self.update()
+        super().leaveEvent(e)
 
     def _relayout(self) -> None:
         cols, rows = self.s.screen.cols, self.s.screen.rows
@@ -329,6 +404,11 @@ class TerminalWidget(QWidget):
                     p.restore()
                     if fl & UNDERLINE:
                         p.drawLine(int(left), int(top + ch - 2), int(left + w), int(top + ch - 2))
+        if self._hover_link is not None:
+            link = self._hover_link
+            p.setPen(QPen(QColor(*self.colors.cursor), max(1.0, ch / 14)))
+            p.drawLine(int(link.start_col * cw), int(link.row * ch + ch - 2),
+                       int(link.end_col * cw), int(link.row * ch + ch - 2))
         cur = scr.cur
         cursor = QColor(*self.colors.cursor)
         if not self.hasFocus():
