@@ -16,12 +16,15 @@ def selftest() -> int:
     import tempfile
 
     os.environ.setdefault("PTTAUTOPOST_HOME", tempfile.mkdtemp(prefix="pttpost_selftest_"))
+    from PySide6.QtCore import QBuffer, QIODevice
+    from PySide6.QtGui import QColor, QImage
     from PySide6.QtWidgets import QApplication
 
     from src import compose
     from src.net.session import PttSession
     from src.parsers.extract import parse
     from src.storage.db import Database
+    from src.ui.image_viewer import decode_image
     from src.ui.main_window import MainWindow
     from src.version import __version__
 
@@ -34,6 +37,16 @@ def selftest() -> int:
     win.render_preview(force=True)
     pix = win.term.grab()
     assert not pix.isNull(), "terminal widget did not paint"
+    sample = QImage(8, 8, QImage.Format.Format_RGB32)
+    sample.fill(QColor("#3366cc"))
+    for fmt in ("PNG", "JPEG"):                        # packaged build must keep the image plugins the viewer needs
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        assert sample.save(buf, fmt), f"{fmt} encoder missing"
+        image_data = bytes(buf.data())
+        buf.close()
+        decoded, image_error = decode_image(image_data)
+        assert decoded is not None, f"{fmt} decode failed: {image_error}"
     title, body = win.current_texts()
     assert not compose.has_errors(compose.check(title, body)), "selftest article failed its own checks"
     did = win.save_draft()

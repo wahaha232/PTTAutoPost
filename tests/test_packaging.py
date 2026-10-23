@@ -59,6 +59,11 @@ def test_spec_filters_keep_platform_tls_and_one_openssl_copy():
         ("PySide6/plugins/platforms/qdirect2d.dll", "qdirect2d", "BINARY"),
         ("PySide6/plugins/tls/qopensslbackend.dll", "qopenssl", "BINARY"),
         ("PySide6/plugins/tls/qschannelbackend.dll", "qschannel", "BINARY"),
+        ("PySide6/plugins/imageformats/qjpeg.dll", "qjpeg", "BINARY"),
+        ("PySide6/plugins/imageformats/qgif.dll", "qgif", "BINARY"),
+        ("PySide6/plugins/imageformats/qwebp.dll", "qwebp", "BINARY"),
+        ("PySide6/plugins/imageformats/qsvg.dll", "qsvg", "BINARY"),
+        ("PySide6/plugins/imageformats/qtiff.dll", "qtiff", "BINARY"),
         ("PySide6/Qt6Quick.dll", "quick", "BINARY"),
         ("PySide6/translations/qtbase_zh_TW.qm", "qm", "DATA"),
         ("libcrypto-3.dll", "crypto", "BINARY"),
@@ -71,6 +76,11 @@ def test_spec_filters_keep_platform_tls_and_one_openssl_copy():
     assert "PySide6/plugins/platforms/qwindows.dll" in names
     assert "PySide6/plugins/tls/qopensslbackend.dll" in names
     assert "PySide6/plugins/tls/qschannelbackend.dll" in names
+    assert "PySide6/plugins/imageformats/qjpeg.dll" in names
+    assert "PySide6/plugins/imageformats/qgif.dll" in names
+    assert "PySide6/plugins/imageformats/qwebp.dll" in names
+    assert "PySide6/plugins/imageformats/qsvg.dll" not in names
+    assert "PySide6/plugins/imageformats/qtiff.dll" not in names
     assert "PySide6/Qt6Quick.dll" not in names
     assert "PySide6/translations/qtbase_zh_TW.qm" not in names
     assert names.count("libcrypto-3.dll") == 1

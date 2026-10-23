@@ -29,6 +29,7 @@ from ..storage.db import MAX_SIGNATURES, Database
 from ..version import APP_NAME, BUILD_DATE, SPONSOR_TEXT, SPONSOR_URL, __version__
 from . import browser, theme
 from .icon import app_icon, tray_icon
+from .image_viewer import ImageViewer
 from .terminal_widget import TerminalWidget
 
 log = get_logger("ui")
@@ -191,6 +192,7 @@ class MainWindow(QMainWindow):
         self._browser_path_value = self.db.get_setting("browser.path", "")
         self._auto_opened: set[str] = set()
         self._auto_open_times: deque[float] = deque()
+        self._image_viewer: ImageViewer | None = None
         self._parse_kind: str | None = None
         self._article_width_timer = QTimer(self)
         self._article_width_timer.setSingleShot(True)
@@ -552,7 +554,7 @@ class MainWindow(QMainWindow):
         self.db.set_setting("links.image_auto_open", "1" if on else "0")
         if on and hasattr(self, "term"):
             self._on_links_changed(self.term.links())          # apply to images already on screen
-        self._notice("已開啟圖片連結自動開啟；圖床會看到您的 IP。" if on else "已關閉圖片連結自動開啟。")
+        self._notice("已開啟圖片連結自動開啟（在程式內顯示）；圖床會看到您的 IP。" if on else "已關閉圖片連結自動開啟。")
 
     def _open_sponsor(self) -> bool:
         url = SPONSOR_URL.strip()
@@ -564,16 +566,27 @@ class MainWindow(QMainWindow):
         self._notice(msg)
         return ok
 
-    def _open_link(self, url: str, auto: bool = False) -> bool:
+    def _open_link(self, url: str) -> bool:
+        """Open a manually clicked link in the configured browser."""
         mode = self.browser_combo.currentData() if hasattr(self, "browser_combo") else "system"
         path = self.browser_path.text().strip() if hasattr(self, "browser_path") else ""
         ok, msg = browser.open_url(url, mode or "system", path)
         if ok:
             self._auto_opened.add(url)                 # a manual click also counts for this connection
-        if ok and auto:
-            msg = "已自動開啟圖片連結。"
         self._notice(msg)
         return ok
+
+    def _open_image_inside(self, url: str) -> bool:
+        """Show an auto-opened image in the app's own viewer; never starts a browser."""
+        if self._image_viewer is None:
+            self._image_viewer = ImageViewer(self)
+        self._image_viewer.show_url(url)
+        self._notice("已自動開啟圖片於程式內。")
+        return True
+
+    def _close_image_viewer(self) -> None:
+        if self._image_viewer is not None:
+            self._image_viewer.close()
 
     def _on_links_changed(self, links) -> None:
         if not (hasattr(self, "chk_auto_image") and self.chk_auto_image.isChecked()):
@@ -596,7 +609,7 @@ class MainWindow(QMainWindow):
             if opened >= MAX_AUTO_OPEN_PER_SCREEN or len(self._auto_open_times) >= MAX_AUTO_OPEN_PER_MINUTE:
                 skipped += 1
                 continue
-            if self._open_link(link.url, auto=True):
+            if self._open_image_inside(link.url):
                 self._auto_open_times.append(now)
                 opened += 1
         if skipped:
@@ -639,7 +652,7 @@ class MainWindow(QMainWindow):
         row_b.addWidget(self.btn_browser_detect)
         self.chk_auto_image = QCheckBox("自動開啟圖片連結")
         self.chk_auto_image.setChecked(self.db.get_setting("links.image_auto_open", "0") == "1")
-        self.lbl_auto_image_note = QLabel("預設關閉。只自動開啟 imgur 等已知圖床的 https 連結；自動開啟會讓圖床看到您的 IP，同一連線同一網址只開一次，且有每分鐘上限。")
+        self.lbl_auto_image_note = QLabel("預設關閉。只自動開啟 imgur 等已知圖床的 https 連結，並在主程式內顯示，不會另開瀏覽器；自動開啟會讓圖床看到您的 IP，同一連線同一網址只開一次，且有每分鐘上限。")
         self.lbl_auto_image_note.setWordWrap(True)
         bf.addRow("瀏覽器", self.browser_combo)
         bf.addRow("自訂路徑", row_b)
@@ -2299,6 +2312,7 @@ class MainWindow(QMainWindow):
     def _to_tray(self) -> None:
         if self._tray is None:
             return
+        self._close_image_viewer()
         self._save_geometry()
         self._tray.setVisible(True)
         self.hide()
@@ -2340,6 +2354,7 @@ class MainWindow(QMainWindow):
 
     def _cancel_background_tasks(self) -> None:
         """Stop touching widgets after destruction: cancel fetch sleeps and cut every signal."""
+        self._close_image_viewer()
         task = getattr(self, "_task", None)
         if task is not None:
             task.cancel()

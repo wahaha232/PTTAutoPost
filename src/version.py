@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.2"
-BUILD_DATE = "2026/10/23"
+__version__ = "0.8.3"
+BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -9,6 +9,14 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.3", "2026/10/24", [
+        "Image auto-open: links now open in a viewer inside the program instead of an external browser. The image is "
+        "downloaded over https from the same known image hosts, with the per-hop SSRF/DNS-pinning checks, no SVG, a "
+        "20 MB limit and a pixel cap; the view scales with the window and the viewer never takes keyboard focus from "
+        "the terminal.",
+        "Packaging: the portable build keeps the JPEG, GIF and WebP image plugins (PNG/BMP are built into Qt), so "
+        "auto-opened images actually render in the packaged app.",
+    ]),
     ("0.8.2", "2026/10/23", [
         "Security: article fetching now fails closed when DNS resolution fails and pins the validated addresses for "
         "every redirect hop through a Session-scoped urllib3 transport (no process-wide socket patch), closing the "

@@ -22,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from src.version import BUILD_DATE, __version__  # noqa: E402
+from tools.spec_filters import KEEP_IMAGE_PLUGINS, base_name  # noqa: E402
 
 DIST = ROOT / "dist"
 BUILD_OUT = DIST / f"build-{__version__}"          # versioned: a running older copy never blocks a build
@@ -91,7 +92,8 @@ def layout_report(path: Path, onefile: bool = False) -> dict:
     tls_dir = path / "_internal/PySide6/plugins/tls"
     unused = [p.relative_to(path).as_posix() for p in path.rglob("*") if p.is_file() and (
         p.name in ("opengl32sw.dll", "Qt6Quick.dll", "Qt6Qml.dll", "Qt6Pdf.dll", "Qt6OpenGL.dll", "Qt6Svg.dll")
-        or "plugins/imageformats/" in p.as_posix() or "translations/" in p.as_posix())]
+        or ("plugins/imageformats/" in p.as_posix() and base_name(p.name) not in KEEP_IMAGE_PLUGINS)
+        or "translations/" in p.as_posix())]
     return {
         "replaceable": bool(qt_dlls) and (path / "_internal").is_dir() and all(p.parent != path for p in qt_dlls),
         "platform": (path / "_internal/PySide6/plugins/platforms/qwindows.dll").is_file(),

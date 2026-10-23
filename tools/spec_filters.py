@@ -11,10 +11,15 @@ OPENSSL_DLLS = ("libcrypto-3.dll", "libssl-3.dll")
 
 REMOVE_NAMES = {"opengl32sw.dll"}
 
+# The in-app image viewer needs the common web image decoders; PNG/BMP are built
+# into QtGui, so only the plugin formats are kept.  Large/rare plugins (TIFF, PDF,
+# SVG, TGA, ...) stay out of the portable package.
+KEEP_IMAGE_PLUGINS = {"qjpeg.dll", "qgif.dll", "qwebp.dll"}
+
 REMOVE_PREFIXES = (
     "PySide6/Qt6Qml", "PySide6/Qt6Quick", "PySide6/Qt6Pdf", "PySide6/Qt6OpenGL",
     "PySide6/Qt6Svg", "PySide6/Qt6VirtualKeyboard",
-    "PySide6/plugins/imageformats/", "PySide6/plugins/iconengines/", "PySide6/translations/",
+    "PySide6/plugins/iconengines/", "PySide6/translations/",
 )
 
 
@@ -32,6 +37,8 @@ def keep_entry(entry) -> bool:
     base = base_name(name)
     if base in REMOVE_NAMES:
         return False
+    if name.startswith("PySide6/plugins/imageformats/"):
+        return base in KEEP_IMAGE_PLUGINS
     return not any(name.startswith(prefix) for prefix in REMOVE_PREFIXES)
 
 
