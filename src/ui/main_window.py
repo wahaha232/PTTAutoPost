@@ -22,14 +22,14 @@ from ..parsers.extract import ParseResult, parse
 from ..parsers.fetch import fetch
 from ..storage.db import MAX_SIGNATURES, Database
 from ..version import APP_NAME, __version__
+from . import theme
 from .icon import app_icon, tray_icon
 from .terminal_widget import TerminalWidget
 
 log = get_logger("ui")
 STATE_TEXT = {"found": "已取得", "missing": "未取得", "inferred": "推定（請確認）", "edited": "已修改", "manual": "手動輸入"}
-STATE_COLOR = {"found": "#2e7d32", "missing": "#c62828", "inferred": "#ef6c00", "edited": "#1565c0", "manual": "#1565c0"}
 BODY_TEXT = {"likely_complete": "內文可能完整（仍請對照原網頁）", "suspect_partial": "內文疑似不完整", "insufficient": "內文不足或沒有內文"}
-STATUS_TEXT = {"success": ("擷取成功", "#2e7d32"), "partial": ("部分成功", "#ef6c00"), "failed": ("擷取失敗", "#c62828")}
+STATUS_TEXT = {"success": "擷取成功", "partial": "部分成功", "failed": "擷取失敗"}
 FIELDS = ("post_title", "title", "site", "author", "published", "url")
 LABELS = {"post_title": "發文標題", "title": "新聞標題", "site": "媒體來源", "author": "記者／作者", "published": "發布時間", "url": "原文網址"}
 
@@ -89,6 +89,10 @@ class MainWindow(QMainWindow):
         self._draft_sig: str | None = None                # signature snapshot of the opened draft (None = use the selected one)
         self._tray: QSystemTrayIcon | None = None
         self._tray_hint_shown = False
+        self._theme_choice = self._load_theme_choice()
+        self._theme_name = self._resolve_theme(self._theme_choice)
+        self._theme_data = theme.get_theme(self._theme_name)
+        self._parse_kind: str | None = None
         self.compact = self._screen_is_compact()      # typical 1366x768 laptop
         self._init_geometry()
         self._build_article_toggle_action()
@@ -99,6 +103,11 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_settings_tab(), "設定")
         self.tabs = tabs
         self.setCentralWidget(tabs)
+        self._apply_theme(self._theme_choice, save=False)
+        try:
+            QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_scheme_changed)
+        except AttributeError:                            # older Qt: no live system-theme signal
+            pass
         self._build_tray()
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
@@ -358,6 +367,17 @@ class MainWindow(QMainWindow):
     def _build_settings_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
+        ap = QGroupBox("外觀")
+        af = QFormLayout(ap)
+        self.theme_combo = QComboBox()
+        for key, label in theme.CHOICES:
+            self.theme_combo.addItem(label, key)
+        idx = self.theme_combo.findData(self._theme_choice)
+        self.theme_combo.setCurrentIndex(max(0, idx))
+        self.theme_combo.currentIndexChanged.connect(self._on_theme_combo)
+        af.addRow("主題", self.theme_combo)
+        af.addRow(QLabel("「跟隨系統」會依 Windows 的淺色／深色設定即時切換。"))
+        lay.addWidget(ap)
         g = QGroupBox("終端機顯示")
         form = QFormLayout(g)
         self.set_font = QFontComboBox()
@@ -504,6 +524,53 @@ class MainWindow(QMainWindow):
         """Critical error: status bar plus a dialog (removing msg_log must not hide failures)."""
         self._notice(msg)
         QMessageBox.warning(self, "錯誤", msg)
+
+    # ------------------------------------------------------------------ theme
+    def _load_theme_choice(self) -> str:
+        raw = self.db.get_setting("ui.theme", "system")
+        return raw if raw in theme.CHOICE_KEYS else "system"
+
+    def _resolve_theme(self, choice: str) -> str:
+        return theme.resolve_theme(choice, QGuiApplication.styleHints().colorScheme())
+
+    def _apply_theme(self, choice: str, save: bool = True) -> None:
+        choice = choice if choice in theme.CHOICE_KEYS else "system"
+        self._theme_choice = choice
+        self._theme_name = self._resolve_theme(choice)
+        self._theme_data = theme.get_theme(self._theme_name)
+        app = QApplication.instance()
+        if app is not None:
+            theme.apply_theme(app, self._theme_name)
+        if hasattr(self, "term"):
+            self.term.set_theme(self._theme_name)
+        combo = getattr(self, "theme_combo", None)
+        if combo is not None:
+            idx = combo.findData(choice)
+            if idx >= 0:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+        for name in FIELDS:
+            if hasattr(self, "state_lbl") and name in self.state_lbl:
+                self._paint_state(name)
+        if hasattr(self, "parse_status"):
+            self._paint_parse_status()
+        if save:
+            self.db.set_setting("ui.theme", choice)
+
+    def _on_theme_combo(self, _index: int) -> None:
+        self._apply_theme(self.theme_combo.currentData() or "system")
+        self._notice(f"主題已切換為「{theme.CHOICE_LABELS.get(self._theme_choice, self._theme_choice)}」。")
+
+    def _on_system_scheme_changed(self, _scheme) -> None:
+        if self._theme_choice == "system":
+            self._apply_theme("system", save=False)
+
+    def _paint_parse_status(self) -> None:
+        d = self._theme_data
+        color = {"success": d.success, "partial": d.warning, "failed": d.error, "info": d.info}.get(
+            getattr(self, "_parse_kind", None), d.muted)
+        self.parse_status.setStyleSheet(f"color:{color}")
 
     # ================================================================== article tab
     def _build_article_tab(self) -> QWidget:
@@ -700,7 +767,8 @@ class MainWindow(QMainWindow):
         self._busy = True
         self.btn_fetch.setEnabled(False)
         self.parse_status.setText("擷取中…（背景執行，可繼續操作）")
-        self.parse_status.setStyleSheet("")
+        self._parse_kind = "info"
+        self._paint_parse_status()
         task = FetchTask(url, self.chk_robots.isChecked())
         task.signals.done.connect(self._fetch_done)
         task.signals.failed.connect(self._fetch_failed)
@@ -711,7 +779,8 @@ class MainWindow(QMainWindow):
         self._busy = False
         self.btn_fetch.setEnabled(True)
         self.parse_status.setText(f"擷取失敗：{msg}")
-        self.parse_status.setStyleSheet("color:#c62828")
+        self._parse_kind = "failed"
+        self._paint_parse_status()
         self.parse_warn.setPlainText("程式不會嘗試繞過登入、付費牆或存取限制。您可以改在瀏覽器取得內容後，手動貼到下方欄位。")
         log.info("fetch failed: %s | %s", msg, detail)
 
@@ -735,10 +804,11 @@ class MainWindow(QMainWindow):
             self._loading = False
         for name in FIELDS:
             self._paint_state(name)
-        text, color = STATUS_TEXT[res.status]
+        text = STATUS_TEXT[res.status]
         extra = f"｜{BODY_TEXT[res.body_status]}" + ("" if res.page_class == "article" else f"｜頁面型態：{res.page_class}")
         self.parse_status.setText(f"{text}{extra}｜內文 {len(res.body.value or '')} 字｜編碼 {fetched.charset}")
-        self.parse_status.setStyleSheet(f"color:{color}")
+        self._parse_kind = res.status
+        self._paint_parse_status()
         self.parse_warn.setPlainText("\n".join(res.warnings) or "（沒有警告；仍請對照原網頁確認全文）")
         self.preview_manual_reset()
         self.render_preview(force=True)
@@ -750,7 +820,9 @@ class MainWindow(QMainWindow):
         st = self.states.get(name, "missing")
         lab = self.state_lbl[name]
         lab.setText(STATE_TEXT.get(st, st))
-        lab.setStyleSheet(f"color:{STATE_COLOR.get(st, '#000')}")
+        d = self._theme_data
+        color = {"found": d.success, "missing": d.error, "inferred": d.warning}.get(st, d.info)
+        lab.setStyleSheet(f"color:{color}")
         if name in ("site", "author", "published", "url", "title") and st == "found" and self._last_result:
             src = getattr(self._last_result, name).source
             if src:
@@ -1050,7 +1122,8 @@ class MainWindow(QMainWindow):
         for f in FIELDS:
             self._paint_state(f)
         self.parse_status.setText("尚未擷取")
-        self.parse_status.setStyleSheet("")
+        self._parse_kind = None
+        self._paint_parse_status()
         self.parse_warn.setPlainText("")
         self.chk_confirm.setChecked(False)
         self.chk_retype.setChecked(False)
@@ -1114,7 +1187,8 @@ class MainWindow(QMainWindow):
         for f in FIELDS:
             self._paint_state(f)
         self.parse_status.setText(f"已載入草稿（原擷取狀態：{d['parse_status'] or '無'}／{d['body_status'] or '無'}）")
-        self.parse_status.setStyleSheet("")
+        self._parse_kind = None
+        self._paint_parse_status()
         self._preview_manual = False
         if d["preview_override"]:
             self._setting_preview = True

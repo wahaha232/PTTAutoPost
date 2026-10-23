@@ -1,10 +1,21 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.6.2"
-BUILD_DATE = "2026/10/16"
+__version__ = "0.6.3"
+BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.6.3", "2026/10/23", [
+        "UI: the terminal and the article panel now share one page in a draggable splitter; the article panel has "
+        "'擷取與欄位' / '預覽與輸入' sub-tabs, a collapse button and Ctrl+Shift+A, remembers its width and collapsed state, "
+        "and is collapsed by default on screens up to 800 px high",
+        "UI: removed the message log and hint below the terminal; notices go to the status bar and critical save/typing-state "
+        "errors also use a dialog; F11 toggles full screen from the View menu (Esc is still sent to the terminal)",
+        "Themes: light / dark / follow-system (default), applied live and persisted; a separate light ANSI palette keeps the "
+        "terminal readable; status and field colours follow the theme",
+        "UI: opening a draft switches to the merged page, expands the panel and selects the preview sub-tab; the signature "
+        "snapshot notice is visible above the sub-tabs; the article panel uses session/typer accessors ready for stage 2",
+    ]),
     ("0.6.2", "2026/10/16", [
         "Security: robots.txt redirects get the same per-hop SSRF checks; endpoints must be wss:// (ws:// only for loopback testing), the "
         "assisted login only sends credentials to ws.ptt.cc; WebSocket frame/message size limits; CSI sequence length and repeat-count limits",

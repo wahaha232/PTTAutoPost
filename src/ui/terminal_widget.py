@@ -16,9 +16,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..net.session import PttSession
 from ..terminal.screen import BOLD, REVERSE, UNDERLINE, WIDE2
-
-NORMAL = [(0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0), (40, 80, 238), (205, 0, 205), (0, 205, 205), (229, 229, 229)]
-BRIGHT = [(127, 127, 127), (255, 60, 60), (60, 255, 60), (255, 255, 60), (100, 120, 255), (255, 60, 255), (60, 255, 255), (255, 255, 255)]
+from .theme import terminal_palette
 _K = Qt.Key
 _SPECIAL = {
     _K.Key_Return: b"\r", _K.Key_Enter: b"\r", _K.Key_Backspace: b"\x08", _K.Key_Tab: b"\t", _K.Key_Escape: b"\x1b",
@@ -114,6 +112,8 @@ class TerminalWidget(QWidget):
     def __init__(self, session: PttSession, parent=None, family: str = "", px: int = 17, fill: bool = False):
         super().__init__(parent)
         self.s = session
+        self.theme_name = "dark"
+        self.colors = terminal_palette(self.theme_name)
         self.fill = fill
         self.cw, self.ch = 9.0, 19.0
         self.sx, self.sy, self.ox, self.oy = 1.0, 1.0, 0.0, 0.0   # glyph stretch and grid offset (fit mode)
@@ -156,6 +156,12 @@ class TerminalWidget(QWidget):
     def set_stretch(self, on: bool) -> None:
         self.stretch = bool(on)
         self._relayout()
+
+    def set_theme(self, name: str) -> None:
+        """Switch the terminal ANSI palette immediately (light/dark)."""
+        self.theme_name = name if name in ("light", "dark") else "dark"
+        self.colors = terminal_palette(self.theme_name)
+        self.update()
 
     def _relayout(self) -> None:
         cols, rows = self.s.screen.cols, self.s.screen.rows
@@ -292,7 +298,7 @@ class TerminalWidget(QWidget):
         p.setFont(self.draw_font)
         scr, cw, ch = self.s.screen, self.cw, self.ch
         fm = QFontMetricsF(self.draw_font)
-        p.fillRect(self.rect(), QColor(0, 0, 0))
+        p.fillRect(self.rect(), QColor(*self.colors.bg))
         p.translate(self.ox, self.oy)
         sx = self.sx
         center = int(Qt.AlignmentFlag.AlignCenter)
@@ -303,11 +309,11 @@ class TerminalWidget(QWidget):
                     continue
                 cells = 2 if x + 1 < len(row) and row[x + 1][3] & WIDE2 else 1
                 left, w = x * cw, cells * cw
-                f = BRIGHT[fg] if fl & BOLD else NORMAL[fg]
-                b = NORMAL[bg]
+                f = self.colors.bright[fg] if fl & BOLD else self.colors.normal[fg]
+                b = self.colors.bg_colors[bg]
                 if fl & REVERSE:
                     f, b = b, f
-                if b != (0, 0, 0):
+                if b != self.colors.bg:
                     p.fillRect(QRectF(left, top, w + 0.6, ch + 0.6), QColor(*b))   # +0.6: no hairline gaps between cells
                 if c.strip():
                     p.setPen(QColor(*f))
@@ -324,6 +330,9 @@ class TerminalWidget(QWidget):
                     if fl & UNDERLINE:
                         p.drawLine(int(left), int(top + ch - 2), int(left + w), int(top + ch - 2))
         cur = scr.cur
-        p.setPen(QPen(QColor(255, 255, 255) if self.hasFocus() else QColor(120, 120, 120), 1))
+        cursor = QColor(*self.colors.cursor)
+        if not self.hasFocus():
+            cursor.setAlpha(140)
+        p.setPen(QPen(cursor, 1))
         p.drawRect(QRectF(cur.x * cw, cur.y * ch, cw - 1, ch - 1))
         p.end()

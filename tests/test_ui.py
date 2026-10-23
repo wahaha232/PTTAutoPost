@@ -763,3 +763,35 @@ def test_fullscreen_action_and_escape_not_taken(win, monkeypatch):
     win._set_fullscreen(False)
     assert normal
     assert key_to_bytes(Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier, "") == (b"\x1b", None)
+
+
+def test_theme_combo_applies_and_persists(win):
+    win.theme_combo.setCurrentIndex(win.theme_combo.findData("dark"))
+    pump(20)
+    assert win._theme_choice == "dark" and win.term.theme_name == "dark"
+    assert win.db.get_setting("ui.theme") == "dark"
+    win.theme_combo.setCurrentIndex(win.theme_combo.findData("light"))
+    pump(20)
+    assert win._theme_choice == "light" and win.term.theme_name == "light"
+    assert win.db.get_setting("ui.theme") == "light"
+
+
+def test_theme_restores_and_corrupt_falls_back(qapp, tmp_path):
+    db = Database(tmp_path / "theme.db")
+    db.set_setting("ui.theme", "dark")
+    w = MainWindow(db, PttSession())
+    assert w._theme_choice == "dark" and w.term.theme_name == "dark"
+    db.set_setting("ui.theme", "neon")
+    w2 = MainWindow(db, PttSession())
+    assert w2._theme_choice == "system"
+    w2.db.close()
+
+
+def test_system_theme_reapplies_on_scheme_change(win, monkeypatch):
+    win._theme_choice = "system"
+    monkeypatch.setattr(win, "_resolve_theme", lambda _choice: "dark")
+    win._on_system_scheme_changed(Qt.ColorScheme.Dark)
+    assert win.term.theme_name == "dark"
+    monkeypatch.setattr(win, "_resolve_theme", lambda _choice: "light")
+    win._on_system_scheme_changed(Qt.ColorScheme.Light)
+    assert win.term.theme_name == "light"
