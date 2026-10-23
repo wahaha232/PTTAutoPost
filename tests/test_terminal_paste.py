@@ -256,3 +256,13 @@ def test_paste_stops_when_locked_midway(qapp, monkeypatch):
     assert wait_until(lambda: not term._paster.running)
     assert "\u81ea\u52d5\u8f38\u5165" in notices[-1]
     assert 0 < len(sent) < 10
+
+
+def test_immediate_send_failure_is_reported_and_not_pasting(qapp, monkeypatch):
+    term = make_term()
+    monkeypatch.setattr(term.s.client, "send", lambda _data: False)
+    notices = collect_notices(term)
+    QGuiApplication.clipboard().setText("hello")
+    assert not term.paste_from_clipboard()
+    assert not term.pasting
+    assert notices and "\u50b3\u9001\u5931\u6557" in notices[-1]

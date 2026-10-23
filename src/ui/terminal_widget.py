@@ -352,6 +352,8 @@ class TerminalWidget(QWidget):
             self.pasting = False
             self.notice.emit("無法貼上：" + why)
             return False
+        if not self._paster.running:
+            return False
         self.clear_selection()
         extra = f"，已忽略 {removed} 個控制字元" if removed else ""
         self.notice.emit(f"貼上中…（{chars} 字、{lines} 行{extra}）")
