@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFontComboBox
 
 from .. import boards, compose
 from ..errors import ToolError
-from ..links import is_auto_open_image_url
+from ..links import is_auto_open_image_url, validate_http_url
 from ..logging_setup import get_logger
 from ..net.client import DEFAULT_URL, State
 from ..terminal.detect import Kind
@@ -24,7 +24,7 @@ from ..net.session import Login, PttSession
 from ..parsers.extract import ParseResult, parse
 from ..parsers.fetch import fetch
 from ..storage.db import MAX_SIGNATURES, Database
-from ..version import APP_NAME, __version__
+from ..version import APP_NAME, SPONSOR_TEXT, SPONSOR_URL, __version__
 from . import browser, theme
 from .icon import app_icon, tray_icon
 from .terminal_widget import TerminalWidget
@@ -442,6 +442,15 @@ class MainWindow(QMainWindow):
         self.db.set_setting("links.image_auto_open", "1" if on else "0")
         self._notice("已開啟圖片連結自動開啟；圖床會看到您的 IP。" if on else "已關閉圖片連結自動開啟。")
 
+    def _open_sponsor(self) -> bool:
+        url = SPONSOR_URL.strip()
+        if not url:
+            self._notice("未設定贊助連結。")
+            return False
+        ok, msg = browser.open_url(url, "system")
+        self._notice(msg)
+        return ok
+
     def _open_link(self, url: str, auto: bool = False) -> bool:
         mode = self.browser_combo.currentData() if hasattr(self, "browser_combo") else "system"
         path = self.browser_path.text().strip() if hasattr(self, "browser_path") else ""
@@ -592,6 +601,17 @@ class MainWindow(QMainWindow):
         self.btn_pttlogin_browse.clicked.connect(self._browse_pttlogin)
         self.btn_pttlogin_open.clicked.connect(self.launch_pttlogin)
         self.pttlogin_path.editingFinished.connect(lambda: self.db.set_setting("pttlogin.path", self.pttlogin_path.text().strip()))
+        sg = QGroupBox("贊助作者")
+        sl = QVBoxLayout(sg)
+        sponsor_note = QLabel("贊助出於自願，不影響任何功能；程式不會追蹤或上傳資料，只會在您按下按鈕時用預設瀏覽器開啟贊助頁。")
+        sponsor_note.setWordWrap(True)
+        self.btn_sponsor = QPushButton(SPONSOR_TEXT.strip() or "贊助作者")
+        self.btn_sponsor.clicked.connect(self._open_sponsor)
+        sl.addWidget(sponsor_note)
+        sl.addWidget(self.btn_sponsor)
+        self.sponsor_box = sg
+        sg.setVisible(bool(SPONSOR_URL.strip() and validate_http_url(SPONSOR_URL.strip())))
+        lay.addWidget(sg)
         note = QLabel("終端機是等寬格線（80×24），中文字佔 2 格；建議使用 MingLiU、NSimSun 等等寬中文字型。變更會立即套用並儲存在本機。")
         note.setWordWrap(True)
         lay.addWidget(note)

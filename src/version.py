@@ -3,6 +3,10 @@ __version__ = "0.6.7"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
+# Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
+SPONSOR_URL = ""
+SPONSOR_TEXT = ""
+
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
     ("0.6.7", "2026/10/23", [
