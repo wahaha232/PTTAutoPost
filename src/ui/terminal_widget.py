@@ -112,6 +112,7 @@ def draw_special(p: QPainter, c: str, r: QRectF, color: QColor) -> bool:
 
 class TerminalWidget(QWidget):
     notice = Signal(str)
+    pasteStateChanged = Signal(bool)
 
     PREFERRED = ("MingLiU", "NSimSun", "Microsoft JhengHei Mono", "Consolas", "Courier New")
 
@@ -302,8 +303,15 @@ class TerminalWidget(QWidget):
             return "自動輸入／登入輔助進行中，無法貼上。"
         return None
 
+    def _set_pasting(self, on: bool) -> None:
+        on = bool(on)
+        if self.pasting == on:
+            return
+        self.pasting = on
+        self.pasteStateChanged.emit(on)
+
     def _paste_finished(self, _ok: bool, msg: str) -> None:
-        self.pasting = False
+        self._set_pasting(False)
         self.notice.emit(msg)
 
     def paste_from_clipboard(self) -> bool:
@@ -346,17 +354,17 @@ class TerminalWidget(QWidget):
             if answer != QMessageBox.StandardButton.Yes:
                 self.notice.emit("已取消貼上。")
                 return False
-        self.pasting = True
+        self._set_pasting(True)
         why = self._paster.start(text)
         if why:
-            self.pasting = False
+            self._set_pasting(False)
             self.notice.emit("無法貼上：" + why)
             return False
         if not self._paster.running:
             return False
         self.clear_selection()
         extra = f"，已忽略 {removed} 個控制字元" if removed else ""
-        self.notice.emit(f"貼上中…（{chars} 字、{lines} 行{extra}）")
+        self.notice.emit(f"貼上中…（{chars} 字、{lines} 行{extra}）；已暫停輸入標題／內文、登入與前往看板。")
         return True
 
     def _build_context_menu(self) -> QMenu:

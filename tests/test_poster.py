@@ -2,7 +2,7 @@ import pytest
 
 from conftest import pump, wait_until
 from src.net.client import State
-from src.net.poster import PostTyper, Target, build_chunks, encode_big5
+from src.net.poster import PostTyper, Target, build_chunks, encode_big5, preflight
 from src.net.session import PttSession
 from src.terminal.detect import Kind
 
@@ -198,3 +198,8 @@ def test_title_typing_stops_when_screen_leaves_title_prompt_mid_way(rig, monkeyp
     assert typer.start(Target.TITLE, "[新聞] 一個比較長的測試標題用來分段") is None
     assert wait_until(lambda: bool(done), 8000)
     assert done[0][0] is False and len(sent) == 1       # aborted: no further chunk went out
+
+
+def test_preflight_refuses_while_pasting(qapp):
+    why = preflight(PttSession(), Target.BODY, "hello", pasting=True)
+    assert why and "\u8cbc\u4e0a\u9032\u884c\u4e2d" in why

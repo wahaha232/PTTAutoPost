@@ -61,8 +61,11 @@ def build_chunks(text: str, limit: int = CHUNK_BYTES) -> list[bytes]:
     return chunks
 
 
-def preflight(session: PttSession, target: Target, text: str, allow_nonempty: bool = False) -> str | None:
+def preflight(session: PttSession, target: Target, text: str, allow_nonempty: bool = False,
+              pasting: bool = False) -> str | None:
     """Return None when typing is allowed, else the (user-facing) reason it is not."""
+    if pasting:
+        return "貼上進行中，已暫停自動輸入；請等貼上結束後再試。"
     if session.client.state is not State.CONNECTED:
         return "尚未連線。"
     if not session.logged_in:

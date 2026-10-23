@@ -1,9 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec: onedir (folder) build, windowed. Qt/PySide6 DLLs stay as separate
-# replaceable files, which also keeps LGPL distribution simple.
+# PyInstaller spec: onedir by default; set PTTAUTOPOST_ONEFILE=1 for a single-file diagnostic build.
+# Qt/PySide6 DLLs stay as separate replaceable files in onedir, which also keeps LGPL distribution simple.
+import os
+import sys
 from pathlib import Path
 
 ROOT = Path(SPECPATH).resolve()  # noqa: F821
+sys.path.insert(0, str(ROOT / "tools"))
+from spec_filters import filter_entries  # noqa: E402
+
+ONEFILE = os.environ.get("PTTAUTOPOST_ONEFILE") == "1"
 
 EXCLUDES = [
     "pandas", "numpy", "scipy", "matplotlib", "sympy", "onnxruntime", "cv2", "PIL", "fitz", "pymupdf", "openpyxl", "xlrd",
@@ -22,20 +28,6 @@ EXCLUDES = [
     "PySide6.QtLinguist", "PySide6.QtLinguistTools",
 ]
 
-REMOVE_NAMES = {"opengl32sw.dll"}
-REMOVE_PREFIXES = (
-    "PySide6/Qt6Qml", "PySide6/Qt6Quick", "PySide6/Qt6Pdf", "PySide6/Qt6OpenGL",
-    "PySide6/Qt6Svg", "PySide6/Qt6VirtualKeyboard",
-    "PySide6/plugins/imageformats/", "PySide6/plugins/iconengines/", "PySide6/translations/",
-)
-
-
-def _keep(entry):
-    name = entry[0].replace("\\", "/")
-    base = name.rsplit("/", 1)[-1]
-    return base not in REMOVE_NAMES and not any(name.startswith(prefix) for prefix in REMOVE_PREFIXES)
-
-
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
@@ -47,12 +39,11 @@ a = Analysis(
     excludes=EXCLUDES,
     noarchive=False,
 )
-a.binaries = [entry for entry in a.binaries if _keep(entry)]
-a.datas = [entry for entry in a.datas if _keep(entry)]
+a.binaries = filter_entries(a.binaries)
+a.datas = filter_entries(a.datas)
 pyz = PYZ(a.pure)  # noqa: F821
-exe = EXE(  # noqa: F821
-    pyz, a.scripts, [],
-    exclude_binaries=True,
+
+COMMON = dict(
     name="PTTAutoPost",
     debug=False, bootloader_ignore_signals=False, strip=False,
     upx=False,                     # UPX raises antivirus false positives; not used
@@ -60,11 +51,16 @@ exe = EXE(  # noqa: F821
     disable_windowed_traceback=False,
     icon=str(ROOT / "assets" / "icon.ico"),
 )
-coll = COLLECT(  # noqa: F821
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name="PTTAutoPost",
-)
+
+if ONEFILE:
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], **COMMON)  # noqa: F821
+else:
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **COMMON)  # noqa: F821
+    coll = COLLECT(  # noqa: F821
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        name="PTTAutoPost",
+    )

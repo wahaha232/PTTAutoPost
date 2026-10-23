@@ -266,3 +266,16 @@ def test_immediate_send_failure_is_reported_and_not_pasting(qapp, monkeypatch):
     assert not term.paste_from_clipboard()
     assert not term.pasting
     assert notices and "\u50b3\u9001\u5931\u6557" in notices[-1]
+
+
+def test_paste_state_signal_reports_start_and_finish(qapp, monkeypatch):
+    term = make_term()
+    record_sends(monkeypatch, term)
+    states = []
+    term.pasteStateChanged.connect(states.append)
+    QGuiApplication.clipboard().setText("hello")
+    assert term.paste_from_clipboard()
+    assert term.pasting
+    assert wait_until(lambda: not term._paster.running)
+    assert states == [True, False]
+    assert not term.pasting

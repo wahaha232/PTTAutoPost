@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(tabs)
         self.term.linkActivated.connect(self._open_link)
         self.term.linksChanged.connect(self._on_links_changed)
+        self.term.pasteStateChanged.connect(self._on_paste_state)
         self._apply_theme(self._theme_choice, save=False)
         try:
             QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_scheme_changed)
@@ -668,7 +669,14 @@ class MainWindow(QMainWindow):
             wdg.blockSignals(False)
         self._apply_terminal_settings()
 
+    def _paste_active(self) -> bool:
+        return bool(getattr(getattr(self, "term", None), "pasting", False))
+
     def _do_login(self):
+        if self._paste_active():
+            self.password.clear()
+            self._notice("貼上進行中，已暫停登入；請等貼上結束。")
+            return
         try:
             ok = self.session.login(self.account.text(), self.password.text())
         finally:
@@ -681,12 +689,21 @@ class MainWindow(QMainWindow):
         c = st is State.CONNECTED
         self.btn_connect.setEnabled(st is State.DISCONNECTED)
         self.btn_disconnect.setEnabled(st is not State.DISCONNECTED)
-        self.btn_login.setEnabled(c)
+        self.btn_login.setEnabled(c and not self._paste_active())
         if st is State.CONNECTED:
             self._auto_opened.clear()
             self._auto_open_times.clear()
         self._update_tray(c)
         self._update_type_buttons()
+
+    def _on_paste_state(self, on: bool) -> None:
+        """Pasting owns the connection text stream: pause every other text/navigation action."""
+        self._update_type_buttons()
+        connected = self.session.client.state is State.CONNECTED
+        self.btn_login.setEnabled(connected and not on)
+        self._sync_board_fav_button()
+        if on:
+            self._notice("貼上進行中：已暫停輸入標題／內文、登入與前往看板。")
 
     def _update_input_lock(self) -> None:
         """The terminal keyboard is paused while automatic typing or the assisted login owns the connection."""
@@ -1175,7 +1192,7 @@ class MainWindow(QMainWindow):
         fav = bool(b) and b.lower() in {f.lower() for f in self.db.favorite_boards()}
         self.btn_board_fav.setText("★ 移出最愛" if fav else "☆ 加入最愛")
         self.btn_board_fav.setEnabled(bool(b))
-        self.btn_board_go.setEnabled(bool(b))
+        self.btn_board_go.setEnabled(bool(b) and not self._paste_active())
 
     def _board_changed(self) -> None:
         b = self.current_board()
@@ -1195,6 +1212,9 @@ class MainWindow(QMainWindow):
 
     def goto_board(self) -> None:
         """User-initiated navigation only: 's' + board id + Enter from the main menu. Never posts anything."""
+        if self._paste_active():
+            self._notice("貼上進行中，已暫停前往看板；請等貼上結束。")
+            return
         b = self.current_board()
         if not b:
             self._notice("請先選擇或輸入有效的看板名稱。")
@@ -1426,7 +1446,8 @@ class MainWindow(QMainWindow):
     def _update_type_buttons(self):
         session, typer = self._article_session(), self._article_typer()
         connected = session.client.state is State.CONNECTED
-        ok = connected and session.logged_in and self.chk_confirm.isChecked() and not typer.running
+        ok = (connected and session.logged_in and self.chk_confirm.isChecked()
+              and not typer.running and not self._paste_active())
         self.btn_type_title.setEnabled(ok)
         self.btn_type_body.setEnabled(ok)
         self.btn_type_cancel.setEnabled(typer.running)
@@ -1434,6 +1455,10 @@ class MainWindow(QMainWindow):
     def type_into_ptt(self, target: Target):
         typer = self._article_typer()
         if typer.running:
+            return
+        if self._paste_active():
+            self._notice("貼上進行中，已暫停輸入標題／內文；請等貼上結束。")
+            self.type_status.setText("貼上進行中，已暫停輸入；請等貼上結束後再試。")
             return
         title, body = self.current_texts()
         issues = self.run_checks()
@@ -1457,7 +1482,7 @@ class MainWindow(QMainWindow):
                 self._notice("已取消輸入：內文疑似不完整。")
                 return
             self._ack_incomplete.add(did)
-        why = preflight(self._article_session(), target, text, self.chk_nonempty.isChecked())
+        why = preflight(self._article_session(), target, text, self.chk_nonempty.isChecked(), self._paste_active())
         if why:
             self._notice("無法輸入：" + why)
             self.type_status.setText("無法輸入：" + why)

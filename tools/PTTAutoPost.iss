@@ -48,6 +48,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "config\*,logs\*,data\*"
 
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Dirs]
 Name: "{app}\config"; Flags: uninsneveruninstall
 Name: "{app}\logs"; Flags: uninsneveruninstall

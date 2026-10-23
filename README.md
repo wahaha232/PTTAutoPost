@@ -11,7 +11,7 @@ dist\PTTAutoPost-<版本>-portable\PTTAutoPost.exe   # 可攜資料夾版（Qt �
 PTTAutoPost.exe --selftest      # 無視窗自我檢測
 PTTAutoPost.exe --probe         # 唯讀檢查 wss://ws.ptt.cc/bbs（連線、看到登入提示後斷線，不送出任何資料）
 ```
-重新打包：`make_portable.bat`（`tools\make_portable.py`：onedir build → 組裝 → 驗證）；下載壓縮：`python -X utf8 tools\make_portable.py --archive`（LZMA2 7z）；安裝程式：`python -X utf8 tools\make_portable.py --installer`（需先安裝 Inno Setup 6，腳本為 `tools\PTTAutoPost.iss`）。測試：`python -m pytest`。
+重新打包：`make_portable.bat`（`tools\make_portable.py`：onedir build → 組裝 → 驗證）；單檔診斷版：加 `--onefile`（預設仍是資料夾版）；下載壓縮：`python -X utf8 tools\make_portable.py --archive`（有 7-Zip 時為 LZMA2 7z，否則自動改產 ZIP）；安裝程式：`python -X utf8 tools\make_portable.py --installer`（需先安裝 Inno Setup 6，腳本為 `tools\PTTAutoPost.iss`）。測試：`python -m pytest`。
 
 ## 功能
 
@@ -21,7 +21,7 @@ PTTAutoPost.exe --probe         # 唯讀檢查 wss://ws.ptt.cc/bbs（連線、�
 - **超連結**：終端機畫面上的單列 http/https 網址會自動辨識（含中文雙格寬座標；被換行切斷的網址不猜、不接續）。滑鼠移上去會加底線、游標變手形；按下後原地放開才開啟，拖曳不會開啟，且點擊不會送出任何 BBS bytes。含帳密或其他 scheme 的網址一律拒絕。
 - **瀏覽器與圖片**：設定頁可選系統瀏覽器、偵測到的 Chrome／Edge／Firefox，或自訂執行檔；外部瀏覽器以單一參數接收網址，不經 shell。圖片連結可設定自動開啟（預設關閉，旁有 IP 隱私提醒）；**只自動開啟 imgur 等已知圖床的 https 連結**，任意網站只靠副檔名、`.svg`、IP／localhost／內網主機都不會自動開；同一連線同一網址只開一次、每次畫面最多 1 個、每分鐘最多 3 個，超過上限會提示一次；自動輸入／登入輔助進行中不自動開，手動點擊仍可用。
 - **文章**：貼網址 → 背景擷取標題／媒體／網址／記者／時間／內文；每個欄位顯示「已取得／未取得／推定／已修改」；缺的欄位不補造；遇到登入牆、付費牆、403 只回報原因，不繞過；內文有「可能完整／疑似不完整／不足」判定（**抓到標題不代表抓到全文**）。可修改所有欄位，原文與心得分開；預覽可直接編輯；檢查標題／內文／Big5 編碼／控制字元／行寬；複製全文／內文／標題。
-- **終端機選取、複製與貼上**：滑鼠左鍵拖曳可選取（以格為單位，中文雙格寬字元不會被切半；跨行時中間整列選取），按住 `Alt` 拖曳是矩形選取；雙擊選詞、三擊選整列；選取範圍以反轉前景／背景顯示。單擊、畫面被伺服器更新、或按下會送往 BBS 的按鍵時會清除選取；從連結上開始拖曳只會選取，不會開啟連結。`Ctrl+Shift+C` 或右鍵選單可複製（每行去掉行尾空白、以換行連接），右鍵另有「全選畫面」「複製整個畫面」；`Ctrl+C` 不含 Shift 仍送 `0x03`，複製不送任何 bytes。`Ctrl+Shift+V` 或右鍵「貼上」：離線或自動輸入／登入輔助進行中會拒絕並在狀態列說明；只接受 Big5（cp950）可編碼文字，無法編碼時列出字元並取消（不做部分貼上）；會移除 ESC／控制字元、`Tab` 轉 4 空白、換行轉 CR；超過 1 行或 200 字先顯示預覽確認，超過 5000 字直接拒絕；長文字依發文輸入的節奏分批送出，中途斷線或被鎖定會停止且不重送，並回報已送出多少。`Ctrl+V` 不含 Shift 仍送 `0x16`。
+- **終端機選取、複製與貼上**：滑鼠左鍵拖曳可選取（以格為單位，中文雙格寬字元不會被切半；跨行時中間整列選取），按住 `Alt` 拖曳是矩形選取；雙擊選詞、三擊選整列；選取範圍以反轉前景／背景顯示。單擊、畫面被伺服器更新、或按下會送往 BBS 的按鍵時會清除選取；從連結上開始拖曳只會選取，不會開啟連結。`Ctrl+Shift+C` 或右鍵選單可複製（每行去掉行尾空白、以換行連接），右鍵另有「全選畫面」「複製整個畫面」；`Ctrl+C` 不含 Shift 仍送 `0x03`，複製不送任何 bytes。`Ctrl+Shift+V` 或右鍵「貼上」：離線或自動輸入／登入輔助進行中會拒絕並在狀態列說明；只接受 Big5（cp950）可編碼文字，無法編碼時列出字元並取消（不做部分貼上）；會移除 ESC／控制字元、`Tab` 轉 4 空白、換行轉 CR；超過 1 行或 200 字先顯示預覽確認，超過 5000 字直接拒絕；長文字依發文輸入的節奏分批送出，中途斷線或被鎖定會停止且不重送，並回報已送出多少。貼上進行中會暫停「輸入標題／內文」、登入與「前往看板」並在狀態列說明，結束後恢復；`Ctrl+V` 不含 Shift 仍送 `0x16`。
 - **介面**：終端機底部只保留字型列與按鍵列；一般訊息顯示在狀態列，必要的儲存／輸入狀態錯誤會另開對話框；`F11` 切換全螢幕（「檢視」選單），`F12` 收合／展開文章面板；`Esc` 仍照常送進終端機；終端機配色可獨立選擇永遠深色或跟隨主題。
 - **草稿與簽名檔**：SQLite 存於 `data\pttpost.db`；草稿新增／開啟／搜尋／修改／刪除；最多 10 則簽名檔（下拉選擇）（編輯、儲存、每篇勾選套用）。
 - **輸入到 PTT**：只輸入文字。需先連線、已登入、勾選「我已確認」，畫面必須是「標題」提示或空白編輯區；**不按 Enter／Ctrl-X／存檔／送出**；畫面不符、斷線、逾時、取消都會停止，且同一草稿不會被重複輸入整篇。
@@ -30,7 +30,7 @@ PTTAutoPost.exe --probe         # 唯讀檢查 wss://ws.ptt.cc/bbs（連線、�
 
 - 本程式為**專有授權**（不開源），條文見 `LICENSE`；Qt／PySide6 等第三方元件依各自授權提供，詳見 `THIRD_PARTY_NOTICES.md` 與 `licenses\`。Qt／PySide6 為 LGPL-3.0，發行版採資料夾版（`_internal\` 內的 DLL 可替換）。
 - 可攜資料夾版：`dist\PTTAutoPost-<版本>-portable\`（約 77 MB，解壓即用，不寫登錄檔）。
-- LZMA2 下載壓縮：`dist\PTTAutoPost-<版本>-portable.7z`（約 22 MB），以 `python -X utf8 tools\make_portable.py --archive` 產生。
+- LZMA2 下載壓縮：`dist\PTTAutoPost-<版本>-portable.7z`（約 22 MB），以 `python -X utf8 tools\make_portable.py --archive` 產生；找不到 7-Zip 時自動改產 ZIP（非 LZMA2，僅備援）。
 - LZMA2 安裝程式：`tools\PTTAutoPost.iss`（Inno Setup 6；每人使用者安裝、保留 config／logs／data）；本機未安裝 Inno Setup，尚未實際產出安裝檔。
 - 未使用數位簽章，Windows SmartScreen 可能警告；使用者版說明見打包後的 `README.txt`。贊助連結由 `src/version.py` 的 `SPONSOR_URL` 設定，未設定時不顯示。
 - 授權文件與打包內容為工程整理，**不構成法律建議**；正式公開發佈前請依實際散布方式諮詢專業人士。

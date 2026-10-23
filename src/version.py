@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,16 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.7.1", "2026/10/23", [
+        "Paste: while a chunked paste is running, the article title/body input buttons, login and 'go to board' are "
+        "disabled; their direct handlers and preflight refuse with a status-bar reason. Everything is restored when "
+        "the paste ends (login still follows the connection state).",
+        "Packaging: make_portable --onefile adds a diagnostic single-file build (onedir remains the default). "
+        "PyInstaller filters keep plugins/platforms/qwindows.dll and plugins/tls while keeping only one copy of each "
+        "OpenSSL DLL; --verify checks the platform and TLS files, and --archive falls back to ZIP when 7-Zip is absent.",
+        "Packaging: the Inno Setup script deletes the old _internal folder on upgrade. LICENSE now explicitly allows "
+        "modifying/reverse-engineering LGPL Qt components and states that the document is not legal advice.",
+    ]),
     ("0.7.0", "2026/10/23", [
         "Release: the portable package is now an onedir folder instead of a onefile EXE; Qt/PySide6 DLLs stay as "
         "separate replaceable files. Unused Qt components (Quick/QML/Pdf/OpenGL/Svg, translations and image-format "
