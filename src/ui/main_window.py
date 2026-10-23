@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
+from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
@@ -13,6 +15,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFontComboBox
 
 from .. import boards, compose
 from ..errors import ToolError
+from ..links import is_image_url
 from ..logging_setup import get_logger
 from ..net.client import DEFAULT_URL, State
 from ..terminal.detect import Kind
@@ -30,6 +33,8 @@ log = get_logger("ui")
 STATE_TEXT = {"found": "已取得", "missing": "未取得", "inferred": "推定（請確認）", "edited": "已修改", "manual": "手動輸入"}
 BODY_TEXT = {"likely_complete": "內文可能完整（仍請對照原網頁）", "suspect_partial": "內文疑似不完整", "insufficient": "內文不足或沒有內文"}
 STATUS_TEXT = {"success": "擷取成功", "partial": "部分成功", "failed": "擷取失敗"}
+MAX_AUTO_OPEN_PER_MINUTE = 3
+MAX_AUTO_OPEN_PER_SCREEN = 1
 FIELDS = ("post_title", "title", "site", "author", "published", "url")
 LABELS = {"post_title": "發文標題", "title": "新聞標題", "site": "媒體來源", "author": "記者／作者", "published": "發布時間", "url": "原文網址"}
 
@@ -95,6 +100,8 @@ class MainWindow(QMainWindow):
         self._terminal_palette_choice = self._load_terminal_palette_choice()
         self._browser_mode = self._load_browser_mode()
         self._browser_path_value = self.db.get_setting("browser.path", "")
+        self._auto_opened: set[str] = set()
+        self._auto_open_times: deque[float] = deque()
         self._parse_kind: str | None = None
         self._article_width_timer = QTimer(self)
         self._article_width_timer.setSingleShot(True)
@@ -110,6 +117,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_settings_tab(), "設定")
         self.tabs = tabs
         self.setCentralWidget(tabs)
+        self.term.linkActivated.connect(self._open_link)
+        self.term.linksChanged.connect(self._on_links_changed)
         self._apply_theme(self._theme_choice, save=False)
         try:
             QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_scheme_changed)
@@ -433,6 +442,40 @@ class MainWindow(QMainWindow):
         self.db.set_setting("links.image_auto_open", "1" if on else "0")
         self._notice("已開啟圖片連結自動開啟；圖床會看到您的 IP。" if on else "已關閉圖片連結自動開啟。")
 
+    def _open_link(self, url: str, auto: bool = False) -> bool:
+        mode = self.browser_combo.currentData() if hasattr(self, "browser_combo") else "system"
+        path = self.browser_path.text().strip() if hasattr(self, "browser_path") else ""
+        ok, msg = browser.open_url(url, mode or "system", path)
+        if ok and auto:
+            msg = "已自動開啟圖片連結。"
+        self._notice(msg)
+        return ok
+
+    def _on_links_changed(self, links) -> None:
+        if not (hasattr(self, "chk_auto_image") and self.chk_auto_image.isChecked()):
+            return
+        session, typer = self._article_session(), self._article_typer()
+        images = [link for link in links if is_image_url(link.url)]
+        if not images:
+            return
+        if (not session.logged_in or typer.running or session.login_state is Login.LOGGING_IN):
+            for link in images:                       # no delayed auto-open after typing/login ends
+                self._auto_opened.add(link.url)
+            return
+        now = time.monotonic()
+        while self._auto_open_times and now - self._auto_open_times[0] >= 60:
+            self._auto_open_times.popleft()
+        opened = 0
+        for link in images:
+            if link.url in self._auto_opened:
+                continue
+            self._auto_opened.add(link.url)           # never retry the same URL in this connection
+            if opened >= MAX_AUTO_OPEN_PER_SCREEN or len(self._auto_open_times) >= MAX_AUTO_OPEN_PER_MINUTE:
+                continue
+            if self._open_link(link.url, auto=True):
+                self._auto_open_times.append(now)
+                opened += 1
+
     # ================================================================== settings tab
     def _build_settings_tab(self) -> QWidget:
         w = QWidget()
@@ -613,6 +656,9 @@ class MainWindow(QMainWindow):
         self.btn_connect.setEnabled(st is State.DISCONNECTED)
         self.btn_disconnect.setEnabled(st is not State.DISCONNECTED)
         self.btn_login.setEnabled(c)
+        if st is State.CONNECTED:
+            self._auto_opened.clear()
+            self._auto_open_times.clear()
         self._update_tray(c)
         self._update_type_buttons()
 

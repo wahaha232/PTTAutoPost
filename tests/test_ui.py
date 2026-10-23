@@ -8,7 +8,11 @@ from conftest import pump, wait_until
 from src.net.poster import Target
 from src.net.session import PttSession
 from src.storage.db import Database
+from src.links import Link
+from src.net.client import State
+from src.net.session import Login
 from src.terminal.detect import Kind
+from src.ui import browser
 from src.ui.main_window import MainWindow
 from src.ui.terminal_widget import key_to_bytes
 from PySide6.QtCore import Qt
@@ -893,3 +897,81 @@ def test_browser_settings_corrupt_fall_back(qapp, tmp_path):
     assert w.browser_combo.currentData() == "system"
     assert not w.chk_auto_image.isChecked()
     w.db.close()
+
+
+def _image_link(url: str) -> Link:
+    return Link(url, 0, 0, len(url))
+
+
+def test_manual_link_click_uses_browser_settings(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(browser, "open_url", lambda url, mode, path: calls.append((url, mode, path)) or (True, "ok"))
+    win.term.linkActivated.emit("https://example.com/a")
+    assert calls and calls[0][0] == "https://example.com/a"
+    assert calls[0][1] == win.browser_combo.currentData()
+
+
+def test_auto_image_off_by_default(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "_open_link", lambda *a, **k: calls.append(a) or True)
+    win.session.logged_in = True
+    win._on_links_changed([_image_link("https://i.imgur.com/a.jpg")])
+    assert calls == []
+
+
+def test_auto_image_once_per_connection_and_one_per_screen(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "_open_link", lambda url, auto=False: calls.append(url) or True)
+    win.chk_auto_image.setChecked(True)
+    win.session.logged_in = True
+    win.session.login_state = Login.LOGGED_IN
+    links = [_image_link("https://i.imgur.com/a.jpg"), _image_link("https://i.imgur.com/b.jpg"),
+             _image_link("https://i.imgur.com/c.jpg")]
+    win._on_links_changed(links)
+    win._on_links_changed(links)
+    assert calls == ["https://i.imgur.com/a.jpg"]
+    win._on_links_changed([_image_link("https://i.imgur.com/d.jpg")])
+    assert calls == ["https://i.imgur.com/a.jpg", "https://i.imgur.com/d.jpg"]
+
+
+def test_auto_image_minute_limit_and_reconnect_reset(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "_open_link", lambda url, auto=False: calls.append(url) or True)
+    win.chk_auto_image.setChecked(True)
+    win.session.logged_in = True
+    win.session.login_state = Login.LOGGED_IN
+    for i in range(4):
+        win._on_links_changed([_image_link(f"https://i.imgur.com/{i}.jpg")])
+    assert len(calls) == 3
+    win._on_conn_state(State.CONNECTED)                 # new connection clears the seen set
+    win._on_links_changed([_image_link("https://i.imgur.com/0.jpg")])
+    assert len(calls) == 4
+
+
+def test_auto_image_skipped_while_typing_or_login_but_manual_click_works(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "_open_link", lambda url, auto=False: calls.append((url, auto)) or True)
+    win.chk_auto_image.setChecked(True)
+    win.session.logged_in = True
+    win.typer.running = True
+    win._on_links_changed([_image_link("https://i.imgur.com/a.jpg")])
+    assert calls == []
+    win.typer.running = False
+    win.session.login_state = Login.LOGGING_IN
+    win._on_links_changed([_image_link("https://i.imgur.com/b.jpg")])
+    assert calls == []
+    win.session.login_state = Login.LOGGED_IN
+    win.session.logged_in = False
+    win._on_links_changed([_image_link("https://i.imgur.com/c.jpg")])
+    assert calls == []
+    win._open_link("https://i.imgur.com/a.jpg")
+    assert calls == [("https://i.imgur.com/a.jpg", False)]
+
+
+def test_auto_image_ignores_non_image_links(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "_open_link", lambda *a, **k: calls.append(a) or True)
+    win.chk_auto_image.setChecked(True)
+    win.session.logged_in = True
+    win._on_links_changed([_image_link("https://example.com/article")])
+    assert calls == []
