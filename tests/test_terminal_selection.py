@@ -1,5 +1,5 @@
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from src.net.session import PttSession
@@ -47,7 +47,7 @@ def test_drag_across_rows_selects_middle_rows_whole(qapp):
 
 
 def test_drag_starting_on_link_selects_and_does_not_open(qapp):
-    term = make_term("中文 https://example.com/a")
+    term = make_term("?? https://example.com/a")
     link = term.links()[0]
     activated = []
     term.linkActivated.connect(activated.append)
@@ -59,9 +59,9 @@ def test_drag_starting_on_link_selects_and_does_not_open(qapp):
 
 
 def test_wide_character_is_never_split_by_drag(qapp):
-    term = make_term("中文測")
+    term = make_term("???")
     drag(term, point_for(term, 1, 0), QPointF(point_for(term, 2, 0).x() + 6, point_for(term, 2, 0).y()))
-    assert term.selection_text() == "中文"
+    assert term.selection_text() == "??"
 
 
 def test_alt_drag_selects_a_rectangle(qapp):
@@ -97,16 +97,16 @@ def test_user_key_that_is_sent_clears_selection(qapp, monkeypatch):
 
 
 def test_double_click_selects_word_and_triple_click_selects_line(qapp):
-    term = make_term("hello 中文 world")
+    term = make_term("hello ?? world")
     pos = point_for(term, 7, 0)
     term.mousePressEvent(mouse_event(QEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton))
     term.mouseReleaseEvent(mouse_event(QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.LeftButton))
     term.mouseDoubleClickEvent(mouse_event(QEvent.Type.MouseButtonDblClick, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton))
     term.mouseReleaseEvent(mouse_event(QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.LeftButton))
-    assert term.selection_text() == "中文"
+    assert term.selection_text() == "??"
     term.mousePressEvent(mouse_event(QEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton))
     term.mouseReleaseEvent(mouse_event(QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.LeftButton))
-    assert term.selection_text() == "hello 中文 world"
+    assert term.selection_text() == "hello ?? world"
 
 
 def test_selected_cells_are_painted_differently(qapp):
@@ -117,3 +117,60 @@ def test_selected_cells_are_painted_differently(qapp):
     term.update()
     picked = term.grab().toImage()
     assert plain != picked
+
+
+def test_ctrl_shift_c_copies_selection_without_sending_bytes(qapp, monkeypatch):
+    term = make_term("hello world")
+    drag(term, point_for(term, 0, 0), point_for(term, 4, 0))
+    sent = []
+    monkeypatch.setattr(term.s, "send_user_bytes", lambda data: sent.append(data) or True)
+    QGuiApplication.clipboard().setText("old")
+    term.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key_C,
+                                 Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
+    assert QGuiApplication.clipboard().text() == "hello"
+    assert sent == []
+    assert term.has_selection()
+
+
+def test_copy_without_selection_does_nothing(qapp):
+    term = make_term("hello")
+    QGuiApplication.clipboard().setText("keep")
+    term.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key_C,
+                                 Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
+    assert QGuiApplication.clipboard().text() == "keep"
+
+
+def test_copy_selection_strips_line_ends_and_joins_with_newline(qapp):
+    term = make_term("abc   ", "def", "ghi   ")
+    drag(term, point_for(term, 1, 0), point_for(term, 1, 2))
+    assert term.copy_selection()
+    assert QGuiApplication.clipboard().text() == "bc\ndef\ngh"
+
+
+def test_select_all_and_copy_whole_screen(qapp):
+    term = make_term("hello", "world")
+    term.select_all()
+    assert term.has_selection()
+    assert term.selection_text() == "hello\nworld"
+    assert term.copy_screen()
+    assert QGuiApplication.clipboard().text() == "hello\nworld"
+    assert term.copy_selection()
+    assert QGuiApplication.clipboard().text() == "hello\nworld"
+
+
+def test_context_menu_offers_copy_select_all_and_copy_screen(qapp):
+    term = make_term("hello", "world")
+    menu = term._build_context_menu()
+    actions = {a.text(): a for a in menu.actions()}
+    assert {"\u8907\u88fd", "\u5168\u9078\u756b\u9762", "\u8907\u88fd\u6574\u500b\u756b\u9762"} <= set(actions)
+    assert not actions["\u8907\u88fd"].isEnabled()
+    actions["\u5168\u9078\u756b\u9762"].trigger()
+    assert term.has_selection()
+    menu2 = term._build_context_menu()
+    actions2 = {a.text(): a for a in menu2.actions()}
+    assert actions2["\u8907\u88fd"].isEnabled()
+    actions2["\u8907\u88fd"].trigger()
+    assert QGuiApplication.clipboard().text() == "hello\nworld"
+    menu3 = term._build_context_menu()
+    {a.text(): a for a in menu3.actions()}["\u8907\u88fd\u6574\u500b\u756b\u9762"].trigger()
+    assert QGuiApplication.clipboard().text() == "hello\nworld"

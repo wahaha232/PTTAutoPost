@@ -12,8 +12,8 @@ import math
 import time
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QApplication, QSizePolicy, QWidget
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QGuiApplication, QPainter, QPen, QPolygonF
+from PySide6.QtWidgets import QApplication, QMenu, QSizePolicy, QWidget
 
 from ..links import Link, find_links
 from ..net.session import PttSession
@@ -266,6 +266,44 @@ class TerminalWidget(QWidget):
         self._sel_rect = False
         self.update()
 
+    def select_all(self) -> None:
+        rows, cols = self.s.screen.rows, self.s.screen.cols
+        self._sel_anchor, self._sel_cursor = (0, 0), (rows - 1, cols - 1)
+        self._sel_rect = False
+        self.update()
+
+    def copy_selection(self) -> bool:
+        if not self.has_selection():
+            return False
+        text = self.selection_text()
+        if not text:
+            return False
+        QGuiApplication.clipboard().setText(text)
+        self.notice.emit(f"已複製選取的文字（{len(text)} 字）。")
+        return True
+
+    def copy_screen(self) -> bool:
+        text = termsel.screen_text(self.s.screen.grid)
+        if not text:
+            self.notice.emit("畫面沒有可複製的文字。")
+            return False
+        QGuiApplication.clipboard().setText(text)
+        self.notice.emit(f"已複製整個畫面（{len(text)} 字）。")
+        return True
+
+    def _build_context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        act_copy = menu.addAction("複製")
+        act_copy.setEnabled(self.has_selection())
+        act_copy.triggered.connect(self.copy_selection)
+        menu.addAction("全選畫面").triggered.connect(self.select_all)
+        menu.addAction("複製整個畫面").triggered.connect(self.copy_screen)
+        return menu
+
+    def contextMenuEvent(self, e):
+        menu = self._build_context_menu()
+        menu.exec(e.globalPos())
+
     def _selection_spans(self) -> dict[int, list[tuple[int, int]]]:
         spans: dict[int, list[tuple[int, int]]] = {}
         if self.has_selection():
@@ -431,10 +469,16 @@ class TerminalWidget(QWidget):
         return self.locked
 
     def keyPressEvent(self, e):
+        mods = e.modifiers()
+        if e.key() == Qt.Key.Key_C and (mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)) == (
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            self.copy_selection()
+            e.accept()
+            return
         if self._blocked():
             e.accept()
             return
-        data, why = key_to_bytes(e.key(), e.modifiers(), e.text())
+        data, why = key_to_bytes(e.key(), mods, e.text())
         if why:
             self.notice.emit(why)
         if data:

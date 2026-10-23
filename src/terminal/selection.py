@@ -73,9 +73,9 @@ def selection_rows(grid, anchor: Point, cursor: Point, rect: bool = False) -> li
 
 
 def selection_text(grid, anchor: Point, cursor: Point, rect: bool = False) -> str:
-    """Selected text with trailing whitespace removed from every line."""
+    """Selected text with trailing whitespace removed from every line and no trailing blank lines."""
     return "\n".join(_text(grid, row, start, end).rstrip()
-                     for row, start, end in selection_rows(grid, anchor, cursor, rect))
+                     for row, start, end in selection_rows(grid, anchor, cursor, rect)).rstrip("\n")
 
 
 def word_span(grid, row: int, col: int) -> tuple[int, int] | None:
