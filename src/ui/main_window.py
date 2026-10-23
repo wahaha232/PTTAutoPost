@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFontComboBox
 
 from .. import boards, compose
 from ..errors import ToolError
-from ..links import is_image_url
+from ..links import is_auto_open_image_url
 from ..logging_setup import get_logger
 from ..net.client import DEFAULT_URL, State
 from ..terminal.detect import Kind
@@ -457,7 +457,7 @@ class MainWindow(QMainWindow):
         if not (hasattr(self, "chk_auto_image") and self.chk_auto_image.isChecked()):
             return
         session, typer = self._article_session(), self._article_typer()
-        images = [link for link in links if is_image_url(link.url)]
+        images = [link for link in links if is_auto_open_image_url(link.url)]
         if not images:
             return
         if (not session.logged_in or typer.running or session.login_state is Login.LOGGING_IN):
@@ -468,15 +468,19 @@ class MainWindow(QMainWindow):
         while self._auto_open_times and now - self._auto_open_times[0] >= 60:
             self._auto_open_times.popleft()
         opened = 0
+        skipped = 0
         for link in images:
             if link.url in self._auto_opened:
                 continue
             self._auto_opened.add(link.url)           # never retry the same URL in this connection
             if opened >= MAX_AUTO_OPEN_PER_SCREEN or len(self._auto_open_times) >= MAX_AUTO_OPEN_PER_MINUTE:
+                skipped += 1
                 continue
             if self._open_link(link.url, auto=True):
                 self._auto_open_times.append(now)
                 opened += 1
+        if skipped:
+            self._notice(f"已達自動開啟上限，略過 {skipped} 個圖片連結；可手動點擊開啟。")
 
     # ================================================================== settings tab
     def _build_settings_tab(self) -> QWidget:
@@ -515,7 +519,7 @@ class MainWindow(QMainWindow):
         row_b.addWidget(self.btn_browser_detect)
         self.chk_auto_image = QCheckBox("自動開啟圖片連結")
         self.chk_auto_image.setChecked(self.db.get_setting("links.image_auto_open", "0") == "1")
-        self.lbl_auto_image_note = QLabel("預設關閉。自動開啟會讓圖床看到您的 IP；同一連線同一網址只開一次，且有每分鐘上限。")
+        self.lbl_auto_image_note = QLabel("預設關閉。只自動開啟 imgur 等已知圖床的 https 連結；自動開啟會讓圖床看到您的 IP，同一連線同一網址只開一次，且有每分鐘上限。")
         self.lbl_auto_image_note.setWordWrap(True)
         bf.addRow("瀏覽器", self.browser_combo)
         bf.addRow("自訂路徑", row_b)

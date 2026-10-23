@@ -1,4 +1,4 @@
-from src.links import Link, find_links, is_image_url, validate_http_url
+from src.links import Link, find_links, is_auto_open_image_url, is_image_url, validate_http_url
 from src.terminal.screen import Screen
 
 
@@ -63,3 +63,17 @@ def test_link_contains_uses_cell_columns():
     link = Link("https://example.com", 2, 10, 29)
     assert link.contains(2, 10) and link.contains(2, 28)
     assert not link.contains(2, 9) and not link.contains(3, 10)
+
+
+def test_auto_open_requires_https_known_host_and_no_svg():
+    assert is_auto_open_image_url("https://i.imgur.com/x.jpg")
+    assert is_auto_open_image_url("https://sub.imgur.com/x")
+    assert not is_auto_open_image_url("http://i.imgur.com/x.jpg")
+    assert not is_auto_open_image_url("https://example.com/x.png")
+    assert not is_auto_open_image_url("http://example.com/x.jpg")
+    assert not is_auto_open_image_url("https://example.com/a.svg")
+    assert not is_auto_open_image_url("https://i.imgur.com/a.svg")
+    assert not is_auto_open_image_url("https://192.168.1.1/x.png")
+    assert not is_auto_open_image_url("https://localhost/x.png")
+    assert not is_auto_open_image_url("https://imgur.com.evil.com/x.jpg")
+    assert not is_image_url("https://example.com/a.svg")

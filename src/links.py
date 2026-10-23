@@ -5,6 +5,7 @@ kept in screen columns so the UI can underline/hit-test Chinese double-width tex
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -14,7 +15,7 @@ from .terminal.screen import WIDE2
 
 _URL_RE = re.compile(r"(?i)(?<![A-Za-z0-9])https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 _TRAILING = ".,;:!?，。；：！？、\"'」』】》〉)]}"
-_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".avif"}
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
 _IMAGE_HOSTS = (
     "imgur.com", "i.imgur.com", "m.imgur.com", "imgbox.com", "i.ibb.co", "ibb.co",
     "gyazo.com", "puu.sh", "flic.kr", "postimg.cc", "i.postimg.cc", "imageshack.us",
@@ -52,6 +53,21 @@ def _trim(url: str) -> str:
     return url.rstrip(_TRAILING)
 
 
+def _known_image_host(host: str) -> bool:
+    return any(host == h or host.endswith("." + h) for h in _IMAGE_HOSTS)
+
+
+def _private_host(host: str) -> bool:
+    """String-only check; never performs DNS resolution."""
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return not ip.is_global
+
+
 def is_image_url(url: str) -> bool:
     try:
         p = urlparse(url)
@@ -60,9 +76,25 @@ def is_image_url(url: str) -> bool:
     host = (p.hostname or "").lower().rstrip(".")
     if not host:
         return False
-    if any(host == h or host.endswith("." + h) for h in _IMAGE_HOSTS):
+    if _known_image_host(host):
         return True
     return PurePosixPath(p.path).suffix.lower() in _IMAGE_EXTENSIONS
+
+
+def is_auto_open_image_url(url: str) -> bool:
+    """Auto-open only https URLs on a known image host; extension-only URLs are never auto-opened."""
+    if not validate_http_url(url):
+        return False
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return False
+    if p.scheme.lower() != "https":
+        return False
+    host = (p.hostname or "").lower().rstrip(".")
+    if not host or _private_host(host) or not _known_image_host(host):
+        return False
+    return PurePosixPath(p.path).suffix.lower() != ".svg"
 
 
 def _row_cells(screen, y: int) -> tuple[str, list[tuple[int, int]]]:

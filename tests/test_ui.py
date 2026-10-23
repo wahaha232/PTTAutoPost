@@ -975,3 +975,32 @@ def test_auto_image_ignores_non_image_links(win, monkeypatch):
     win.session.logged_in = True
     win._on_links_changed([_image_link("https://example.com/article")])
     assert calls == []
+
+
+def test_auto_open_only_known_hosts_and_limit_notice(win, monkeypatch):
+    calls, notices = [], []
+    monkeypatch.setattr(win, "_open_link", lambda url, auto=False: calls.append(url) or True)
+    monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
+    win.chk_auto_image.setChecked(True)
+    win.session.logged_in = True
+    win.session.login_state = Login.LOGGED_IN
+    for url in ("https://example.com/x.jpg", "http://i.imgur.com/x.jpg", "https://example.com/a.svg",
+                "https://192.168.1.1/x.png", "https://localhost/x.png"):
+        win._on_links_changed([_image_link(url)])
+    assert calls == []
+    win._on_links_changed([_image_link("https://i.imgur.com/a.jpg")])
+    assert calls == ["https://i.imgur.com/a.jpg"]
+    links = [_image_link("https://i.imgur.com/b.jpg"), _image_link("https://i.imgur.com/c.jpg")]
+    win._on_links_changed(links)
+    assert calls == ["https://i.imgur.com/a.jpg", "https://i.imgur.com/b.jpg"]
+    limit_notices = [n for n in notices if "已達自動開啟上限" in n]
+    assert len(limit_notices) == 1 and "略過 1 個" in limit_notices[0]
+    win._on_links_changed(links)
+    assert len([n for n in notices if "已達自動開啟上限" in n]) == 1
+
+
+def test_manual_click_still_opens_extension_only_http_url(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(browser, "open_url", lambda url, mode, path: calls.append(url) or (True, "ok"))
+    win.term.linkActivated.emit("http://example.com/x.jpg")
+    assert calls == ["http://example.com/x.jpg"]

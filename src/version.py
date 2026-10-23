@@ -1,10 +1,17 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.6.5"
+__version__ = "0.6.6"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.6.6", "2026/10/23", [
+        "Links/security: image auto-open now requires https and a known image host (exact host or subdomain); "
+        "extension-only URLs are never auto-opened. .svg is excluded, and IP, localhost and private/loopback hosts are "
+        "rejected without DNS lookups. Manual link clicks are unchanged.",
+        "Links: when the per-screen or per-minute auto-open limit skips images, the status bar shows one notice per "
+        "screen with the number skipped; the notice is not repeated for the same screen.",
+    ]),
     ("0.6.5", "2026/10/23", [
         "Links: detect single-row http/https URLs on the terminal grid (correct cell positions for Chinese "
         "double-width text); wrapped URLs are deliberately not guessed. Other schemes and URLs with userinfo are rejected.",
