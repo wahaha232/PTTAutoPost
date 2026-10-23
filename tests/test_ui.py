@@ -655,7 +655,7 @@ def test_merged_page_layout_and_article_subtabs(win):
 
 
 def test_article_panel_toggle_shortcut_and_state(win):
-    assert win.act_toggle_article.shortcut().toString() == "Ctrl+Shift+A"
+    assert win.act_toggle_article.shortcut().toString() == "F12"
     assert win.btn_article_toggle.isChecked()
     win.act_toggle_article.trigger()
     pump(20)
@@ -750,7 +750,7 @@ def test_critical_error_uses_dialog_and_status_bar(win, monkeypatch):
 
 def test_fullscreen_action_and_escape_not_taken(win, monkeypatch):
     assert win.act_fullscreen.shortcut().toString() == "F11"
-    assert win.act_toggle_article.shortcut().toString() == "Ctrl+Shift+A"
+    assert win.act_toggle_article.shortcut().toString() == "F12"
     menu = win.menuBar().actions()[0].menu()
     assert win.act_fullscreen in menu.actions() and win.act_toggle_article in menu.actions()
     full, normal = [], []
@@ -772,8 +772,11 @@ def test_theme_combo_applies_and_persists(win):
     assert win.db.get_setting("ui.theme") == "dark"
     win.theme_combo.setCurrentIndex(win.theme_combo.findData("light"))
     pump(20)
-    assert win._theme_choice == "light" and win.term.theme_name == "light"
+    assert win._theme_choice == "light" and win.term.theme_name == "dark"   # terminal default: always dark
     assert win.db.get_setting("ui.theme") == "light"
+    win.terminal_palette_combo.setCurrentIndex(win.terminal_palette_combo.findData("theme"))
+    pump(20)
+    assert win.term.theme_name == "light" and win.db.get_setting("ui.terminal_palette") == "theme"
 
 
 def test_theme_restores_and_corrupt_falls_back(qapp, tmp_path):
@@ -789,9 +792,80 @@ def test_theme_restores_and_corrupt_falls_back(qapp, tmp_path):
 
 def test_system_theme_reapplies_on_scheme_change(win, monkeypatch):
     win._theme_choice = "system"
+    win._terminal_palette_choice = "theme"
     monkeypatch.setattr(win, "_resolve_theme", lambda _choice: "dark")
     win._on_system_scheme_changed(Qt.ColorScheme.Dark)
     assert win.term.theme_name == "dark"
     monkeypatch.setattr(win, "_resolve_theme", lambda _choice: "light")
     win._on_system_scheme_changed(Qt.ColorScheme.Light)
     assert win.term.theme_name == "light"
+    win._terminal_palette_choice = "dark"
+    win._on_system_scheme_changed(Qt.ColorScheme.Light)
+    assert win.term.theme_name == "dark"
+
+
+def test_terminal_palette_defaults_dark_and_switches(win):
+    assert win._terminal_palette_choice == "dark"
+    assert win.term.theme_name == "dark"
+    win.theme_combo.setCurrentIndex(win.theme_combo.findData("light"))
+    pump(20)
+    assert win._theme_choice == "light" and win.term.theme_name == "dark"
+    win.terminal_palette_combo.setCurrentIndex(win.terminal_palette_combo.findData("theme"))
+    pump(20)
+    assert win.term.theme_name == "light"
+    win.terminal_palette_combo.setCurrentIndex(win.terminal_palette_combo.findData("dark"))
+    pump(20)
+    assert win.term.theme_name == "dark"
+
+
+def test_corrupt_terminal_palette_setting_falls_back_to_dark(qapp, tmp_path):
+    db = Database(tmp_path / "term-palette.db")
+    db.set_setting("ui.terminal_palette", "neon")
+    db.set_setting("ui.theme", "light")
+    w = MainWindow(db, PttSession())
+    assert w._terminal_palette_choice == "dark"
+    assert w.terminal_palette_combo.currentData() == "dark"
+    assert w.term.theme_name == "dark"
+    w.db.close()
+
+
+def test_splitter_width_writes_are_debounced(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win.db, "set_setting", lambda k, v: calls.append((k, v)))
+    win._article_width_timer.stop()
+    for _ in range(5):
+        win._on_splitter_moved(0, 0)
+    assert not [k for k, _v in calls if k == "ui.article_panel_width"]
+    pump(600)
+    assert len([k for k, _v in calls if k == "ui.article_panel_width"]) == 1
+
+
+def test_article_width_is_saved_on_close(qapp, tmp_path):
+    path = tmp_path / "close-width.db"
+    w = MainWindow(Database(path), PttSession())
+    w._article_collapsed = False
+    w._article_width = 777
+    w.close()
+    pump(20)
+    db2 = Database(path)
+    assert db2.get_setting("ui.article_panel_width") == "777"
+    db2.close()
+
+
+def test_f12_toggles_panel_and_ctrl_shift_a_stays_terminal_input(win, bbs_factory):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+    assert win.act_toggle_article.shortcut().toString() == "F12"
+    assert key_to_bytes(Qt.Key.Key_F12, Qt.KeyboardModifier.NoModifier, "") == (None, None)
+    win._set_article_panel_visible(True)
+    win.act_toggle_article.trigger()
+    assert win._article_collapsed
+    win.act_toggle_article.trigger()
+    assert not win._article_collapsed
+
+    bbs = bbs_factory()
+    connect_and_login(win, bbs)
+    ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A,
+                   Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier, "")
+    win.term.keyPressEvent(ev)
+    assert wait_until(lambda: bytes(bbs.after_login) == b"\x01")

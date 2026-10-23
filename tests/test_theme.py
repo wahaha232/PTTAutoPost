@@ -24,6 +24,15 @@ def test_light_terminal_ansi_colours_are_readable():
     assert theme.contrast_ratio(t.cursor, t.bg) >= 4.5
 
 
+def test_terminal_palette_choice_dark_or_theme():
+    light = theme.get_theme("light").terminal
+    dark = theme.get_theme("dark").terminal
+    assert theme.terminal_palette_for("dark", "light").bg == dark.bg
+    assert theme.terminal_palette_for("theme", "light").bg == light.bg
+    assert theme.terminal_palette_for("theme", "dark").bg == dark.bg
+    assert theme.terminal_palette_for("neon", "light").bg == dark.bg
+
+
 def test_terminal_widget_switches_palette(qapp):
     term = TerminalWidget(PttSession())
     term.set_theme("light")

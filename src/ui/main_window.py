@@ -92,7 +92,12 @@ class MainWindow(QMainWindow):
         self._theme_choice = self._load_theme_choice()
         self._theme_name = self._resolve_theme(self._theme_choice)
         self._theme_data = theme.get_theme(self._theme_name)
+        self._terminal_palette_choice = self._load_terminal_palette_choice()
         self._parse_kind: str | None = None
+        self._article_width_timer = QTimer(self)
+        self._article_width_timer.setSingleShot(True)
+        self._article_width_timer.setInterval(500)
+        self._article_width_timer.timeout.connect(self._save_article_width)
         self.compact = self._screen_is_compact()      # typical 1366x768 laptop
         self._init_geometry()
         self._build_article_toggle_action()
@@ -134,7 +139,7 @@ class MainWindow(QMainWindow):
     def _build_article_toggle_action(self) -> None:
         self.act_toggle_article = QAction("顯示文章面板", self)
         self.act_toggle_article.setCheckable(True)
-        self.act_toggle_article.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self.act_toggle_article.setShortcut(QKeySequence("F12"))
         self.act_toggle_article.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.act_toggle_article.toggled.connect(self._set_article_panel_visible)
         self.addAction(self.act_toggle_article)
@@ -198,7 +203,7 @@ class MainWindow(QMainWindow):
         self.btn_login = QPushButton("登入")
         self.btn_article_toggle = QPushButton("文章面板")
         self.btn_article_toggle.setCheckable(True)
-        self.btn_article_toggle.setToolTip("顯示／收合文章面板（Ctrl+Shift+A）")
+        self.btn_article_toggle.setToolTip("顯示／收合文章面板（F12）")
         self.btn_article_toggle.toggled.connect(self._set_article_panel_visible)
         for x in (QLabel("端點"), self.url_box, self.btn_connect, self.btn_disconnect, QLabel("帳號"), self.account, self.password, self.btn_login,
                   self.btn_article_toggle):
@@ -337,8 +342,12 @@ class MainWindow(QMainWindow):
             sizes = self.main_splitter.sizes()
             if len(sizes) > 1 and sizes[1] > 0:
                 self._article_width = sizes[1]
-                self.db.set_setting("ui.article_panel_width", str(self._article_width))
+                self._article_width_timer.start()      # one write ~500 ms after the user stops dragging
         QTimer.singleShot(0, self._relayout_after_panel_change)
+
+    def _save_article_width(self) -> None:
+        if not getattr(self, "_article_collapsed", True):
+            self.db.set_setting("ui.article_panel_width", str(getattr(self, "_article_width", 620)))
 
     def _relayout_after_panel_change(self) -> None:
         self.term._relayout()
@@ -352,6 +361,8 @@ class MainWindow(QMainWindow):
                 widget.blockSignals(False)
 
     def _save_article_panel_state(self) -> None:
+        if hasattr(self, "_article_width_timer"):
+            self._article_width_timer.stop()
         self.db.set_setting("ui.article_panel_collapsed", "1" if getattr(self, "_article_collapsed", True) else "0")
         if not getattr(self, "_article_collapsed", True):
             self.db.set_setting("ui.article_panel_width", str(getattr(self, "_article_width", 620)))
@@ -377,6 +388,14 @@ class MainWindow(QMainWindow):
         self.theme_combo.currentIndexChanged.connect(self._on_theme_combo)
         af.addRow("主題", self.theme_combo)
         af.addRow(QLabel("「跟隨系統」會依 Windows 的淺色／深色設定即時切換。"))
+        self.terminal_palette_combo = QComboBox()
+        for key, label in theme.TERMINAL_PALETTE_CHOICES:
+            self.terminal_palette_combo.addItem(label, key)
+        idx = self.terminal_palette_combo.findData(self._terminal_palette_choice)
+        self.terminal_palette_combo.setCurrentIndex(max(0, idx))
+        self.terminal_palette_combo.currentIndexChanged.connect(self._on_terminal_palette_combo)
+        af.addRow("終端機配色", self.terminal_palette_combo)
+        af.addRow(QLabel("只影響終端機；「永遠深色」固定黑底，「跟隨主題」在淺色主題使用淺色配色。"))
         lay.addWidget(ap)
         g = QGroupBox("終端機顯示")
         form = QFormLayout(g)
@@ -533,6 +552,13 @@ class MainWindow(QMainWindow):
     def _resolve_theme(self, choice: str) -> str:
         return theme.resolve_theme(choice, QGuiApplication.styleHints().colorScheme())
 
+    def _load_terminal_palette_choice(self) -> str:
+        raw = self.db.get_setting("ui.terminal_palette", "dark")
+        return raw if raw in theme.TERMINAL_PALETTE_KEYS else "dark"
+
+    def _terminal_theme_name(self) -> str:
+        return "dark" if self._terminal_palette_choice == "dark" else self._theme_name
+
     def _apply_theme(self, choice: str, save: bool = True) -> None:
         choice = choice if choice in theme.CHOICE_KEYS else "system"
         self._theme_choice = choice
@@ -542,7 +568,7 @@ class MainWindow(QMainWindow):
         if app is not None:
             theme.apply_theme(app, self._theme_name)
         if hasattr(self, "term"):
-            self.term.set_theme(self._theme_name)
+            self.term.set_theme(self._terminal_theme_name())
         combo = getattr(self, "theme_combo", None)
         if combo is not None:
             idx = combo.findData(choice)
@@ -555,8 +581,22 @@ class MainWindow(QMainWindow):
                 self._paint_state(name)
         if hasattr(self, "parse_status"):
             self._paint_parse_status()
+        tcombo = getattr(self, "terminal_palette_combo", None)
+        if tcombo is not None:
+            idx = tcombo.findData(self._terminal_palette_choice)
+            if idx >= 0:
+                tcombo.blockSignals(True)
+                tcombo.setCurrentIndex(idx)
+                tcombo.blockSignals(False)
         if save:
             self.db.set_setting("ui.theme", choice)
+
+    def _on_terminal_palette_combo(self, _index: int) -> None:
+        choice = self.terminal_palette_combo.currentData()
+        self._terminal_palette_choice = choice if choice in theme.TERMINAL_PALETTE_KEYS else "dark"
+        self.term.set_theme(self._terminal_theme_name())
+        self.db.set_setting("ui.terminal_palette", self._terminal_palette_choice)
+        self._notice(f"終端機配色已設為「{theme.TERMINAL_PALETTE_LABELS[self._terminal_palette_choice]}」。")
 
     def _on_theme_combo(self, _index: int) -> None:
         self._apply_theme(self.theme_combo.currentData() or "system")

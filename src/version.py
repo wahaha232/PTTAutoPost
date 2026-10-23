@@ -1,10 +1,17 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.6.3"
+__version__ = "0.6.4"
 BUILD_DATE = "2026/10/23"
 APP_NAME = "PTT AutoPost"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.6.4", "2026/10/23", [
+        "UI: terminal palette is now a separate option (always dark / follow theme; default always dark), applied live "
+        "and persisted as ui.terminal_palette; missing or invalid values fall back to dark",
+        "UI: dragging the article splitter updates only the in-memory width and writes the setting once about 500 ms after "
+        "dragging stops (and on close), instead of writing on every splitterMoved event",
+        "UI: the article-panel shortcut is F12, so Ctrl+Shift+A is no longer intercepted and reaches the terminal as 0x01",
+    ]),
     ("0.6.3", "2026/10/23", [
         "UI: the terminal and the article panel now share one page in a draggable splitter; the article panel has "
         "'擷取與欄位' / '預覽與輸入' sub-tabs, a collapse button and Ctrl+Shift+A, remembers its width and collapsed state, "

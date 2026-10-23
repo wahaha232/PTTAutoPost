@@ -14,6 +14,10 @@ CHOICES = (("system", "跟隨系統"), ("light", "淺色"), ("dark", "深色"))
 CHOICE_KEYS = tuple(k for k, _ in CHOICES)
 CHOICE_LABELS = dict(CHOICES)
 
+TERMINAL_PALETTE_CHOICES = (("dark", "永遠深色（黑底）"), ("theme", "跟隨主題"))
+TERMINAL_PALETTE_KEYS = tuple(k for k, _ in TERMINAL_PALETTE_CHOICES)
+TERMINAL_PALETTE_LABELS = dict(TERMINAL_PALETTE_CHOICES)
+
 RGB = tuple[int, int, int]
 
 
@@ -122,6 +126,11 @@ def get_theme(name: str) -> Theme:
 
 def terminal_palette(name: str) -> TerminalPalette:
     return get_theme(name).terminal
+
+
+def terminal_palette_for(choice: str, theme_name: str) -> TerminalPalette:
+    """'dark' always keeps the black ANSI palette; 'theme' follows the application theme."""
+    return _DARK_TERMINAL if choice != "theme" else get_theme(theme_name).terminal
 
 
 def app_palette(theme: Theme) -> QPalette:
