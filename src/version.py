@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.4"
+__version__ = "0.8.5"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,13 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.5", "2026/10/24", [
+        "Updates: release asset downloads now accept GitHub's current asset CDN host "
+        "(release-assets.githubusercontent.com). GitHub redirects browser_download_url there, and the previous "
+        "allow-list refused that redirect, so every update download stopped with '下載被重新導向到不允許的網址'. "
+        "Verified end to end against the v0.8.4 portable ZIP (size and SHA-256 match); unknown redirect hosts are "
+        "still refused.",
+    ]),
     ("0.8.4", "2026/10/24", [
         "Image auto-open: a terminal image link now opens as soon as it appears — the app no longer waits for its own "
         "login detection or for automatic typing to finish (the viewer never takes keyboard focus). Auto-open accepts "

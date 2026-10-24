@@ -29,7 +29,7 @@ USER_AGENT = f"PTTAutoPost/{__version__}"
 MAX_RELEASE_BYTES = 2 * 1024 * 1024
 MAX_ASSET_BYTES = 300 * 1024 * 1024
 ALLOWED_HOSTS = {"api.github.com", "github.com", "objects.githubusercontent.com",
-                 "github-releases.githubusercontent.com"}
+                 "release-assets.githubusercontent.com", "github-releases.githubusercontent.com"}
 TOKEN_ENV = "PTTAUTOPOST_GITHUB_TOKEN"
 
 

@@ -93,6 +93,25 @@ def test_download_verifies_sha256_and_reports_progress(monkeypatch, tmp_path):
     assert progress and progress[-1][0] == len(data)
 
 
+def test_download_follows_the_current_github_asset_cdn(monkeypatch, tmp_path):
+    data = b"release-asset"
+    asset = update.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/a.zip", len(data),
+                         "sha256:" + hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(update.requests, "get", lambda *a, **k: FakeResp(
+        chunks=[data], headers={"Content-Length": str(len(data))},
+        url="https://release-assets.githubusercontent.com/github-production-release-asset/x?sig=1"))
+    result = update.download_asset(asset, dest=tmp_path)
+    assert result.verified and result.path.read_bytes() == data
+
+
+def test_download_rejects_an_unknown_redirect(monkeypatch, tmp_path):
+    asset = update.Asset("x.zip", "https://github.com/a.zip", 3)
+    monkeypatch.setattr(update.requests, "get",
+                        lambda *a, **k: FakeResp(chunks=[b"abc"], url="https://example.com/x.zip"))
+    with pytest.raises(update.UpdateError, match="重新導向"):
+        update.download_asset(asset, dest=tmp_path)
+
+
 def test_download_without_digest_is_unverified(monkeypatch, tmp_path):
     asset = update.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/a.zip", 3)
     monkeypatch.setattr(update.requests, "get", lambda *a, **k: FakeResp(chunks=[b"abc"]))

@@ -4,8 +4,8 @@
 - 分支：`dev/roadmap`（自 `main` @ `6d390c4` 建立）
 - 基準版本：0.6.2
 - 基準測試：`python -m pytest -q`（`QT_QPA_PLATFORM=offscreen`）→ 168 passed
-- 目前測試：同一指令 → 384 passed（0.8.4 自動開圖修正與懸停／文章圖片）
-- 目前版本：0.8.4（2026/10/24）
+- 目前測試：同一指令 → 386 passed（0.8.5 更新下載 CDN 修正）
+- 目前版本：0.8.5（2026/10/24）
 - 開始時間 T0：2026-10-23 09:13（UTC+8）／2026-10-23 01:13 UTC
 - 額度基準 B：**暫不追蹤**
 
@@ -359,6 +359,16 @@
 - 更新器：儲存庫已改為公開；未帶 `PTTAUTOPOST_GITHUB_TOKEN` 實測 `update.fetch_latest_release()` 可取得 `v0.8.4` 與攜帶版 ZIP，不再出現私人儲存庫的 404。
 - 純文字原始碼清單：`dist\PTTAutoPost-0.8.4-source.txt`（83 檔、738.5 KB）。
 
+## 0.8.5 修正（更新檔下載 CDN）
+
+- 原因：GitHub 的 `browser_download_url` 會 302 到 `release-assets.githubusercontent.com`，但 `ALLOWED_HOSTS` 只有舊的 `objects.githubusercontent.com`／`github-releases.githubusercontent.com`，所以下載階段以「下載被重新導向到不允許的網址」中止。
+- 修正：允許 `release-assets.githubusercontent.com`；其他未知的重新導向主機仍會拒絕，SHA-256 與大小驗證不變。
+- 實測：未帶 Token 從 `v0.8.4` Release 下載 `PTTAutoPost-0.8.4-portable.zip`，35,203,929 bytes、SHA-256 與 Release digest 相符。
+- 注意：0.8.4（含）以前的版本仍有同樣的 allow-list，無法自動下載 0.8.5；請先手動下載 0.8.5 攜帶版更換，之後的更新即可自動下載。
+- 新增測試：目前 CDN 主機可通過、未知重新導向主機被拒；全套 **386 passed**。
+- 本機 0.8.5 建置：資料夾版 77.8 MB、7z 22.6 MB、更新用 ZIP 33.6 MB；凍結版 `--selftest` OK。
+- 純文字原始碼清單：`dist\PTTAutoPost-0.8.5-source.txt`（83 檔、740.0 KB）。
+
 ## 待使用者驗證（不在本次自動測試範圍）
 
 - B 組已完成項目：實際桌面（含 1366×768）的合併頁比例、面板收合／還原、`F12`、開啟草稿後的面板展開。
@@ -386,6 +396,7 @@
 - 0.8.1：打包版啟動 5 秒後的自動檢查（設定開／關、無 Release／私人儲存庫、無更新時是否安靜）；強制更新與手動下載；更新進度條；關於與贊助選單的實際桌面顯示。
 - 0.8.3：真實 PTT 畫面出現 imgur 等圖片連結時，確認在程式內視窗顯示、不搶焦點、不開瀏覽器；JPEG／GIF／WebP 在打包版都能顯示，並確認縮放與關閉取消下載。
 - 0.8.4：手動登入或直接進主選單時，終端機圖片連結會立即開圖；懸停預覽的位置／延遲與移開消失；文章擷取後圖片畫廊的張數、上一張／下一張與隱私提醒是否符合期待。
+- 0.8.5：先手動更新到 0.8.5，再讓程式檢查 0.8.6（或下一版）並完成下載，確認不再出現「重新導向到不允許的網址」。
 - 真實 PTT 登入後畫面仍從未驗證；本階段不需要登入真實帳號。
 
 ## 額度與提交紀錄
