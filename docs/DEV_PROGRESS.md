@@ -356,6 +356,7 @@
 - 新設定「文章內有圖片連結時直接顯示」（預設關閉）：擷取文章後解析 `<img>`（含 `data-src`／`srcset`）與圖片連結，放進同一個檢視視窗，提供「上一張／下一張」與張數；文章圖片可用任何公開 https 主機，但仍套用每一跳 SSRF／DNS pin 與 `image/*` 內容檢查、SVG 拒絕、20 MB 與像素上限。
 - 新增測試：自動開圖不依賴登入／輸入狀態、放寬後的 URL 政策、文章圖片解析（相對路徑／srcset／追蹤像素／SVG／http）、懸停預覽顯示與隱藏、文章圖片畫廊切換與快取；全套 **384 passed**。
 - 本機 0.8.4 建置：資料夾版 77.8 MB、7z 22.6 MB、更新用 ZIP 33.6 MB；凍結版 `--selftest` OK（含 PNG／JPEG 編碼再解碼）。
+- 更新器：儲存庫已改為公開；未帶 `PTTAUTOPOST_GITHUB_TOKEN` 實測 `update.fetch_latest_release()` 可取得 `v0.8.4` 與攜帶版 ZIP，不再出現私人儲存庫的 404。
 - 純文字原始碼清單：`dist\PTTAutoPost-0.8.4-source.txt`（83 檔、738.5 KB）。
 
 ## 待使用者驗證（不在本次自動測試範圍）
