@@ -20,7 +20,8 @@ def test_proprietary_license_exists():
 
 def test_third_party_notices_cover_runtime_dependencies():
     text = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
-    for name in ("PySide6", "Qt", "shiboken6", "requests", "beautifulsoup4", "lxml", "charset-normalizer", "Python", "PyInstaller"):
+    for name in ("PySide6", "Qt", "shiboken6", "requests", "beautifulsoup4", "lxml", "charset-normalizer",
+                 "Pillow", "Python", "PyInstaller"):
         assert name in text
     assert "LGPL-3.0" in text
     assert "onedir" in text
@@ -51,6 +52,7 @@ def test_spec_builds_a_folder_with_replaceable_qt_libraries():
         assert module in text
     assert "upx=False" in text
     assert "filter_entries" in text and "ONEFILE" in text
+    assert '"PIL"' not in text                       # metadata stripping needs Pillow in the frozen app
 
 
 def test_spec_filters_keep_platform_tls_and_one_openssl_copy():

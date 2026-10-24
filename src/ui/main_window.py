@@ -4,12 +4,11 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import threading
 import time
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QEvent, QStandardPaths, Qt, QThreadPool, QTimer, QUrl
 from PySide6.QtGui import QAction, QCursor, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox,
                                QHBoxLayout, QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
@@ -34,6 +33,8 @@ from . import browser, theme
 from .icon import app_icon, tray_icon
 from .image_viewer import ImageHoverPreview, ImageViewer
 from .terminal_widget import TerminalWidget
+from .tasks import (ArticleImagesZipTask, FetchTask, ImageUploadTask, SiteCheckTask,
+                    UpdateCheckTask, UpdateDownloadTask)
 
 log = get_logger("ui")
 STATE_TEXT = {"found": "已取得", "missing": "未取得", "inferred": "推定（請確認）", "edited": "已修改", "manual": "手動輸入"}
@@ -48,172 +49,6 @@ FIELDS = ("post_title", "title", "site", "author", "published", "url")
 LABELS = {"post_title": "發文標題", "title": "新聞標題", "site": "媒體來源", "author": "記者／作者", "published": "發布時間", "url": "原文網址"}
 
 
-class _Signals(QObject):
-    done = Signal(object, object)    # Fetched, ParseResult
-    failed = Signal(str, str)        # message, detail
-
-
-class FetchTask(QRunnable):
-    """Network + parsing off the GUI thread. Only plain data crosses back through signals."""
-
-    def __init__(self, url: str, ignore_robots: bool):
-        super().__init__()
-        self.url, self.ignore_robots = url, ignore_robots
-        self.signals = _Signals()
-        self._cancel = threading.Event()
-
-    def cancel(self) -> None:
-        """Ask a running fetch to stop at the next safe point (sleep / chunk boundary)."""
-        self._cancel.set()
-
-    def run(self):
-        try:
-            f = fetch(self.url, ignore_robots=self.ignore_robots, cancel=self._cancel)
-            if self._cancel.is_set():                         # the window is closing: do not touch anything
-                return
-            res = parse(f.html, f.final_url, f.warnings)
-            self.signals.done.emit(f, res)
-        except ToolError as e:
-            if not self._cancel.is_set():
-                self.signals.failed.emit(e.message, e.detail)
-        except Exception as e:  # noqa: BLE001  (a parser bug must never kill the app)
-            log.exception("unexpected error while fetching/parsing")
-            if not self._cancel.is_set():
-                self.signals.failed.emit("擷取時發生未預期的錯誤。", f"{type(e).__name__}: {e}")
-
-
-class _UpdateSignals(QObject):
-    done = Signal(object)             # update.Release
-    failed = Signal(str)
-
-
-class UpdateCheckTask(QRunnable):
-    """GitHub API call off the GUI thread; never downloads in this task."""
-
-    def __init__(self, token: str | None):
-        super().__init__()
-        self.token = token
-        self.signals = _UpdateSignals()
-
-    def run(self):
-        try:
-            self.signals.done.emit(update.fetch_latest_release(self.token))
-        except update.UpdateError as e:
-            self.signals.failed.emit(str(e))
-        except Exception:  # noqa: BLE001
-            log.exception("unexpected error while checking updates")
-            self.signals.failed.emit("檢查更新時發生未預期的錯誤。")
-
-
-class _DownloadSignals(QObject):
-    progress = Signal(int, int)
-    done = Signal(object)             # update.DownloadResult
-    failed = Signal(str)
-
-
-class UpdateDownloadTask(QRunnable):
-    """Download one verified update asset; the UI never executes it automatically."""
-
-    def __init__(self, asset: update.Asset, token: str | None):
-        super().__init__()
-        self.asset, self.token = asset, token
-        self.signals = _DownloadSignals()
-
-    def run(self):
-        try:
-            result = update.download_asset(self.asset, token=self.token,
-                                           progress=lambda done, total: self.signals.progress.emit(done, total))
-            self.signals.done.emit(result)
-        except update.UpdateError as e:
-            self.signals.failed.emit(str(e))
-        except Exception:  # noqa: BLE001
-            log.exception("unexpected error while downloading an update")
-            self.signals.failed.emit("下載更新檔時發生未預期的錯誤。")
-
-
-class _SiteCheckSignals(QObject):
-    done = Signal(bool, str)
-
-
-class SiteCheckTask(QRunnable):
-    """Read-only TCP reachability check; no login bytes are sent."""
-
-    def __init__(self, site: dict):
-        super().__init__()
-        self.site = site
-        self.signals = _SiteCheckSignals()
-
-    def run(self):
-        ok, msg = sites.check_site(self.site)
-        self.signals.done.emit(ok, msg)
-
-
-class _ZipSignals(QObject):
-    progress = Signal(int, int)
-    done = Signal(object)                  # image.ZipResult
-    failed = Signal(str)
-
-
-class ArticleImagesZipTask(QRunnable):
-    """Download the article's original images into one ZIP off the GUI thread."""
-
-    def __init__(self, urls: list[str], target: Path, referer: str):
-        super().__init__()
-        self.urls, self.target, self.referer = urls, target, referer
-        self.signals = _ZipSignals()
-        self._cancel = threading.Event()
-
-    def cancel(self) -> None:
-        self._cancel.set()
-
-    def run(self):
-        try:
-            result = download_images_zip(
-                self.urls, self.target, referer=self.referer, cancel=self._cancel,
-                progress=lambda done, total: self.signals.progress.emit(done, total))
-            if not self._cancel.is_set():
-                self.signals.done.emit(result)
-        except ToolError as e:
-            if not self._cancel.is_set():
-                self.signals.failed.emit(e.message)
-        except Exception as e:  # noqa: BLE001
-            log.exception("unexpected error while zipping article images")
-            if not self._cancel.is_set():
-                self.signals.failed.emit(f"打包圖片時發生未預期的錯誤（{type(e).__name__}）。")
-
-
-class _UploadSignals(QObject):
-    progress = Signal(int, int, str)
-    done = Signal(object)                  # UploadBatch
-    failed = Signal(str)
-
-
-class ImageUploadTask(QRunnable):
-    """Upload selected local images to an anonymous public host, one at a time."""
-
-    def __init__(self, paths: list[str], host_key: str):
-        super().__init__()
-        self.paths, self.host_key = paths, host_key
-        self.signals = _UploadSignals()
-        self._cancel = threading.Event()
-
-    def cancel(self) -> None:
-        self._cancel.set()
-
-    def run(self):
-        try:
-            batch = upload_image_files(
-                self.paths, self.host_key, cancel=self._cancel,
-                progress=lambda i, n, name: self.signals.progress.emit(i, n, name))
-            if not self._cancel.is_set():
-                self.signals.done.emit(batch)
-        except ToolError as e:
-            if not self._cancel.is_set():
-                self.signals.failed.emit(e.message)
-        except Exception as e:  # noqa: BLE001
-            log.exception("unexpected error while uploading images")
-            if not self._cancel.is_set():
-                self.signals.failed.emit(f"上傳圖片時發生未預期的錯誤（{type(e).__name__}）。")
 
 
 def _mono() -> QFont:
@@ -1639,6 +1474,12 @@ class MainWindow(QMainWindow):
                                       "請勿上傳個資或機密。上傳成功後網址會插入內文游標處。")
         self.lbl_upload_note.setWordWrap(True)
         ul.addWidget(self.lbl_upload_note)
+        self.chk_strip_exif = QCheckBox("上傳前移除 EXIF／中繼資料（建議）")
+        self.chk_strip_exif.setToolTip("移除拍攝時間、裝置、GPS 等中繼資料；會重新壓縮 JPEG，動畫 GIF 保留影格。")
+        self.chk_strip_exif.setChecked(self.db.get_setting("upload.strip_exif", "1") == "1")
+        self.chk_strip_exif.toggled.connect(
+            lambda on: self.db.set_setting("upload.strip_exif", "1" if on else "0"))
+        ul.addWidget(self.chk_strip_exif)
         rl.addWidget(ug)
         r2 = QHBoxLayout()
         self.btn_new = QPushButton("新增草稿")
@@ -1848,6 +1689,7 @@ class MainWindow(QMainWindow):
                 f"保存期限：{host.retention}\n"
                 f"單檔上限：{host.max_bytes // (1024 * 1024)} MB\n\n"
                 "圖片會公開給任何人下載，請勿上傳個資或機密。\n"
+                "圖片可能含 EXIF（拍攝時間、裝置、GPS）；勾選「上傳前移除 EXIF／中繼資料」時會在背景處理。\n"
                 "上傳成功後網址會插入內文游標處。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
@@ -1855,7 +1697,7 @@ class MainWindow(QMainWindow):
         self._upload_busy = True
         self.btn_upload_image.setEnabled(False)
         self._notice(f"上傳 {len(paths)} 張圖片到 {host.label}…")
-        task = ImageUploadTask(paths, host_key)
+        task = ImageUploadTask(paths, host_key, strip_exif=self.chk_strip_exif.isChecked())
         task.signals.progress.connect(self._upload_progress)
         task.signals.done.connect(self._upload_done)
         task.signals.failed.connect(self._upload_failed)
@@ -3053,7 +2895,11 @@ class MainWindow(QMainWindow):
             self._disconnect_task_signals(task, ("done", "failed"))
             self._task = None
         self._disconnect_task_signals(getattr(self, "_update_check_task", None), ("done", "failed"))
-        self._disconnect_task_signals(getattr(self, "_update_download_task", None), ("progress", "done", "failed"))
+        download_task = getattr(self, "_update_download_task", None)
+        if download_task is not None:
+            download_task.cancel()
+            self._disconnect_task_signals(download_task, ("progress", "done", "failed"))
+            self._update_download_task = None
         self._disconnect_task_signals(getattr(self, "_site_check_task", None), ("done",))
         zip_task = getattr(self, "_zip_task", None)
         if zip_task is not None:
@@ -3076,6 +2922,7 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         self._cancel_background_tasks()
+        self.term.cancel_paste()
         if self.typer.running:
             self.typer.cancel()
         self._save_geometry()

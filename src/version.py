@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.13"
+__version__ = "0.8.14"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,28 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.14", "2026/10/24", [
+        "Update security: download_asset now refuses an update asset without a GitHub-provided SHA-256 before "
+        "making any network request. Digest mismatch, size mismatch, unknown redirects and oversized responses "
+        "still delete the temporary .part file; stage_delta and stage_full_zip continue to reject unverified "
+        "downloads, so an update is never applied on trust alone.",
+        "Image upload now uses the same DNS-pinned, public-host-validated session as article/image fetches, "
+        "instead of a bare requests.post to the fixed endpoint. Large multipart uploads can be cancelled between "
+        "read chunks, so cancelling no longer waits for the current file to finish.",
+        "DNS pinning now preserves the system's RFC 6724 address order instead of forcing IPv4, so IPv6-only or "
+        "dual-stack environments can connect while still dialling only a validated public address.",
+        "The Telnet IAC filter keeps one state machine: feed() delegates to feed_with_replies(), removing the "
+        "duplicated parser.",
+        "Typing/paste aborts now say that no automatic retry was attempted and ask the user to verify the terminal "
+        "first; a timeout test covers the idle cap and SendLock release. Closing the window cancels an in-flight "
+        "update download and clipboard paste (releasing SendLock) before disconnecting.",
+        "Image upload can strip EXIF/GPS/text metadata before upload (Pillow; enabled by default, animated GIF "
+        "frames preserved). Files that cannot be sanitised are skipped rather than uploaded with metadata; the "
+        "confirmation explains the public-host and metadata risks.",
+        "Main-window background work moved to src/ui/tasks.py (fetch, update check/download, site check, image "
+        "ZIP, image upload), leaving the window as event wiring. Database tests now cover an unwritable backup "
+        "target and an upgrade-backup failure that leaves the original database intact.",
+    ]),
     ("0.8.13", "2026/10/24", [
         "Reply mode in Preview & input: a new '回覆文章模式' checkbox composes only the reply content (personal "
         "notes + signature) and the derived 'Re: ...' title, without the news-repost header. The user presses r "

@@ -305,9 +305,46 @@ def test_backup_to_is_a_restorable_copy_and_refuses_the_live_path(tmp_path):
         d.close()
 
 
+def test_backup_to_reports_a_target_that_cannot_be_opened(tmp_path):
+    d = Database(tmp_path / "live.db")
+    try:
+        target = tmp_path / "not-a-file"
+        target.mkdir()
+        with pytest.raises(StorageError):
+            d.backup_to(target)
+    finally:
+        d.close()
+
+
 def test_database_waits_for_a_locked_file_instead_of_failing_immediately(tmp_path):
     d = Database(tmp_path / "w.db")
     assert d.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+def test_failed_upgrade_backup_keeps_the_original_database_usable(tmp_path):
+    p = tmp_path / "old.db"
+    conn = sqlite3.connect(p)
+    conn.executescript("""
+        CREATE TABLE drafts(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL DEFAULT '', post_title TEXT NOT NULL DEFAULT '',
+          site TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', published TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+          body TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', board TEXT NOT NULL DEFAULT '', use_signature INTEGER NOT NULL DEFAULT 0,
+          preview_override TEXT, parse_status TEXT NOT NULL DEFAULT '', body_status TEXT NOT NULL DEFAULT '', field_states TEXT NOT NULL DEFAULT '',
+          input_state TEXT NOT NULL DEFAULT 'none', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, kind TEXT NOT NULL, draft_id INTEGER, detail TEXT NOT NULL DEFAULT '');
+        INSERT INTO drafts(title, body, created_at, updated_at) VALUES('原稿', '內容', 'x', 'x');
+        PRAGMA user_version=1;""")
+    conn.commit()
+    conn.close()
+    (tmp_path / "old.db.bak-v1").mkdir()          # backup path is unusable
+    with pytest.raises(StorageError):
+        Database(p)
+    conn = sqlite3.connect(p)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert conn.execute("SELECT title, body FROM drafts").fetchone() == ("原稿", "內容")
+    finally:
+        conn.close()
 
 
 def test_upgrade_makes_a_backup_first_and_invisible_regex_is_escaped(tmp_path):

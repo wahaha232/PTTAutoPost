@@ -105,18 +105,21 @@ def test_download_follows_the_current_github_asset_cdn(monkeypatch, tmp_path):
 
 
 def test_download_rejects_an_unknown_redirect(monkeypatch, tmp_path):
-    asset = update.Asset("x.zip", "https://github.com/a.zip", 3)
+    asset = update.Asset("x.zip", "https://github.com/a.zip", 3, "sha256:" + "0" * 64)
     monkeypatch.setattr(update.requests, "get",
                         lambda *a, **k: FakeResp(chunks=[b"abc"], url="https://example.com/x.zip"))
     with pytest.raises(update.UpdateError, match="重新導向"):
         update.download_asset(asset, dest=tmp_path)
 
 
-def test_download_without_digest_is_unverified(monkeypatch, tmp_path):
+def test_download_without_digest_is_refused_before_any_request(monkeypatch, tmp_path):
     asset = update.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/a.zip", 3)
-    monkeypatch.setattr(update.requests, "get", lambda *a, **k: FakeResp(chunks=[b"abc"]))
-    result = update.download_asset(asset, dest=tmp_path)
-    assert not result.verified and result.path.exists()
+    called = []
+    monkeypatch.setattr(update.requests, "get", lambda *a, **k: called.append(a) or FakeResp(chunks=[b"abc"]))
+    with pytest.raises(update.UpdateError, match="SHA-256"):
+        update.download_asset(asset, dest=tmp_path)
+    assert called == []
+    assert not (tmp_path / asset.name).exists() and not (tmp_path / (asset.name + ".part")).exists()
 
 
 def test_download_digest_mismatch_removes_the_file(monkeypatch, tmp_path):
@@ -129,12 +132,34 @@ def test_download_digest_mismatch_removes_the_file(monkeypatch, tmp_path):
 
 
 def test_download_size_limit_removes_the_file(monkeypatch, tmp_path):
-    asset = update.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/a.zip", 6)
+    asset = update.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/a.zip", 6, "sha256:" + "0" * 64)
     monkeypatch.setattr(update, "MAX_ASSET_BYTES", 5)
     monkeypatch.setattr(update.requests, "get", lambda *a, **k: FakeResp(chunks=[b"abcdef"]))
     with pytest.raises(update.UpdateError):
         update.download_asset(asset, dest=tmp_path)
     assert not (tmp_path / asset.name).exists()
+
+
+def test_download_cancel_mid_stream_removes_the_part_and_never_replaces(monkeypatch, tmp_path):
+    import threading
+    data = b"abcdef"
+    asset = update.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/a.zip", len(data),
+                         "sha256:" + hashlib.sha256(data).hexdigest())
+    cancel = threading.Event()
+
+    class Resp(FakeResp):
+        def iter_content(self, _size):
+            yield data[:3]
+            cancel.set()
+            yield data[3:]
+
+    monkeypatch.setattr(update.requests, "get", lambda *a, **k: Resp(
+        chunks=[], headers={"Content-Length": str(len(data))},
+        url="https://objects.githubusercontent.com/file"))
+    with pytest.raises(update.UpdateError, match="取消"):
+        update.download_asset(asset, dest=tmp_path, cancel=cancel)
+    assert not (tmp_path / asset.name).exists()
+    assert not (tmp_path / (asset.name + ".part")).exists()
 
 
 def test_download_rejects_non_github_urls(tmp_path):

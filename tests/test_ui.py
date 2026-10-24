@@ -1174,17 +1174,20 @@ def test_upload_dialog_starts_a_public_upload(win, monkeypatch, tmp_path):
     from PySide6.QtCore import QRunnable
     from PySide6.QtWidgets import QFileDialog, QMessageBox
     from src.ui import main_window as mw
+    from src.ui.tasks import _UploadSignals
     png = tmp_path / "a.png"
     png.write_bytes(b"png")
     monkeypatch.setattr(QFileDialog, "getOpenFileNames", staticmethod(lambda *a, **k: ([str(png)], "")))
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    questions = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: questions.append(a[2]) or QMessageBox.StandardButton.Yes))
     started = []
 
     class FakeTask(QRunnable):
-        def __init__(self, paths, host_key):
+        def __init__(self, paths, host_key, strip_exif=False):
             super().__init__()
-            self.signals = mw._UploadSignals()
-            started.append((paths, host_key))
+            self.signals = _UploadSignals()
+            started.append((paths, host_key, strip_exif))
 
         def cancel(self):
             pass
@@ -1194,7 +1197,9 @@ def test_upload_dialog_starts_a_public_upload(win, monkeypatch, tmp_path):
 
     monkeypatch.setattr(mw, "ImageUploadTask", FakeTask)
     win.upload_images_dialog()
-    assert started == [([str(png)], "catbox")]
+    assert started == [([str(png)], "catbox", True)]
+    assert win.chk_strip_exif.isChecked()
+    assert questions and "EXIF" in questions[0] and "公開" in questions[0]
     assert win._upload_busy and not win.btn_upload_image.isEnabled()
 
 
@@ -1240,6 +1245,7 @@ def test_download_article_images_runs_the_zip_task(win, monkeypatch, tmp_path):
     from PySide6.QtCore import QRunnable
     from PySide6.QtWidgets import QFileDialog, QMessageBox
     from src.ui import main_window as mw
+    from src.ui.tasks import _ZipSignals
     target = tmp_path / "imgs.zip"
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
@@ -1248,7 +1254,7 @@ def test_download_article_images_runs_the_zip_task(win, monkeypatch, tmp_path):
     class FakeTask(QRunnable):
         def __init__(self, urls, target, referer):
             super().__init__()
-            self.signals = mw._ZipSignals()
+            self.signals = _ZipSignals()
             started.append((urls, str(target), referer))
 
         def cancel(self):
@@ -1391,15 +1397,16 @@ def test_update_download_applies_a_full_portable_zip(win, monkeypatch, tmp_path)
 
 def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, monkeypatch):
     from src.ui import main_window as mw
+    from src.ui import tasks as ui_tasks
     calls = []
-    real_parse = mw.parse
+    real_parse = ui_tasks.parse
 
     def fake_parse(html, url, warnings=None):
         res = real_parse(html, url, warnings)
         res.images = ["https://cdn.example.com/photo.jpg"]
         return res
 
-    monkeypatch.setattr(mw, "parse", fake_parse)
+    monkeypatch.setattr(ui_tasks, "parse", fake_parse)
     monkeypatch.setattr(mw.ImageViewer, "show_images",
                         lambda self, urls, strict=True, referer=None: calls.append((urls, strict)))
     win.chk_article_image.setChecked(True)
@@ -1412,15 +1419,16 @@ def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, mon
 
 def test_fetch_with_images_checks_the_setting_and_opens_the_gallery(win, http_server, monkeypatch):
     from src.ui import main_window as mw
+    from src.ui import tasks as ui_tasks
     calls = []
-    real_parse = mw.parse
+    real_parse = ui_tasks.parse
 
     def fake_parse(html, url, warnings=None):
         res = real_parse(html, url, warnings)
         res.images = ["https://cdn.example.com/photo.jpg"]
         return res
 
-    monkeypatch.setattr(mw, "parse", fake_parse)
+    monkeypatch.setattr(ui_tasks, "parse", fake_parse)
     monkeypatch.setattr(mw.ImageViewer, "show_images",
                         lambda self, urls, strict=True, referer=None: calls.append(urls))
     assert not win.chk_article_image.isChecked()

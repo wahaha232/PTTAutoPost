@@ -222,4 +222,5 @@ class PostTyper(QObject):
         self._cap.stop()
         self._release()
         log.warning("typing aborted after %d/%d chunks: %s", self._i, len(self._chunks), why)
-        self.finished.emit(False, f"{why}（已送出 {self.bytes_sent} bytes，共 {len(self._chunks)} 段中的 {self._i} 段）")
+        self.finished.emit(False, f"{why}（已送出 {self.bytes_sent} bytes，共 {len(self._chunks)} 段中的 {self._i} 段）"
+                                  "請先目視確認終端機內容；程式不會自動重試或重送。")

@@ -4,10 +4,29 @@
 - 分支：`dev/roadmap`（自 `main` @ `6d390c4` 建立）
 - 基準版本：0.6.2
 - 基準測試：`python -m pytest -q`（`QT_QPA_PLATFORM=offscreen`）→ 168 passed
-- 目前測試：同一指令 → 443 passed（0.8.13 回覆文章模式）
-- 目前版本：0.8.13（2026/10/24）
+- 目前測試：同一指令 → 456 passed（0.8.14 更新安全、EXIF、背景工作、DB 備份）
+- 目前版本：0.8.14（2026/10/24）
 - 開始時間 T0：2026-10-23 09:13（UTC+8）／2026-10-23 01:13 UTC
 - 額度基準 B：**暫不追蹤**
+
+## 0.8.14（2026-10-24）
+
+- 更新安全：`download_asset()` 在連線前就要求 GitHub 提供的 `sha256:` digest；缺少或格式不正確時直接拒絕下載（不發出請求、不留下檔案）。既有的大小、未知重新導向、大小不符與雜湊不符仍會刪除 `.part`；`stage_delta`／`stage_full_zip` 仍拒絕未驗證的下載。下載可取消，關閉視窗會取消進行中的下載並斷開訊號。
+- 發文／貼上防重複：輸入逾時、斷線、取消後都會停止且不自動重試；訊息改為明示「已送出部分內容、請先目視確認終端機、程式不會自動重送」。新增逾時中止與 SendLock 釋放測試。
+- 圖片上傳改用與文章／圖片下載相同的 DNS pinning 與公開位址檢查（`_mount_pinning`／`_pin_session`），不再直接 `requests.post`；固定端點與 HTTPS／重新導向政策不變。
+- 圖片上傳確認對話框新增 EXIF 警告（拍攝時間、裝置、GPS），並提供「上傳前移除 EXIF／中繼資料」勾選，維持公開存取與保存期限提示。
+- 圖片上傳新增「上傳前移除 EXIF／中繼資料（建議）」勾選（預設開）：以 Pillow 重新輸出 JPEG／PNG／WEBP／GIF（動畫保留影格），移除 EXIF／GPS／文字中繼資料；無法處理的檔案會跳過，不上傳原始檔。`requirements.txt` 與第三方授權已加入 Pillow（HPND）。
+- `main_window.py` 的背景工作抽到 `src/ui/tasks.py`（FetchTask、UpdateCheckTask、UpdateDownloadTask、SiteCheckTask、ArticleImagesZipTask、ImageUploadTask）；主視窗只保留 UI 事件與訊號接線。
+- 資料庫測試新增：備份目標無法開啟時的 `StorageError`、升級前備份失敗時原始資料庫仍可讀且版本不變。
+- 關閉視窗時會先取消進行中的更新下載與剪貼簿貼上；貼上取消會釋放 `SendLock`，之後才斷線與關閉資料庫。
+- 大檔上傳可取消：multipart 的檔案讀取包一層 `_CancellableReader`，每個 chunk 檢查取消旗標；批次上傳遇到取消會立即停止且不記為錯誤。
+- DNS pinning 改為保留系統 `getaddrinfo`／RFC 6724 位址順序，不再強制 IPv4，改善 IPv6-only／雙棧環境的連線；仍然只撥打已驗證的公開 IP。
+- Telnet `IacFilter.feed()` 改為呼叫 `feed_with_replies()` 取得輸出，移除重複的狀態機。
+- 新增測試：上傳 session pinning、可取消 reader、取消批次不記錯誤、IPv6 優先位址、Telnet 兩種入口輸出一致、EXIF／PNG 文字移除、GIF 動畫保留、DB 備份失敗與升級備份失敗。
+- 尚未進行的結構性重構：`main_window.py` 完整分頁拆分、`PostTyper`／`PasteSender` 共用基底、UAO 編碼表、HTML 二次解析最佳化；背景工作拆分已完成。
+- `src/version.py` bump 到 **0.8.14**（2026/10/24）。
+- 本機 0.8.14 建置驗收：資料夾版 89.6 MB、7z 26.0 MB、完整 ZIP 39.9 MB、`delta-0.8.13.zip` 10.4 MB；凍結版 `--selftest` OK（version=0.8.14, frozen=True）。
+- 純文字原始碼清單：`dist\PTTAutoPost-0.8.14-source.txt`（94 檔、944.7 KB）。
 
 ## 0.8.13（2026-10-24）
 

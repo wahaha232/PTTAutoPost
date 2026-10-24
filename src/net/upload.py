@@ -16,6 +16,7 @@ import requests
 
 from ..errors import FetchError, InputError
 from ..logging_setup import get_logger
+from ..parsers.fetch import _mount_pinning, _pin_session
 from ..version import __version__
 
 log = get_logger("upload")
@@ -73,6 +74,34 @@ def host_choices() -> list[tuple[str, str]]:
             for key, host in HOSTS.items()]
 
 
+class _CancellableReader:
+    """File wrapper that aborts a large multipart upload as soon as the task is cancelled."""
+
+    def __init__(self, fh, cancel: threading.Event | None = None):
+        self._fh = fh
+        self._cancel = cancel
+
+    def read(self, size: int = -1) -> bytes:
+        if self._cancel is not None and self._cancel.is_set():
+            raise FetchError("已取消圖片上傳。", "cancelled")
+        return self._fh.read(size)
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+
+def _session_for(url: str) -> requests.Session:
+    """Session with the same DNS pinning / public-host check as article and image fetches."""
+    sess = requests.Session()
+    try:
+        _mount_pinning(sess)
+        _pin_session(sess, url)
+    except Exception:
+        sess.close()
+        raise
+    return sess
+
+
 def _validate_url(url: str, allowed: tuple[str, ...]) -> str:
     try:
         p = urlparse(url)
@@ -88,7 +117,8 @@ def _validate_url(url: str, allowed: tuple[str, ...]) -> str:
     return url
 
 
-def upload_image(path: str | Path, host_key: str, timeout: float = 180) -> UploadResult:
+def upload_image(path: str | Path, host_key: str, timeout: float = 180,
+                 cancel: threading.Event | None = None) -> UploadResult:
     host = HOSTS.get(host_key)
     if host is None:
         raise InputError("不支援的圖床。", str(host_key))
@@ -102,13 +132,15 @@ def upload_image(path: str | Path, host_key: str, timeout: float = 180) -> Uploa
         raise InputError("圖片檔是空的。", str(file))
     if size > host.max_bytes:
         raise InputError(f"{host.label} 單檔上限是 {host.max_bytes // MB} MB。", f"{size} bytes")
+    if cancel is not None and cancel.is_set():
+        raise FetchError("已取消圖片上傳。", "cancelled")
     ctype = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
     headers = {"User-Agent": USER_AGENT, "Accept": "text/plain, */*;q=0.5"}
     try:
-        with file.open("rb") as fh:
-            resp = requests.post(host.endpoint, data=host.extra,
-                                 files={host.field: (file.name, fh, ctype)},
-                                 headers=headers, timeout=timeout, allow_redirects=False)
+        with _session_for(host.endpoint) as sess, file.open("rb") as fh:
+            resp = sess.post(host.endpoint, data=host.extra,
+                             files={host.field: (file.name, _CancellableReader(fh, cancel), ctype)},
+                             headers=headers, timeout=timeout, allow_redirects=False)
     except requests.exceptions.SSLError as e:
         raise FetchError("上傳時 SSL 憑證驗證失敗。", str(e)) from e
     except requests.RequestException as e:
@@ -146,8 +178,12 @@ def upload_images(paths: list[str], host_key: str, progress=None,
         if cancel is not None and cancel.is_set():
             break
         try:
-            result = upload_image(path, host_key)
-        except (InputError, FetchError) as e:
+            result = upload_image(path, host_key, cancel=cancel)
+        except FetchError as e:
+            if e.detail == "cancelled":
+                break
+            batch.errors.append((Path(path).name, e.message))
+        except InputError as e:
             batch.errors.append((Path(path).name, e.message))
         else:
             batch.results.append(result)

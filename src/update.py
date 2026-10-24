@@ -1,8 +1,9 @@
 """Check GitHub Releases and download an update asset.
 
 This module never installs or runs a downloaded file. The UI asks the user, downloads to
-an updates folder, verifies the SHA-256 digest when GitHub provides one, and then tells
-the user how to finish the update (portable ZIP or installed setup.exe).
+an updates folder, verifies the SHA-256 digest GitHub provides, and then tells the user how
+to finish the update (portable ZIP or installed setup.exe). An asset without a digest is
+refused: update bytes are never accepted on trust alone.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -398,7 +400,8 @@ def updates_dir() -> Path:
 
 
 def download_asset(asset: Asset, dest: Path | None = None, token: str | None = None,
-                   timeout: float = 30, progress=None) -> DownloadResult:
+                   timeout: float = 30, progress=None,
+                   cancel: threading.Event | None = None) -> DownloadResult:
     if not _allowed_url(asset.url):
         raise UpdateError("更新檔網址不是允許的 GitHub HTTPS 網址，已拒絕下載。")
     safe_name = Path(asset.name).name
@@ -408,12 +411,16 @@ def download_asset(asset: Asset, dest: Path | None = None, token: str | None = N
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / safe_name
     part = target.with_name(target.name + ".part")
+    if cancel is not None and cancel.is_set():
+        raise UpdateError("已取消下載更新檔。")
     expected = ""
     digest = (asset.digest or "").strip().lower()
     if digest.startswith("sha256:"):
         expected = digest.split(":", 1)[1]
     elif re.fullmatch(r"[0-9a-f]{64}", digest):
         expected = digest
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise UpdateError("更新檔沒有 GitHub 提供的可信 SHA-256，已拒絕下載。")
     h = hashlib.sha256()
     total = 0
     try:
@@ -429,6 +436,8 @@ def download_asset(asset: Asset, dest: Path | None = None, token: str | None = N
                 raise UpdateError("更新檔超過大小上限，已停止下載。")
             with open(part, "wb") as f:
                 for chunk in resp.iter_content(65536):
+                    if cancel is not None and cancel.is_set():
+                        raise UpdateError("已取消下載更新檔。")
                     if not chunk:
                         continue
                     total += len(chunk)
@@ -445,6 +454,8 @@ def download_asset(asset: Asset, dest: Path | None = None, token: str | None = N
         actual = h.hexdigest()
         if expected and actual != expected:
             raise UpdateError("更新檔 SHA-256 驗證失敗，已刪除下載檔。")
+        if cancel is not None and cancel.is_set():
+            raise UpdateError("已取消下載更新檔。")
         os.replace(part, target)
         return DownloadResult(path=target, sha256=actual, verified=bool(expected), size=total)
     except requests.RequestException:

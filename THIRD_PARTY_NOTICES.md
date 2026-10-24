@@ -12,6 +12,7 @@
 | beautifulsoup4 | 4.15.0 | MIT | HTML 解析 |
 | lxml | 6.1.1 | BSD-3-Clause | HTML／XML 解析 |
 | charset-normalizer | 3.4.9 | MIT | 編碼偵測 |
+| Pillow | 12.3.0 | HPND | 上傳前移除圖片中繼資料 |
 | Python | 3.12 | PSF License 2.0 | 執行環境 |
 | PyInstaller | 6.22.2 | GPL-2.0-or-later，含 bootloader exception | 打包工具（bootloader 隨執行檔散布） |
 
@@ -32,6 +33,7 @@
 - requests（Apache-2.0）：`licenses/requests-Apache-2.0.txt`
 - beautifulsoup4（MIT）：`licenses/beautifulsoup4-MIT.txt`
 - charset-normalizer（MIT）：`licenses/charset-normalizer-MIT.txt`
+- Pillow（HPND）：`licenses/Pillow-HPND.txt`
 - lxml（BSD-3-Clause）：`licenses/lxml-BSD-3-Clause.txt`
 - lxml 內附程式庫：`licenses/lxml-bundled-libraries.txt`
 - Python 3.12：`licenses/Python-3.12-PSF.txt`

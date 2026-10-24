@@ -268,6 +268,22 @@ def test_immediate_send_failure_is_reported_and_not_pasting(qapp, monkeypatch):
     assert notices and "\u50b3\u9001\u5931\u6557" in notices[-1]
 
 
+def test_window_close_cancels_paste_and_releases_the_send_lock(qapp, monkeypatch):
+    term = make_term()
+    sent = record_sends(monkeypatch, term)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    QGuiApplication.clipboard().setText("a" * 1000)
+    assert term.paste_from_clipboard()
+    assert term.s.send_lock.owner() == "paste"
+    term.cancel_paste()
+    assert wait_until(lambda: not term._paster.running)
+    assert term.s.send_lock.owner() is None
+    assert not term.pasting
+    count = len(sent)
+    pump(300)
+    assert len(sent) == count
+
+
 def test_paste_state_signal_reports_start_and_finish(qapp, monkeypatch):
     term = make_term()
     record_sends(monkeypatch, term)

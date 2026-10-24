@@ -401,6 +401,28 @@ def test_pinned_adapter_uses_the_pinned_ip_and_keeps_the_host_header(server):
         sess.close()
 
 
+def test_pin_uses_the_system_address_order_for_ipv6(monkeypatch):
+    import socket
+
+    class Adapter(F._PinnedAdapter):
+        def __init__(self):
+            self.pinned = None
+
+        def pin(self, host, ip):
+            self.pinned = (host, ip)
+
+    adapter = Adapter()
+
+    class Sess:
+        def get_adapter(self, url):
+            return adapter
+
+    monkeypatch.setattr(F, "_resolve_public", lambda url: (
+        "v6.example", [(socket.AF_INET6, "2001:db8::1"), (socket.AF_INET, "203.0.113.9")]))
+    F._pin_session(Sess(), "https://v6.example/a")
+    assert adapter.pinned == ("v6.example", "2001:db8::1")
+
+
 def test_dns_failure_fails_closed_without_an_unpinned_request(monkeypatch):
     import requests
     import socket

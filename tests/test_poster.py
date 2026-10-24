@@ -178,6 +178,21 @@ def test_connection_drop_mid_typing_aborts_and_never_resends(rig):
     assert len(bbs.received) == n and bbs.connections == 1 and sess.client.state is State.DISCONNECTED
 
 
+def test_timeout_aborts_and_releases_the_send_lock(rig):
+    bbs, sess, typer, done = rig
+    goto(bbs, sess, "editor", Kind.EDITOR)
+    typer._cap.setInterval(30)                    # no server idle window can complete before this
+    text = "\n".join("行%d " % i + "測試內容" * 10 for i in range(15))
+    assert typer.start(Target.BODY, text) is None
+    assert wait_until(lambda: bool(done), 8000)
+    assert done[0][0] is False and "無回應" in done[0][1]
+    assert "不會自動重試" in done[0][1]
+    assert sess.send_lock.owner() is None
+    sent = len(bbs.after_login)
+    pump(400)
+    assert len(bbs.after_login) == sent           # no retry after the timeout
+
+
 def test_unexpected_screen_mid_typing_aborts(rig):
     bbs, sess, typer, done = rig
     goto(bbs, sess, "editor", Kind.EDITOR)

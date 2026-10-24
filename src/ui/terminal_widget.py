@@ -316,6 +316,11 @@ class TerminalWidget(QWidget):
         self._set_pasting(False)
         self.notice.emit(msg)
 
+    def cancel_paste(self, why: str = "程式關閉，已停止貼上。") -> None:
+        """Stop a clipboard paste and release its send lock (used by the window close path)."""
+        if self._paster.running:
+            self._paster.cancel(why)
+
     def paste_from_clipboard(self) -> bool:
         if self.pasting or self._paster.running:
             self.notice.emit("貼上進行中，請稍候。")

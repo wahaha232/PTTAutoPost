@@ -20,6 +20,11 @@ def test_iac_filter_strips_and_answers_negotiation():
     assert replies == b"\xff\xfe\x01\xff\xfc\x03"
 
 
+def test_plain_feed_matches_the_reply_parser_output():
+    payload = b"A\xff\xfb\x01B\xff\xfa\x01x\xff\xf0C\xff\xffD"
+    assert IacFilter().feed(payload) == IacFilter().feed_with_replies(payload)[0]
+
+
 def test_telnet_transport_connects_sends_and_receives(qapp):
     server = QTcpServer()
     assert server.listen()

@@ -12,7 +12,7 @@ from spec_filters import filter_entries  # noqa: E402
 ONEFILE = os.environ.get("PTTAUTOPOST_ONEFILE") == "1"
 
 EXCLUDES = [
-    "pandas", "numpy", "scipy", "matplotlib", "sympy", "onnxruntime", "cv2", "PIL", "fitz", "pymupdf", "openpyxl", "xlrd",
+    "pandas", "numpy", "scipy", "matplotlib", "sympy", "onnxruntime", "cv2", "fitz", "pymupdf", "openpyxl", "xlrd",
     "reportlab", "pikepdf", "pypdf", "docx", "markitdown", "magika", "oletools", "msoffcrypto", "IPython", "pytest", "hypothesis",
     "tkinter", "unittest", "pydoc", "setuptools", "pip", "win32com", "yaml", "cryptography",
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick", "PySide6.QtWebView",

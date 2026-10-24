@@ -116,7 +116,9 @@ def _pin_session(sess: requests.Session, url: str) -> None:
     if pinned is None:
         return
     host, addresses = pinned
-    ip = next((addr for family, addr in addresses if family == socket.AF_INET), addresses[0][1])
+    # Keep the system's RFC 6724 address order (IPv4 or IPv6) instead of forcing IPv4;
+    # this keeps IPv6-only/dual-stack environments working while still dialling a validated address.
+    ip = addresses[0][1]
     adapter = sess.get_adapter(url)
     if isinstance(adapter, _PinnedAdapter):
         adapter.pin(host, ip)
