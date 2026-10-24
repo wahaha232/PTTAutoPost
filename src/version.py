@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.5"
+__version__ = "0.8.6"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,18 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.6", "2026/10/24", [
+        "Article images: extraction is now scoped to the article's own content (nav / related / ad blocks are "
+        "excluded), follows lazy data-src and the largest srcset, prefers a linked original, upgrades known "
+        "thumbnail URLs (Wikimedia thumbs and CNA WebPhotos 400/800), and sends the article URL as Referer so "
+        "hot-link-protected image CDNs work. This is why article auto-open looked broken: the old list mostly held "
+        "page chrome and thumbnails.",
+        "Article panel: new '重新載入文章' button re-fetches the article's own URL; new '打包下載圖片' downloads every "
+        "article image at its original URL into one ZIP (no resizing, duplicate-safe names, per-image failures are "
+        "skipped and reported).",
+        "Settings: new interface font family and size (menus, buttons, article panel) applied live and saved; the "
+        "terminal keeps its own font settings.",
+    ]),
     ("0.8.5", "2026/10/24", [
         "Updates: release asset downloads now accept GitHub's current asset CDN host "
         "(release-assets.githubusercontent.com). GitHub redirects browser_download_url there, and the previous "

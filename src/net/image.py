@@ -6,13 +6,16 @@ image content types only (SVG is refused).
 """
 from __future__ import annotations
 
+import re
 import threading
+import zipfile
 from dataclasses import dataclass
-from urllib.parse import urljoin
+from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
-from ..errors import FetchError
+from ..errors import FetchError, ToolError
 from ..links import is_article_image_url, is_auto_open_image_url
 from ..logging_setup import get_logger
 from ..parsers.fetch import (MAX_REDIRECTS, USER_AGENT, _mount_pinning, _pin_session,  # shared SSRF/DNS-pinning rules
@@ -21,6 +24,10 @@ from ..parsers.fetch import (MAX_REDIRECTS, USER_AGENT, _mount_pinning, _pin_ses
 log = get_logger("image")
 TIMEOUT = 15
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_ZIP_BYTES = 300 * 1024 * 1024
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
+_EXT_BY_TYPE = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+                "image/webp": ".webp", "image/bmp": ".bmp", "image/avif": ".avif"}
 
 
 @dataclass(frozen=True)
@@ -43,13 +50,19 @@ def _content_type(headers) -> str:
 
 
 def fetch_image(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_IMAGE_BYTES,
-                cancel: threading.Event | None = None, strict_host: bool = True) -> ImageData:
-    """Download one image into memory; never writes a file, never follows a redirect off the image policy."""
+                cancel: threading.Event | None = None, strict_host: bool = True,
+                referer: str | None = None) -> ImageData:
+    """Download one image into memory; never writes a file, never follows a redirect off the image policy.
+
+    `referer` is the article URL; some image CDNs refuse hot-linking without it.
+    """
     url = check_hop(raw_url, strict_host)
     cur, hops = url, 0
     with requests.Session() as sess:                          # releases the urllib3 pool even on errors
         _mount_pinning(sess)
         sess.headers.update({"User-Agent": USER_AGENT, "Accept": "image/jpeg,image/png,image/gif,image/webp,image/bmp"})
+        if referer and referer.startswith(("http://", "https://")) and not any(c in referer for c in " \r\n\t"):
+            sess.headers["Referer"] = referer
         while True:
             _pin_session(sess, cur)                            # resolve + pin every hop, fail closed on DNS errors
             try:
@@ -96,3 +109,65 @@ def fetch_image(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_IMA
             return ImageData(cur, ctype, b"".join(chunks))
         finally:
             r.close()
+
+
+@dataclass(frozen=True)
+class ZipResult:
+    path: Path
+    saved: int
+    skipped: int
+    total_bytes: int
+    errors: list[str]
+
+
+def _zip_name(url: str, content_type: str, used: set[str]) -> str:
+    base = unquote(PurePosixPath(urlparse(url).path).name)
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._") or "image"
+    suffix = PurePosixPath(base).suffix.lower()
+    if suffix not in _IMAGE_EXTS:
+        base += _EXT_BY_TYPE.get(content_type, ".img")
+    stem, suffix = base.rsplit(".", 1)
+    stem, suffix = (stem or "image"), "." + suffix
+    candidate, n = stem + suffix, 2
+    while candidate.lower() in used:
+        candidate = f"{stem}-{n}{suffix}"
+        n += 1
+    used.add(candidate.lower())
+    return candidate
+
+
+def download_images_zip(urls: list[str], target: Path, referer: str | None = None,
+                        progress=None, cancel: threading.Event | None = None) -> ZipResult:
+    """Download every image at its original URL into one ZIP (no resizing, no rewriting)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(target.name + ".part")
+    used: set[str] = set()
+    saved = skipped = total = 0
+    errors: list[str] = []
+    part.unlink(missing_ok=True)
+    try:
+        with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as zf:
+            for index, url in enumerate(urls, 1):
+                if cancel is not None and cancel.is_set():
+                    raise FetchError("已取消圖片下載。", "cancelled")
+                try:
+                    data = fetch_image(url, strict_host=False, referer=referer, cancel=cancel)
+                except ToolError as e:
+                    skipped += 1
+                    errors.append(f"{url}: {e.message}")
+                    log.info("article image skipped %s: %s", url, e.message)
+                else:
+                    if total + len(data.data) > MAX_ZIP_BYTES:
+                        raise FetchError(f"圖片總大小超過上限（{MAX_ZIP_BYTES // 1024 // 1024} MB）。", "size")
+                    zf.writestr(_zip_name(url, data.content_type, used), data.data)
+                    saved += 1
+                    total += len(data.data)
+                if progress is not None:
+                    progress(index, len(urls))
+        if saved == 0:
+            raise FetchError("沒有任何圖片可以下載。", "empty")
+        part.replace(target)
+    except Exception:
+        part.unlink(missing_ok=True)
+        raise
+    return ZipResult(target, saved, skipped, total, errors)

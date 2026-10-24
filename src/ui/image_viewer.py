@@ -63,10 +63,11 @@ class _Signals(QObject):
 class ImageFetchTask(QRunnable):
     """Download one image off the GUI thread; only bytes cross back through signals."""
 
-    def __init__(self, url: str, strict_host: bool = True):
+    def __init__(self, url: str, strict_host: bool = True, referer: str | None = None):
         super().__init__()
         self.url = url
         self.strict_host = strict_host
+        self.referer = referer
         self.signals = _Signals()
         self._cancel = threading.Event()
 
@@ -75,14 +76,15 @@ class ImageFetchTask(QRunnable):
 
     def run(self):
         try:
-            cached = cache_get(self.url)
+            key = f"{self.url}\n{self.referer or ''}"
+            cached = cache_get(key)
             if cached is not None:
                 if not self._cancel.is_set():
                     self.signals.done.emit(cached)
                 return
             data = fetch_image(self.url, max_bytes=MAX_IMAGE_BYTES, cancel=self._cancel,
-                               strict_host=self.strict_host)
-            cache_put(self.url, data)
+                               strict_host=self.strict_host, referer=self.referer)
+            cache_put(key, data)
             if not self._cancel.is_set():
                 self.signals.done.emit(data)
         except ToolError as e:
@@ -130,6 +132,7 @@ class ImageViewer(QDialog):
         self._urls: list[str] = []
         self._index = 0
         self._strict = True
+        self._referer: str | None = None
 
         self.image_label = QLabel("載入中…")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -162,12 +165,12 @@ class ImageViewer(QDialog):
     def show_url(self, url: str) -> None:
         self.show_images([url])
 
-    def show_images(self, urls: list[str], strict: bool = True) -> None:
+    def show_images(self, urls: list[str], strict: bool = True, referer: str | None = None) -> None:
         """Show one image or a gallery; duplicates are removed and the first image is loaded."""
         unique = list(dict.fromkeys(u for u in urls if u))
         if not unique:
             return
-        self._urls, self._index, self._strict = unique, 0, strict
+        self._urls, self._index, self._strict, self._referer = unique, 0, strict, referer
         self._update_nav()
         self.show()
         self.raise_()
@@ -204,7 +207,7 @@ class ImageViewer(QDialog):
         self.image_label.setText("載入中…")
         self.info.setText(url)
         self._update_nav()
-        task = ImageFetchTask(url, self._strict)
+        task = ImageFetchTask(url, self._strict, self._referer)
         task.signals.done.connect(lambda data, t=task: self._on_done(t, data))
         task.signals.failed.connect(lambda msg, detail, t=task: self._on_failed(t, msg, detail))
         self._task = task

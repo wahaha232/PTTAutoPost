@@ -537,6 +537,33 @@ def test_non_html_content_types_are_refused_and_user_agent_has_current_version(m
     assert F.fetch("https://a.example/x", min_interval=0).status == 200
 
 
+def test_find_image_urls_prefers_linked_original_and_picture_source():
+    html = """<html><body><article>
+    <a href="https://cdn.example.com/original.jpg"><img src="https://cdn.example.com/thumb.jpg"></a>
+    <picture><source data-srcset="https://cdn.example.com/small.jpg 1x, https://cdn.example.com/large.jpg 2x">
+    <img data-src="https://cdn.example.com/fallback.jpg"></picture>
+    </article></body></html>"""
+    assert find_image_urls(html, "https://news.example.com/a") == [
+        "https://cdn.example.com/original.jpg", "https://cdn.example.com/large.jpg"]
+
+
+def test_find_image_urls_upgrades_known_thumbnails_and_drops_ads():
+    cna = """<html><body><article>
+    <picture><source data-srcset="https://imgcdn.cna.com.tw/www/WebPhotos/400/20260101/x.jpg 1x,
+    https://imgcdn.cna.com.tw/www/WebPhotos/800/20260101/x.jpg 2x">
+    <img data-src="https://imgcdn.cna.com.tw/www/WebPhotos/400/20260101/x.jpg"></picture>
+    <img src="https://imgcdn.cna.com.tw/www/website/img/ad300x223.jpg">
+    <img src="https://www.cna.com.tw/logo.png">
+    </article></body></html>"""
+    assert find_image_urls(cna, "https://www.cna.com.tw/news/a/1.aspx") == [
+        "https://imgcdn.cna.com.tw/www/WebPhotos/1024/20260101/x.jpg"]
+    wiki = """<html><body><article>
+    <a href="/wiki/File:Example.jpg"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7a/Example.jpg/960px-Example.jpg"></a>
+    </article></body></html>"""
+    assert find_image_urls(wiki, "https://zh.wikipedia.org/wiki/X") == [
+        "https://upload.wikimedia.org/wikipedia/commons/7/7a/Example.jpg"]
+
+
 def test_find_image_urls_uses_img_sources_and_image_links_only():
     html = """<html><body><article>
     <img src="/a.jpg" width="800">
@@ -551,6 +578,6 @@ def test_find_image_urls_uses_img_sources_and_image_links_only():
     </article></body></html>"""
     urls = find_image_urls(html, "https://news.example.com/story/1")
     assert urls == ["https://news.example.com/a.jpg", "https://cdn.example.com/b.png",
-                    "https://cdn.example.com/f.webp", "https://cdn.example.com/d.jpeg"]
+                    "https://cdn.example.com/g.webp", "https://cdn.example.com/d.jpeg"]
     assert find_image_urls(html, "https://news.example.com/", limit=1) == ["https://news.example.com/a.jpg"]
 

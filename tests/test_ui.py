@@ -16,7 +16,7 @@ from src.ui import browser
 from src.ui.main_window import FIELDS, MainWindow
 from src.ui.terminal_widget import key_to_bytes
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QResizeEvent
+from PySide6.QtGui import QFont, QResizeEvent
 from test_extract_fetch import H
 
 
@@ -1058,10 +1058,89 @@ def test_article_images_setting_opens_the_gallery(win, monkeypatch):
     from src.ui import main_window as mw
     calls = []
     monkeypatch.setattr(mw.ImageViewer, "show_images",
-                        lambda self, urls, strict=True: calls.append((urls, strict)))
+                        lambda self, urls, strict=True, referer=None: calls.append((urls, strict)))
     win._article_image_urls = ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"]
     win.chk_article_image.setChecked(True)
     assert calls == [(["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"], False)]
+
+
+def test_reload_article_uses_the_article_url(win, monkeypatch):
+    win.w["url"].setText("https://news.example.com/a")
+    win.url_in.setText("https://other.example/b")
+    calls = []
+    monkeypatch.setattr(win, "start_fetch", lambda: calls.append(win.url_in.text()))
+    win.reload_article()
+    assert calls == ["https://news.example.com/a"]
+
+
+def test_reload_article_needs_a_url_and_is_blocked_while_fetching(win, monkeypatch):
+    notices = []
+    monkeypatch.setattr(win, "_notice", lambda m: notices.append(m))
+    win.reload_article()
+    assert "沒有" in notices[0]
+    win.w["url"].setText("https://news.example.com/a")
+    win._busy = True
+    win.reload_article()
+    assert "擷取進行中" in notices[-1]
+
+
+def test_download_article_images_runs_the_zip_task(win, monkeypatch, tmp_path):
+    from PySide6.QtCore import QRunnable
+    from PySide6.QtWidgets import QFileDialog
+    from src.ui import main_window as mw
+    target = tmp_path / "imgs.zip"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
+    started = []
+
+    class FakeTask(QRunnable):
+        def __init__(self, urls, target, referer):
+            super().__init__()
+            self.signals = mw._ZipSignals()
+            started.append((urls, str(target), referer))
+
+        def cancel(self):
+            pass
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(mw, "ArticleImagesZipTask", FakeTask)
+    win._article_image_urls = ["https://cdn.example.com/a.jpg"]
+    win._article_referer = "https://news.example.com/a"
+    win.btn_zip.setEnabled(True)
+    win.download_article_images()
+    assert started == [(["https://cdn.example.com/a.jpg"], str(target), "https://news.example.com/a")]
+    assert win._zip_busy and not win.btn_zip.isEnabled()
+
+
+def test_zip_result_reenables_the_button(win, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    win._article_image_urls = ["https://cdn.example.com/a.jpg"]
+    win.btn_zip.setEnabled(False)
+    win._zip_busy = True
+
+    class Result:
+        saved, skipped, path = 2, 1, "C:/out.zip"
+
+    win._zip_done(Result())
+    assert not win._zip_busy and win.btn_zip.isEnabled()
+
+
+def test_ui_font_settings_apply_and_persist(win):
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    old = app.font()
+    try:
+        win.ui_font.setCurrentFont(QFont("Arial"))
+        win.ui_font_size.setValue(13)
+        win._apply_ui_font(save=True)
+        family = win.ui_font.currentFont().family()
+        assert family and win.db.get_setting("ui.font_family") == family
+        assert win.db.get_setting("ui.font_size") == "13"
+        assert app.font().pointSize() == 13
+    finally:
+        app.setFont(old)
 
 
 def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, monkeypatch):
@@ -1070,12 +1149,13 @@ def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, mon
     monkeypatch.setattr(mw, "find_image_urls",
                         lambda html, base: ["https://cdn.example.com/photo.jpg"])
     monkeypatch.setattr(mw.ImageViewer, "show_images",
-                        lambda self, urls, strict=True: calls.append((urls, strict)))
+                        lambda self, urls, strict=True, referer=None: calls.append((urls, strict)))
     win.chk_article_image.setChecked(True)
     win.url_in.setText(http_server + "/ok")
     win.start_fetch()
     assert wait_until(lambda: not win._busy, 8000)
     assert calls == [(["https://cdn.example.com/photo.jpg"], False)]
+    assert win.btn_zip.isEnabled()
 
 
 def test_auto_image_off_by_default(win, monkeypatch):

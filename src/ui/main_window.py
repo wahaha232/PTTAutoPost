@@ -9,7 +9,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QCursor, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
                                QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QMenu, QPlainTextEdit, QPushButton,
@@ -24,6 +24,7 @@ from ..terminal.detect import Kind
 from ..net.poster import PostTyper, Target, preflight
 from ..net.session import Login, PttSession
 from ..parsers.extract import ParseResult, find_image_urls, parse
+from ..net.image import download_images_zip
 from ..parsers.fetch import fetch
 from ..storage.db import MAX_SIGNATURES, Database
 from ..version import APP_NAME, BUILD_DATE, SPONSOR_TEXT, SPONSOR_URL, __version__
@@ -142,6 +143,40 @@ class SiteCheckTask(QRunnable):
         self.signals.done.emit(ok, msg)
 
 
+class _ZipSignals(QObject):
+    progress = Signal(int, int)
+    done = Signal(object)                  # image.ZipResult
+    failed = Signal(str)
+
+
+class ArticleImagesZipTask(QRunnable):
+    """Download the article's original images into one ZIP off the GUI thread."""
+
+    def __init__(self, urls: list[str], target: Path, referer: str):
+        super().__init__()
+        self.urls, self.target, self.referer = urls, target, referer
+        self.signals = _ZipSignals()
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self):
+        try:
+            result = download_images_zip(
+                self.urls, self.target, referer=self.referer, cancel=self._cancel,
+                progress=lambda done, total: self.signals.progress.emit(done, total))
+            if not self._cancel.is_set():
+                self.signals.done.emit(result)
+        except ToolError as e:
+            if not self._cancel.is_set():
+                self.signals.failed.emit(e.message)
+        except Exception as e:  # noqa: BLE001
+            log.exception("unexpected error while zipping article images")
+            if not self._cancel.is_set():
+                self.signals.failed.emit(f"打包圖片時發生未預期的錯誤（{type(e).__name__}）。")
+
+
 def _mono() -> QFont:
     f = QFont("MingLiU")
     f.setStyleHint(QFont.StyleHint.Monospace)
@@ -200,6 +235,9 @@ class MainWindow(QMainWindow):
         self._hover_timer.setInterval(450)             # dwell before fetching a hovered image
         self._hover_timer.timeout.connect(self._show_hover_preview)
         self._article_image_urls: list[str] = []
+        self._article_referer = ""
+        self._zip_busy = False
+        self._zip_task: ArticleImagesZipTask | None = None
         self._parse_kind: str | None = None
         self._article_width_timer = QTimer(self)
         self._article_width_timer.setSingleShot(True)
@@ -220,6 +258,7 @@ class MainWindow(QMainWindow):
         self.term.linksChanged.connect(self._on_links_changed)
         self.term.linkHovered.connect(self._on_link_hovered)
         self.term.pasteStateChanged.connect(self._on_paste_state)
+        self._apply_ui_font(save=False)
         self._apply_theme(self._theme_choice, save=False)
         try:
             QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_scheme_changed)
@@ -592,13 +631,13 @@ class MainWindow(QMainWindow):
         self._notice("已自動開啟圖片於程式內。")
         return True
 
-    def _open_article_images(self, urls: list[str]) -> bool:
+    def _open_article_images(self, urls: list[str], referer: str = "") -> bool:
         """Show images found in the fetched article in the in-app gallery."""
         if not urls:
             return False
         if self._image_viewer is None:
             self._image_viewer = ImageViewer(self)
-        self._image_viewer.show_images(urls, strict=False)
+        self._image_viewer.show_images(urls, strict=False, referer=referer or self._article_referer)
         self._notice(f"已開啟文章內的 {len(urls)} 張圖片（可在視窗中切換）。")
         return True
 
@@ -681,6 +720,24 @@ class MainWindow(QMainWindow):
         self.theme_combo.currentIndexChanged.connect(self._on_theme_combo)
         af.addRow("主題", self.theme_combo)
         af.addRow(QLabel("「跟隨系統」會依 Windows 的淺色／深色設定即時切換。"))
+        self.ui_font = QFontComboBox()
+        stored_family = self.db.get_setting("ui.font_family", "")
+        self.ui_font.setCurrentFont(QFont(stored_family) if stored_family else QApplication.font())
+        try:
+            stored_size = int(self.db.get_setting("ui.font_size", "") or 0)
+        except ValueError:
+            stored_size = 0
+        if not stored_size:
+            stored_size = QApplication.font().pointSize() if QApplication.font().pointSize() > 0 else 10
+        self.ui_font_size = QSpinBox()
+        self.ui_font_size.setRange(8, 24)
+        self.ui_font_size.setSuffix(" pt")
+        self.ui_font_size.setValue(max(8, min(24, stored_size)))
+        self.ui_font.currentFontChanged.connect(lambda _f: self._apply_ui_font(save=True))
+        self.ui_font_size.valueChanged.connect(lambda _n: self._apply_ui_font(save=True))
+        af.addRow("介面字型", self.ui_font)
+        af.addRow("介面字級", self.ui_font_size)
+        af.addRow(QLabel("只影響程式介面（選單、按鈕、文章與設定）；終端機字型由下方「終端機顯示」控制。"))
         self.terminal_palette_combo = QComboBox()
         for key, label in theme.TERMINAL_PALETTE_CHOICES:
             self.terminal_palette_combo.addItem(label, key)
@@ -712,7 +769,7 @@ class MainWindow(QMainWindow):
         self.lbl_hover_image_note.setWordWrap(True)
         self.chk_article_image = QCheckBox("文章內有圖片連結時直接顯示")
         self.chk_article_image.setChecked(self.db.get_setting("links.article_images_open", "0") == "1")
-        self.lbl_article_image_note = QLabel("預設關閉。擷取文章後，把文章內的 <img> 與圖片連結放進同一個檢視視窗，可切換上一張／下一張；不會另開瀏覽器。")
+        self.lbl_article_image_note = QLabel("預設關閉。擷取文章後，把文章內的圖片（優先原始尺寸，已排除導覽列／廣告）放進同一個檢視視窗，可切換上一張／下一張；也可用「打包下載圖片」一次下載原圖。")
         self.lbl_article_image_note.setWordWrap(True)
         bf.addRow("瀏覽器", self.browser_combo)
         bf.addRow("自訂路徑", row_b)
@@ -927,6 +984,7 @@ class MainWindow(QMainWindow):
         self._apply_terminal_settings()
 
     def apply_settings(self):
+        self._apply_ui_font(save=True)
         self._apply_theme(self.theme_combo.currentData() or "system")
         palette = self.terminal_palette_combo.currentData()
         self._terminal_palette_choice = palette if palette in theme.TERMINAL_PALETTE_KEYS else "dark"
@@ -1161,6 +1219,21 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "錯誤", msg)
 
     # ------------------------------------------------------------------ theme
+    def _apply_ui_font(self, save: bool = False) -> None:
+        """Set the application UI font (menus/buttons/article panel); the terminal keeps its own font."""
+        if not hasattr(self, "ui_font"):
+            return
+        family = self.ui_font.currentFont().family()
+        size = max(8, min(24, self.ui_font_size.value()))
+        app = QApplication.instance()
+        if app is not None and family:
+            font = QFont(family)
+            font.setPointSize(size)
+            app.setFont(font)
+        if save:
+            self.db.set_setting("ui.font_family", family)
+            self.db.set_setting("ui.font_size", str(size))
+
     def _load_theme_choice(self) -> str:
         raw = self.db.get_setting("ui.theme", "system")
         return raw if raw in theme.CHOICE_KEYS else "system"
@@ -1252,9 +1325,16 @@ class MainWindow(QMainWindow):
         row.addWidget(self.url_in, 1)
         row.addWidget(self.btn_fetch)
         row.addWidget(self.chk_robots)
+        self.btn_reload = QPushButton("重新載入文章")
+        self.btn_reload.setToolTip("重新擷取目前這篇文章的原文網址，並覆蓋欄位（不必重新貼網址）。")
+        row.addWidget(self.btn_reload)
         self.btn_clear = QPushButton("清除全部欄位")
         self.btn_clear.setToolTip("清除所有欄位、預覽與程式暫存狀態；不會刪除已儲存的草稿。")
         row.addWidget(self.btn_clear)
+        self.btn_zip = QPushButton("打包下載圖片")
+        self.btn_zip.setToolTip("把文章內所有圖片以原始網址下載成 ZIP；不會縮圖，也不含導覽列或廣告圖。")
+        self.btn_zip.setEnabled(False)
+        row.addWidget(self.btn_zip)
         ll.addLayout(row)
         self.parse_status = QLabel("尚未擷取")
         self.parse_status.setWordWrap(True)
@@ -1387,6 +1467,8 @@ class MainWindow(QMainWindow):
         self.article_tabs.addTab(right, "預覽與輸入")
 
         self.btn_fetch.clicked.connect(self.start_fetch)
+        self.btn_reload.clicked.connect(self.reload_article)
+        self.btn_zip.clicked.connect(self.download_article_images)
         self.btn_clear.clicked.connect(self.clear_all_fields)
         self.url_in.returnPressed.connect(self.start_fetch)
         self.btn_regen.clicked.connect(self.regen_preview)
@@ -1415,6 +1497,69 @@ class MainWindow(QMainWindow):
         return root
 
     # ---------------------------------------------------------------- fetching
+    def reload_article(self):
+        """Re-fetch the article's own URL (the URL field wins over whatever is in the input box)."""
+        url = (self.w["url"].text().strip() if hasattr(self, "w") else "") or self.url_in.text().strip()
+        if not url:
+            self._notice("目前沒有可重新載入的文章網址。")
+            return
+        if self._busy:
+            self._notice("擷取進行中，請稍候。")
+            return
+        if not validate_http_url(url):
+            self._notice("原文網址不是有效的 http／https 網址，無法重新載入。")
+            return
+        self.url_in.setText(url)
+        self.start_fetch()
+
+    def download_article_images(self):
+        """Download every image of the loaded article, at its original URL, into one ZIP."""
+        if self._zip_busy:
+            self._notice("圖片打包下載進行中。")
+            return
+        urls = list(self._article_image_urls)
+        if not urls:
+            self._notice("目前文章沒有可下載的圖片。")
+            return
+        default_dir = (QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+                       or str(Path.home()))
+        name = f"PTTAutoPost-{time.strftime('%Y%m%d-%H%M%S')}-images.zip"
+        target, _ = QFileDialog.getSaveFileName(self, "打包下載文章圖片",
+                                                str(Path(default_dir) / name), "ZIP (*.zip)")
+        if not target:
+            return
+        if not target.lower().endswith(".zip"):
+            target += ".zip"
+        self._zip_busy = True
+        self.btn_zip.setEnabled(False)
+        self._notice(f"打包下載 {len(urls)} 張原圖…")
+        task = ArticleImagesZipTask(urls, Path(target), self._article_referer)
+        task.signals.progress.connect(self._zip_progress)
+        task.signals.done.connect(self._zip_done)
+        task.signals.failed.connect(self._zip_failed)
+        self._zip_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _zip_progress(self, done: int, total: int) -> None:
+        self._notice(f"打包下載文章圖片… {done}/{total}")
+
+    def _zip_done(self, result) -> None:
+        self._zip_busy = False
+        self._zip_task = None
+        self.btn_zip.setEnabled(bool(self._article_image_urls))
+        msg = f"已下載 {result.saved} 張原圖（未縮圖）到：\n{result.path}"
+        if result.skipped:
+            msg += f"\n\n略過 {result.skipped} 張（無法下載或格式不支援）。"
+        QMessageBox.information(self, "圖片已打包", msg)
+        self._notice(f"已下載 {result.saved} 張原圖。")
+
+    def _zip_failed(self, msg: str) -> None:
+        self._zip_busy = False
+        self._zip_task = None
+        self.btn_zip.setEnabled(bool(self._article_image_urls))
+        self._notice("打包下載圖片失敗：" + msg)
+        QMessageBox.warning(self, "打包下載失敗", msg)
+
     def start_fetch(self):
         if self._busy:
             return
@@ -1426,6 +1571,8 @@ class MainWindow(QMainWindow):
             return
         self._busy = True
         self.btn_fetch.setEnabled(False)
+        self.btn_reload.setEnabled(False)
+        self.btn_zip.setEnabled(False)
         self.parse_status.setText("擷取中…（背景執行，可繼續操作）")
         self._parse_kind = "info"
         self._paint_parse_status()
@@ -1439,6 +1586,8 @@ class MainWindow(QMainWindow):
         self._task = None
         self._busy = False
         self.btn_fetch.setEnabled(True)
+        self.btn_reload.setEnabled(True)
+        self.btn_zip.setEnabled(bool(self._article_image_urls))
         self.parse_status.setText(f"擷取失敗：{msg}")
         self._parse_kind = "failed"
         self._paint_parse_status()
@@ -1449,6 +1598,7 @@ class MainWindow(QMainWindow):
         self._task = None
         self._busy = False
         self.btn_fetch.setEnabled(True)
+        self.btn_reload.setEnabled(True)
         self._refresh_timer.stop()
         self.draft_id = None
         if not self._article_typer().running:
@@ -1488,9 +1638,13 @@ class MainWindow(QMainWindow):
         self.preview_manual_reset()
         self.render_preview(force=True)
         self._dirty = True                                 # fetched content is not saved yet
-        self._article_image_urls = find_image_urls(fetched.html, fetched.final_url)
+        self._article_image_urls = res.images or find_image_urls(fetched.html, fetched.final_url)
+        self._article_referer = fetched.final_url
+        self.btn_zip.setEnabled(bool(self._article_image_urls))
         if self._article_image_urls and hasattr(self, "chk_article_image") and self.chk_article_image.isChecked():
-            self._open_article_images(self._article_image_urls)
+            self._open_article_images(self._article_image_urls, fetched.final_url)
+        elif hasattr(self, "chk_article_image") and self.chk_article_image.isChecked():
+            self._notice("這篇文章沒有抓到可顯示的圖片。")
         self.db.event("fetch", self.draft_id, f"{res.status}/{res.body_status}")
 
     # ---------------------------------------------------------------- editing / state labels
@@ -2033,6 +2187,10 @@ class MainWindow(QMainWindow):
         self.draft_id = None
         self._typing_target = None
         self._typing_draft_id = None
+        self._article_image_urls = []
+        self._article_referer = ""
+        if hasattr(self, "btn_zip"):
+            self.btn_zip.setEnabled(False)
         self.chk_nonempty.setChecked(False)
         self._loading = True
         try:
@@ -2434,6 +2592,11 @@ class MainWindow(QMainWindow):
         self._disconnect_task_signals(getattr(self, "_update_check_task", None), ("done", "failed"))
         self._disconnect_task_signals(getattr(self, "_update_download_task", None), ("progress", "done", "failed"))
         self._disconnect_task_signals(getattr(self, "_site_check_task", None), ("done",))
+        zip_task = getattr(self, "_zip_task", None)
+        if zip_task is not None:
+            zip_task.cancel()
+            self._disconnect_task_signals(zip_task, ("progress", "done", "failed"))
+            self._zip_task = None
 
     def closeEvent(self, e):
         if (not self._quitting and self._tray is not None and self.chk_tray_close.isChecked()):

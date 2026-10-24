@@ -7,7 +7,6 @@ No scripts are executed; pages are parsed as inert text.
 """
 from __future__ import annotations
 
-import ipaddress
 import json
 import re
 from dataclasses import dataclass, field
@@ -17,7 +16,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
-from ..links import is_image_url
+from ..links import is_article_image_url
 from ..logging_setup import get_logger
 
 log = get_logger("extract")
@@ -86,6 +85,7 @@ class ParseResult:
     page_class: str = "article"       # article / csr_shell / login_wall / paywall
     profile: str = "generic"
     warnings: list[str] = field(default_factory=list)
+    images: list[str] = field(default_factory=list)   # article images, original resolution where the page offers it
 
     def fields(self):
         return {"title": self.title, "site": self.site, "url": self.url, "author": self.author,
@@ -593,6 +593,7 @@ def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> Parse
     paras, how, container, truncated = _extract_body(doc, _profile_for(host).get("body", []), res.warnings, ld.get("body_len") or 0, res.title.value)
     body_text = "\n\n".join(paras)
     res.body.set(body_text, FOUND, how)
+    res.images = _images_from(container if container is not None else doc, url, doc=doc)
 
     if not res.author.value:
         dom_author = _author_from_dom(doc, res.site.value)
@@ -662,53 +663,166 @@ def _finish(res: ParseResult, ld, visible: str = "", html: str = "", container=N
         res.status = "partial"
 
 
-def find_image_urls(html: str, base_url: str = "", limit: int = 12) -> list[str]:
-    """Return https image URLs referenced by the article, in page order (max `limit`).
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
+_BAD_IMAGE_TOKENS = {
+    "logo", "logos", "icon", "icons", "sprite", "badge", "avatar", "avatars",
+    "ad", "ads", "advert", "advertisement", "banner", "share", "sharing", "social",
+    "related", "recommend", "recommended", "popular", "sidebar", "footer", "header",
+    "nav", "menu", "promo", "promotion", "appdownload", "downloadapp",
+}
 
-    <img> sources are trusted as image content (the fetch still verifies the
-    content type); ordinary links count only when they look like an image URL.
-    """
-    doc = BeautifulSoup(html or "", "lxml")
+
+def _tokens(*values: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", " ".join(v or "" for v in values).lower()))
+
+
+def _is_generic_image_url(url: str) -> bool:
+    path = (urlparse(url).path or "").lower()
+    if any(token in path for token in ("logo", "icon", "avatar", "pic_fb", "placeholder", "default")):
+        return True
+    name = PurePosixPath(path).name
+    for token in re.findall(r"[a-z0-9]+", name):
+        if token in ("ad", "ads", "advert", "advertisement") or re.fullmatch(r"ad\d+[a-z0-9]*", token):
+            return True
+    return False
+
+
+def _original_variant(url: str) -> str:
+    """Upgrade a known thumbnail URL to the original/largest variant the same CDN exposes."""
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return url
+    host = (p.hostname or "").lower()
+    if host.endswith("wikimedia.org") and "/thumb/" in p.path:
+        parts = p.path.split("/")
+        index = parts.index("thumb")
+        rest = parts[index + 1:]
+        if len(rest) >= 4:                             # project/segment/hash/hash/file/thumbname
+            path = "/".join(parts[:index] + rest[:-1])
+            return p._replace(netloc="upload.wikimedia.org", path=path).geturl()
+    if host == "imgcdn.cna.com.tw":
+        return re.sub(r"(/WebPhotos/)(?:400|800)(/)", r"\g<1>1024\g<2>", url, flags=re.I)
+    return url
+
+
+def _safe_original(url: str) -> str:
+    upgraded = _original_variant(url)
+    return upgraded if is_article_image_url(upgraded) else url
+
+
+def _looks_like_image_file(url: str) -> bool:
+    """A direct image file, not a wiki/media page that merely ends in .jpg."""
+    path = (urlparse(url).path or "").lower()
+    if PurePosixPath(path).suffix not in _IMAGE_SUFFIXES:
+        return False
+    return not ("/wiki/" in path or "/file:" in path or path.startswith("/wiki"))
+
+
+def _best_srcset(raw: str | None, base_url: str) -> str:
+    """Return the URL with the largest width/density descriptor (the original-ish choice)."""
+    best, best_score = "", -1
+    for part in (raw or "").split(","):
+        bits = part.strip().split()
+        if not bits:
+            continue
+        score = 0
+        if len(bits) > 1:
+            desc = bits[1].lower()
+            try:
+                if desc.endswith("w"):
+                    score = int(desc[:-1])
+                elif desc.endswith("x"):
+                    score = int(float(desc[:-1]) * 1000)
+            except ValueError:
+                score = 0
+        if score > best_score:
+            best, best_score = urljoin(base_url, bits[0]), score
+    return best
+
+
+def _image_url(img: Tag, base_url: str) -> str:
+    """Prefer the linked original, then the largest srcset, then the lazy/src URL."""
+    anchor = img.find_parent("a", href=True)
+    if anchor:
+        href = urljoin(base_url, anchor["href"].strip())
+        if _looks_like_image_file(href) and is_article_image_url(href):
+            return _safe_original(href)
+    picture = img.find_parent("picture")
+    if picture is not None:                       # CNA-style <picture><source data-srcset="400 1x, 800 2x">
+        for source in picture.find_all("source"):
+            best = _best_srcset(source.get("srcset") or source.get("data-srcset"), base_url)
+            if best and is_article_image_url(best):
+                return _safe_original(best)
+    best = _best_srcset(img.get("srcset") or img.get("data-srcset"), base_url)
+    if best and is_article_image_url(best):
+        return _safe_original(best)
+    for attr in ("data-src", "data-original", "data-lazy-src", "src"):
+        raw = img.get(attr)
+        if raw:
+            url = urljoin(base_url, raw.strip())
+            if is_article_image_url(url) and not _is_generic_image_url(url):
+                return _safe_original(url)
+    return ""
+
+
+def _node_allowed(node: Tag, root: Tag) -> bool:
+    parent = node.parent
+    while parent is not None and parent is not root:
+        if parent.name in ("nav", "aside", "footer", "header", "form"):
+            return False
+        if _tokens(" ".join(parent.get("class") or []), parent.get("id") or "") & _BAD_IMAGE_TOKENS:
+            return False
+        parent = parent.parent
+    return not (_tokens(" ".join(node.get("class") or []), node.get("id") or "") & _BAD_IMAGE_TOKENS)
+
+
+def _image_allowed(img: Tag, root: Tag) -> bool:
+    if not _node_allowed(img, root):
+        return False
+    for attr in ("width", "height"):
+        raw = (img.get(attr) or "").strip().lower().removesuffix("px").strip()
+        if raw.isdigit() and int(raw) < 64:
+            return False
+    return True
+
+
+def _images_from(root: Tag, base_url: str, limit: int = 16, doc: Tag | None = None) -> list[str]:
     found: list[str] = []
 
-    def add(raw: str | None) -> None:
-        if not raw or len(found) >= limit:
-            return
-        url = urljoin(base_url, raw.strip())
-        try:
-            p = urlparse(url)
-        except ValueError:
-            return
-        if p.scheme.lower() != "https" or not p.hostname or p.username or p.password:
-            return
-        host = p.hostname.lower().rstrip(".")
-        if host == "localhost" or host.endswith(".localhost"):
-            return
-        try:
-            if not ipaddress.ip_address(host).is_global:
-                return
-        except ValueError:
-            pass
-        if PurePosixPath(p.path).suffix.lower() == ".svg":
-            return
-        if url not in found:
+    def add(url: str) -> None:
+        if url and url not in found and len(found) < limit:
             found.append(url)
 
-    def add_srcset(srcset: str | None) -> None:
-        if srcset:
-            add(srcset.split(",")[0].strip().split(" ")[0])
-
-    for img in doc.find_all("img"):
-        if (img.get("width") or "").strip() in ("0", "1") or (img.get("height") or "").strip() in ("0", "1"):
-            continue                                   # tracking pixel
-        add(img.get("src"))
-        for attr in ("data-src", "data-original", "data-lazy-src"):
-            add(img.get(attr))
-        add_srcset(img.get("srcset") or img.get("data-srcset"))
-    for source in doc.find_all("source"):
-        add_srcset(source.get("srcset"))
-    for a in doc.find_all("a", href=True):
-        if is_image_url(a["href"]):
-            add(a["href"])
+    meta_doc = doc or root
+    for img in root.find_all("img"):
+        if len(found) >= limit:
+            break
+        if _image_allowed(img, root):
+            url = _image_url(img, base_url)
+            if url and not _is_generic_image_url(url):
+                add(url)
+    for a in root.find_all("a", href=True):
+        if len(found) >= limit:
+            break
+        url = urljoin(base_url, a["href"].strip())
+        if (_looks_like_image_file(url) and is_article_image_url(url)
+                and not _is_generic_image_url(url) and _node_allowed(a, root)):
+            add(_safe_original(url))
+    if not found:                                     # og:image is a fallback, not the article's first picture
+        for name in ("og:image", "twitter:image"):
+            raw = _meta(meta_doc, name)
+            if raw:
+                url = urljoin(base_url, raw.strip())
+                if is_article_image_url(url) and not _is_generic_image_url(url):
+                    add(_original_variant(url))
     return found
+
+
+def find_image_urls(html: str, base_url: str = "", limit: int = 16) -> list[str]:
+    """Return article image URLs (original resolution where possible), scoped to article/main content."""
+    doc = BeautifulSoup(html or "", "lxml")
+    root = doc.find("article") or doc.find("main") or doc.find(attrs={"role": "main"}) or doc
+    return _images_from(root, base_url, limit, doc=doc)
+
 

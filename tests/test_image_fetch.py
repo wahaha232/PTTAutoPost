@@ -132,3 +132,47 @@ def test_cancellation_stops_the_download(monkeypatch):
     cancel.set()
     with pytest.raises(FetchError, match="已取消"):
         img.fetch_image("https://i.imgur.com/a.jpg", cancel=cancel)
+
+
+def test_zip_download_keeps_original_bytes_and_unique_names(monkeypatch, tmp_path):
+    import zipfile
+    data = b"\x89PNG-original-bytes"
+    monkeypatch.setattr(img, "fetch_image",
+                        lambda url, **kw: img.ImageData(url, "image/png", data))
+    target = tmp_path / "images.zip"
+    result = img.download_images_zip(
+        ["https://cdn.example.com/a.jpg", "https://cdn.example.com/sub/a.jpg",
+         "https://cdn.example.com/noext"], target)
+    assert result.saved == 3 and result.skipped == 0 and result.total_bytes == len(data) * 3
+    with zipfile.ZipFile(target) as zf:
+        names = zf.namelist()
+        assert names == ["a.jpg", "a-2.jpg", "noext.png"]
+        assert all(zf.read(name) == data for name in names)
+    assert not target.with_name(target.name + ".part").exists()
+
+
+def test_zip_download_skips_failed_images_and_reports_them(monkeypatch, tmp_path):
+    calls = []
+
+    def fake(url, **kw):
+        calls.append(url)
+        if "bad" in url:
+            raise FetchError("圖片連線逾時。", "timeout")
+        return img.ImageData(url, "image/jpeg", b"jpeg")
+
+    monkeypatch.setattr(img, "fetch_image", fake)
+    result = img.download_images_zip(
+        ["https://cdn.example.com/bad.jpg", "https://cdn.example.com/ok.jpg"], tmp_path / "i.zip")
+    assert result.saved == 1 and result.skipped == 1 and "bad.jpg" in result.errors[0]
+    assert calls == ["https://cdn.example.com/bad.jpg", "https://cdn.example.com/ok.jpg"]
+
+
+def test_zip_download_removes_the_partial_file_when_nothing_works(monkeypatch, tmp_path):
+    def fake(url, **kw):
+        raise FetchError("not an image", "type")
+
+    monkeypatch.setattr(img, "fetch_image", fake)
+    target = tmp_path / "empty.zip"
+    with pytest.raises(FetchError, match="沒有任何圖片"):
+        img.download_images_zip(["https://cdn.example.com/a.jpg"], target)
+    assert not target.exists() and not target.with_name(target.name + ".part").exists()
