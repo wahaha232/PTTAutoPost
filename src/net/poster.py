@@ -23,6 +23,8 @@ log = get_logger("poster")
 CHUNK_BYTES = 100
 IDLE_MS = 120
 MAX_WAIT_MS = 3000
+MONEY_CHUNK_BYTES = 2          # one cp950 character (or one ASCII byte)
+MONEY_CHAR_MS = 500            # PTT: at most 1 P per 2 seconds = 4 chars per 2 s
 
 
 class Target(enum.Enum):
@@ -60,6 +62,9 @@ def build_chunks(text: str, limit: int = CHUNK_BYTES) -> list[bytes]:
                 cur = b""
             cur += b
         if li < len(lines) - 1:
+            if cur and len(cur) + 1 > limit:
+                chunks.append(cur)
+                cur = b""
             cur += b"\r"                      # line break between lines; none after the last line
         if cur:
             chunks.append(cur)
@@ -128,8 +133,12 @@ class PostTyper(QObject):
         self.s.client.stateChanged.connect(self._on_state)
 
     def start(self, target: Target, text: str, allow_nonempty: bool = False,
-              pasting: bool = False) -> str | None:
-        """Begin typing. Returns None if started, else the reason it was refused (nothing sent)."""
+              pasting: bool = False, money_pace: bool = False) -> str | None:
+        """Begin typing. Returns None if started, else the reason it was refused (nothing sent).
+
+        money_pace sends one character every ~0.5 s, the rate PTT's P-coin rule
+        rewards (4 chars per 2 seconds); this can take minutes for long articles.
+        """
         if self.running:
             return "已有輸入進行中。"
         why = preflight(self.s, target, text, allow_nonempty, pasting)
@@ -140,10 +149,12 @@ class PostTyper(QObject):
         if lock is not None and not lock.acquire(TYPING):
             return f"{lock.label()}進行中，已暫停自動輸入；請等它結束後再試。"
         self._target, self._i, self.bytes_sent = target, 0, 0
-        self._chunks = build_chunks(text)
+        self._chunks = build_chunks(text, limit=MONEY_CHUNK_BYTES if money_pace else CHUNK_BYTES)
+        self._quiet.setInterval(MONEY_CHAR_MS if money_pace else IDLE_MS)
         self.running = True
         self.started.emit(target)            # caller records "input started" durably first
-        log.info("typing %s: %d chunks", target.value, len(self._chunks))
+        log.info("typing %s: %d chunks (%s)", target.value, len(self._chunks),
+                 "money pace" if money_pace else "normal")
         self._next()
         return None
 

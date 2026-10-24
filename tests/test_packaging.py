@@ -66,6 +66,7 @@ def test_spec_filters_keep_platform_tls_and_one_openssl_copy():
         ("PySide6/plugins/imageformats/qtiff.dll", "qtiff", "BINARY"),
         ("PySide6/Qt6Quick.dll", "quick", "BINARY"),
         ("PySide6/translations/qtbase_zh_TW.qm", "qm", "DATA"),
+        ("PySide6/translations/qtbase_zh_CN.qm", "qmcn", "DATA"),
         ("libcrypto-3.dll", "crypto", "BINARY"),
         ("PySide6/libcrypto-3.dll", "crypto2", "BINARY"),
         ("libssl-3.dll", "ssl", "BINARY"),
@@ -82,7 +83,8 @@ def test_spec_filters_keep_platform_tls_and_one_openssl_copy():
     assert "PySide6/plugins/imageformats/qsvg.dll" not in names
     assert "PySide6/plugins/imageformats/qtiff.dll" not in names
     assert "PySide6/Qt6Quick.dll" not in names
-    assert "PySide6/translations/qtbase_zh_TW.qm" not in names
+    assert "PySide6/translations/qtbase_zh_TW.qm" in names
+    assert "PySide6/translations/qtbase_zh_CN.qm" not in names
     assert names.count("libcrypto-3.dll") == 1
     assert names.count("libssl-3.dll") == 1
     assert "libcrypto-3.dll" in names and "libssl-3.dll" in names

@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.7"
+__version__ = "0.8.9"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,24 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.9", "2026/10/24", [
+        "Interface font: changing the interface font/size now updates every existing widget too (menu bar, tabs, "
+        "buttons, labels, line edits, article body and preview), not only widgets created after the change; the "
+        "terminal still uses its own separate font setting.",
+        "PTT article reload: the terminal has a '重新載入文章' button that sends Ctrl+L so PTT redraws the current "
+        "article/screen (it does not leave the article), and image links are re-parsed. The article panel's web "
+        "reload is renamed '重新載入網頁' to avoid confusion.",
+        "Preview & input: personal notes and the signature editor (direct input + apply checkbox) moved to this "
+        "tab; the whole tab scrolls on small windows.",
+        "Two posting modes with P-coin estimates: '快速貼上' (the normal chunked typer) and '賺 P 幣（逐字配速）' "
+        "(one character per ~0.5 s, the 1 P / 2 s rate). The estimate shows both modes, the article cap (1000 P, or "
+        "25 P for [新聞]) and the expected duration; the app still never presses save/send.",
+        "Image upload: pick images and upload them to an anonymous public host (Catbox permanent, Litterbox 72 h, "
+        "uguu 3 h) without registering; the returned URLs are inserted at the body cursor. The original file bytes "
+        "are uploaded unchanged, redirects to other hosts are refused, and the user confirms the public upload first.",
+        "Right-click menus: Qt's built-in text menus and standard buttons are now Traditional Chinese "
+        "(qtbase_zh_TW.qm is shipped with the portable build).",
+    ]),
     ("0.8.7", "2026/10/24", [
         "Incremental updates for portable builds: a release can ship a small "
         "PTTAutoPost-<version>-delta-<base>.zip containing only changed files. The app picks the delta matching its "

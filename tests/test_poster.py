@@ -70,6 +70,20 @@ def test_long_body_is_chunked_without_splitting_characters(rig):
     assert bytes(bbs.after_login) == text.replace("\n", "\r").encode("cp950")
 
 
+def test_money_pace_sends_one_character_every_half_second(rig):
+    from src.net import poster as P
+    bbs, sess, typer, done = rig
+    goto(bbs, sess, "editor", Kind.EDITOR)
+    assert typer.start(Target.BODY, BODY, money_pace=True) is None
+    try:
+        assert typer._quiet.interval() == P.MONEY_CHAR_MS
+        assert all(len(c) <= P.MONEY_CHUNK_BYTES for c in typer._chunks)
+        assert len(typer._chunks) > len(P.build_chunks(BODY))
+    finally:
+        typer.cancel()
+    assert wait_until(lambda: bool(done))
+
+
 def test_refuses_on_wrong_screen_with_zero_bytes(rig):
     bbs, sess, typer, done = rig
     assert sess.kind is Kind.MAIN_MENU

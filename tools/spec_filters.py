@@ -16,10 +16,13 @@ REMOVE_NAMES = {"opengl32sw.dll"}
 # SVG, TGA, ...) stay out of the portable package.
 KEEP_IMAGE_PLUGINS = {"qjpeg.dll", "qgif.dll", "qwebp.dll"}
 
+# Qt's own right-click menus and standard buttons should be Traditional Chinese.
+KEEP_TRANSLATIONS = {"qtbase_zh_TW.qm"}
+
 REMOVE_PREFIXES = (
     "PySide6/Qt6Qml", "PySide6/Qt6Quick", "PySide6/Qt6Pdf", "PySide6/Qt6OpenGL",
     "PySide6/Qt6Svg", "PySide6/Qt6VirtualKeyboard",
-    "PySide6/plugins/iconengines/", "PySide6/translations/",
+    "PySide6/plugins/iconengines/",
 )
 
 
@@ -39,6 +42,8 @@ def keep_entry(entry) -> bool:
         return False
     if name.startswith("PySide6/plugins/imageformats/"):
         return base in KEEP_IMAGE_PLUGINS
+    if name.startswith("PySide6/translations/"):
+        return base in KEEP_TRANSLATIONS
     return not any(name.startswith(prefix) for prefix in REMOVE_PREFIXES)
 
 

@@ -1064,6 +1064,91 @@ def test_article_images_setting_opens_the_gallery(win, monkeypatch):
     assert calls == [(["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"], False)]
 
 
+def test_ptt_reload_sends_ctrl_l_and_disambiguates_the_web_reload(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win.session, "send_user_bytes", lambda data: calls.append(data) or True)
+    win.reload_ptt_article()
+    assert calls == [b"\x0c"]
+    assert "重新載入文章" in win.btn_ptt_reload.text()
+    assert "網頁" in win.btn_reload.text()
+
+
+def test_ptt_reload_reports_when_disconnected_or_busy(win, monkeypatch):
+    notices = []
+    monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
+    monkeypatch.setattr(win.session, "send_user_bytes", lambda data: False)
+    win.reload_ptt_article()
+    assert "尚未連線" in notices[-1]
+    monkeypatch.setattr(win.session, "send_user_bytes", lambda data: True)
+    win.term.pasting = True
+    win.reload_ptt_article()
+    assert "已暫停" in notices[-1]
+
+
+def test_notes_and_signature_live_on_the_preview_input_tab(win):
+    preview_tab = win.article_tabs.widget(1)
+    fields_tab = win.article_tabs.widget(0)
+    assert preview_tab.isAncestorOf(win.notes) and preview_tab.isAncestorOf(win.sig_edit)
+    assert not fields_tab.isAncestorOf(win.notes) and not fields_tab.isAncestorOf(win.sig_edit)
+    assert "簽名檔" in win.sig_edit.placeholderText()
+
+
+def test_upload_done_inserts_urls_into_the_body(win, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from src.net.upload import UploadBatch, UploadResult
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    win.body.setPlainText("內文")
+    batch = UploadBatch(results=[UploadResult("a.png", "https://files.catbox.moe/a.png", "catbox", 3)])
+    win._upload_done(batch)
+    assert "https://files.catbox.moe/a.png" in win.body.toPlainText()
+
+
+def test_upload_dialog_starts_a_public_upload(win, monkeypatch, tmp_path):
+    from PySide6.QtCore import QRunnable
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from src.ui import main_window as mw
+    png = tmp_path / "a.png"
+    png.write_bytes(b"png")
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", staticmethod(lambda *a, **k: ([str(png)], "")))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    started = []
+
+    class FakeTask(QRunnable):
+        def __init__(self, paths, host_key):
+            super().__init__()
+            self.signals = mw._UploadSignals()
+            started.append((paths, host_key))
+
+        def cancel(self):
+            pass
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(mw, "ImageUploadTask", FakeTask)
+    win.upload_images_dialog()
+    assert started == [([str(png)], "catbox")]
+    assert win._upload_busy and not win.btn_upload_image.isEnabled()
+
+
+def test_money_estimate_and_input_mode_setting(win):
+    win.w["post_title"].setText("閒聊")
+    win.body.setPlainText("字" * 100)
+    win._update_money_estimate()
+    text = win.lbl_money_estimate.text()
+    assert "25 P" in text and "100 個有效字元" in text and "快速貼上" in text
+    win.radio_money.setChecked(True)
+    assert win.db.get_setting("post.input_mode") == "money"
+    assert win.db.get_setting("post.money_pace") == "1"
+    text = win.lbl_money_estimate.text()
+    assert "賺 P 幣（逐字配速）" in text and "50 秒" in text
+    win.w["post_title"].setText("[新聞] 標題")
+    win.body.setPlainText("字" * 200)
+    win._update_money_estimate()
+    text = win.lbl_money_estimate.text()
+    assert "新聞上限 25 P" in text and "已達 P 幣上限" in text
+
+
 def test_reload_article_uses_the_article_url(win, monkeypatch):
     win.w["url"].setText("https://news.example.com/a")
     win.url_in.setText("https://other.example/b")
@@ -1131,6 +1216,7 @@ def test_ui_font_settings_apply_and_persist(win):
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance()
     old = app.font()
+    term_size = win.term.font().pointSize()
     try:
         win.ui_font.setCurrentFont(QFont("Arial"))
         win.ui_font_size.setValue(13)
@@ -1139,6 +1225,10 @@ def test_ui_font_settings_apply_and_persist(win):
         assert family and win.db.get_setting("ui.font_family") == family
         assert win.db.get_setting("ui.font_size") == "13"
         assert app.font().pointSize() == 13
+        for widget in (win.menuBar(), win.tabs.tabBar(), win.url_in, win.body, win.preview,
+                       win.lbl_login, win.parse_status, win.btn_fetch, win.chk_auto_image):
+            assert widget.font().pointSize() == 13, widget
+        assert win.term.font().pointSize() == term_size          # terminal keeps its own font
     finally:
         app.setFont(old)
 

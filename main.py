@@ -29,6 +29,12 @@ def selftest() -> int:
     from src.version import __version__
 
     app = QApplication([])
+    from src.ui.i18n import install_qt_translations
+    from PySide6.QtWidgets import QLineEdit
+    assert install_qt_translations(app), "qtbase_zh_TW.qm is missing from the package"
+    line = QLineEdit()
+    menu = line.createStandardContextMenu()
+    assert any("複製" in action.text() for action in menu.actions()), "Qt context menu is not Traditional Chinese"
     db = Database(os.path.join(os.environ["PTTAUTOPOST_HOME"], "selftest.db"))
     win = MainWindow(db, PttSession())
     r = parse("<html><head><title>測試</title></head><body><article>" + "<p>這是一段足夠長的測試內容，用來確認解析器可以運作。</p>" * 6 + "</article></body></html>", "https://x.test/a")
@@ -111,11 +117,13 @@ def main() -> int:
     from src.logging_setup import get_logger
     from src.net.session import PttSession
     from src.storage.db import Database
+    from src.ui.i18n import install_qt_translations
     from src.ui.main_window import MainWindow
     from src.version import APP_NAME, __version__
 
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)   # 125% / 150% stay crisp
     app = QApplication(sys.argv)
+    install_qt_translations(app)                        # Traditional Chinese right-click menus / standard buttons
     try:
         log = get_logger()                              # needs a writable logs folder
     except (OSError, ToolError) as e:

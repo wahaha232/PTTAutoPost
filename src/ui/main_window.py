@@ -11,11 +11,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QCursor, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QKeySequence
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
-                               QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QMenu, QPlainTextEdit, QPushButton,
-                               QProgressBar, QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox,
+                               QHBoxLayout, QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+                               QMenu, QPlainTextEdit, QPushButton, QProgressBar, QRadioButton, QScrollArea, QSpinBox, QSplitter,
+                               QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
-from .. import boards, compose, sites, update
+from .. import boards, compose, pttmoney, sites, update
 from ..errors import ToolError
 from ..links import is_auto_open_image_url, validate_http_url
 from ..logging_setup import get_logger
@@ -23,6 +24,7 @@ from ..net.client import DEFAULT_URL, State
 from ..terminal.detect import Kind
 from ..net.poster import PostTyper, Target, preflight
 from ..net.session import Login, PttSession
+from ..net.upload import HOSTS, UploadBatch, host_choices, upload_images as upload_image_files
 from ..parsers.extract import ParseResult, find_image_urls, parse
 from ..net.image import download_images_zip
 from ..parsers.fetch import fetch
@@ -177,6 +179,40 @@ class ArticleImagesZipTask(QRunnable):
                 self.signals.failed.emit(f"打包圖片時發生未預期的錯誤（{type(e).__name__}）。")
 
 
+class _UploadSignals(QObject):
+    progress = Signal(int, int, str)
+    done = Signal(object)                  # UploadBatch
+    failed = Signal(str)
+
+
+class ImageUploadTask(QRunnable):
+    """Upload selected local images to an anonymous public host, one at a time."""
+
+    def __init__(self, paths: list[str], host_key: str):
+        super().__init__()
+        self.paths, self.host_key = paths, host_key
+        self.signals = _UploadSignals()
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self):
+        try:
+            batch = upload_image_files(
+                self.paths, self.host_key, cancel=self._cancel,
+                progress=lambda i, n, name: self.signals.progress.emit(i, n, name))
+            if not self._cancel.is_set():
+                self.signals.done.emit(batch)
+        except ToolError as e:
+            if not self._cancel.is_set():
+                self.signals.failed.emit(e.message)
+        except Exception as e:  # noqa: BLE001
+            log.exception("unexpected error while uploading images")
+            if not self._cancel.is_set():
+                self.signals.failed.emit(f"上傳圖片時發生未預期的錯誤（{type(e).__name__}）。")
+
+
 def _mono() -> QFont:
     f = QFont("MingLiU")
     f.setStyleHint(QFont.StyleHint.Monospace)
@@ -238,6 +274,8 @@ class MainWindow(QMainWindow):
         self._article_referer = ""
         self._zip_busy = False
         self._zip_task: ArticleImagesZipTask | None = None
+        self._upload_busy = False
+        self._upload_task: ImageUploadTask | None = None
         self._parse_kind: str | None = None
         self._article_width_timer = QTimer(self)
         self._article_width_timer.setSingleShot(True)
@@ -259,6 +297,7 @@ class MainWindow(QMainWindow):
         self.term.linkHovered.connect(self._on_link_hovered)
         self.term.pasteStateChanged.connect(self._on_paste_state)
         self._apply_ui_font(save=False)
+        self._update_money_estimate()
         self._apply_theme(self._theme_choice, save=False)
         try:
             QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_scheme_changed)
@@ -414,7 +453,12 @@ class MainWindow(QMainWindow):
         self.tb_stretch.setToolTip("字元拉寬／拉高到完全填滿視窗（會變形）；關閉時維持字元比例並置中。")
         self.tb_stretch.setChecked(self.term.stretch)
         self.tb_dfyuan = QPushButton("華康中圓體")
-        for x in (QLabel("PTT 字型"), self.tb_font, self.tb_dfyuan, QLabel("大小"), self.tb_size, self.tb_fill, self.tb_stretch):
+        self.btn_ptt_reload = QPushButton("重新載入文章")
+        self.btn_ptt_reload.setToolTip("送出 Ctrl+L，請 PTT 重新繪製目前畫面／文章（不會離開文章）；"
+                                       "圖片連結與畫面內容會重新解析。")
+        self.btn_ptt_reload.clicked.connect(self.reload_ptt_article)
+        for x in (QLabel("PTT 字型"), self.tb_font, self.tb_dfyuan, QLabel("大小"), self.tb_size, self.tb_fill,
+                  self.tb_stretch, self.btn_ptt_reload):
             fb.addWidget(x)
         fb.addStretch(1)
         lay.addLayout(fb)
@@ -1274,6 +1318,13 @@ class MainWindow(QMainWindow):
             font = QFont(family)
             font.setPointSize(size)
             app.setFont(font)
+            # QApplication.setFont() only affects widgets created afterwards, so push the
+            # font to every existing widget as well (the terminal has its own font setting).
+            skip = getattr(self, "term", None)
+            for widget in app.allWidgets():
+                if skip is not None and (widget is skip or skip.isAncestorOf(widget)):
+                    continue
+                widget.setFont(font)
         if save:
             self.db.set_setting("ui.font_family", family)
             self.db.set_setting("ui.font_size", str(size))
@@ -1369,8 +1420,8 @@ class MainWindow(QMainWindow):
         row.addWidget(self.url_in, 1)
         row.addWidget(self.btn_fetch)
         row.addWidget(self.chk_robots)
-        self.btn_reload = QPushButton("重新載入文章")
-        self.btn_reload.setToolTip("重新擷取目前這篇文章的原文網址，並覆蓋欄位（不必重新貼網址）。")
+        self.btn_reload = QPushButton("重新載入網頁")
+        self.btn_reload.setToolTip("重新擷取這篇網頁文章的原文網址，並覆蓋欄位（PTT 文章請用終端機下方的「重新載入文章」）。")
         row.addWidget(self.btn_reload)
         self.btn_clear = QPushButton("清除全部欄位")
         self.btn_clear.setToolTip("清除所有欄位、預覽與程式暫存狀態；不會刪除已儲存的草稿。")
@@ -1414,48 +1465,10 @@ class MainWindow(QMainWindow):
             form.addRow(LABELS[f], h)
             self.w[f], self.state_lbl[f] = e, lab
         ll.addLayout(form)
-        ll.addWidget(QLabel("原文內文（可修改；與下方個人心得分開）"))
+        ll.addWidget(QLabel("原文內文（可修改；個人心得與簽名檔在「預覽與輸入」頁）"))
         self.body = QPlainTextEdit()
         self.body.textChanged.connect(self._body_changed)
         ll.addWidget(self.body, 3)
-        ll.addWidget(QLabel("個人心得"))
-        self.notes = QPlainTextEdit()
-        self.notes.setFixedHeight(90)
-        self.notes.textChanged.connect(self._schedule_preview)
-        ll.addWidget(self.notes, 1)
-        sg = QGroupBox(f"簽名檔（最多 {MAX_SIGNATURES} 則，保存在本機）")
-        sl = QVBoxLayout(sg)
-        row1 = QHBoxLayout()
-        self.sig_combo = QComboBox()
-        self.sig_name = QLineEdit()
-        self.sig_name.setPlaceholderText("簽名檔名稱")
-        self.btn_sig_new = QPushButton("新增")
-        self.btn_sig_del = QPushButton("刪除")
-        row1.addWidget(self.sig_combo, 1)
-        row1.addWidget(self.sig_name, 1)
-        row1.addWidget(self.btn_sig_new)
-        row1.addWidget(self.btn_sig_del)
-        sl.addLayout(row1)
-        self.sig_edit = QPlainTextEdit()
-        self.sig_edit.setFixedHeight(64)
-        row2 = QHBoxLayout()
-        self.btn_sig_save = QPushButton("儲存簽名檔")
-        self.chk_sig = QCheckBox("此草稿套用簽名檔")
-        row2.addWidget(self.btn_sig_save)
-        row2.addWidget(self.chk_sig)
-        self.lbl_sig_snap = QLabel("使用草稿儲存時的簽名檔（與目前選取的不同）")
-        self.btn_sig_current = QPushButton("改用目前簽名檔")
-        self.lbl_sig_snap.setVisible(False)
-        self.btn_sig_current.setVisible(False)
-        self.sig_snap_layout.addWidget(self.lbl_sig_snap)
-        self.sig_snap_layout.addWidget(self.btn_sig_current)
-        self.sig_snap_layout.addStretch(1)
-        row2.addStretch(1)
-        self._sig_idx = -1
-        self._reload_signatures(self.db.active_signature_index)
-        sl.addWidget(self.sig_edit)
-        sl.addLayout(row2)
-        ll.addWidget(sg)
         self.article_tabs.addTab(left, "擷取與欄位")
 
         right = QWidget()
@@ -1481,6 +1494,67 @@ class MainWindow(QMainWindow):
         self.issues.setReadOnly(True)
         self.issues.setFixedHeight(110)
         rl.addWidget(self.issues)
+
+        rl.addWidget(QLabel("個人心得（與原文內文分開，會附在預覽中）"))
+        self.notes = QPlainTextEdit()
+        self.notes.setFixedHeight(90)
+        self.notes.textChanged.connect(self._schedule_preview)
+        rl.addWidget(self.notes)
+
+        sg = QGroupBox(f"簽名檔（可直接輸入／編輯；最多 {MAX_SIGNATURES} 則，保存在本機）")
+        sl = QVBoxLayout(sg)
+        row1 = QHBoxLayout()
+        self.sig_combo = QComboBox()
+        self.sig_name = QLineEdit()
+        self.sig_name.setPlaceholderText("簽名檔名稱")
+        self.btn_sig_new = QPushButton("新增")
+        self.btn_sig_del = QPushButton("刪除")
+        row1.addWidget(self.sig_combo, 1)
+        row1.addWidget(self.sig_name, 1)
+        row1.addWidget(self.btn_sig_new)
+        row1.addWidget(self.btn_sig_del)
+        sl.addLayout(row1)
+        self.sig_edit = QPlainTextEdit()
+        self.sig_edit.setFixedHeight(64)
+        self.sig_edit.setPlaceholderText("直接輸入簽名檔內容…")
+        row2 = QHBoxLayout()
+        self.btn_sig_save = QPushButton("儲存簽名檔")
+        self.chk_sig = QCheckBox("此草稿套用簽名檔")
+        row2.addWidget(self.btn_sig_save)
+        row2.addWidget(self.chk_sig)
+        self.lbl_sig_snap = QLabel("使用草稿儲存時的簽名檔（與目前選取的不同）")
+        self.btn_sig_current = QPushButton("改用目前簽名檔")
+        self.lbl_sig_snap.setVisible(False)
+        self.btn_sig_current.setVisible(False)
+        self.sig_snap_layout.addWidget(self.lbl_sig_snap)
+        self.sig_snap_layout.addWidget(self.btn_sig_current)
+        self.sig_snap_layout.addStretch(1)
+        row2.addStretch(1)
+        self._sig_idx = -1
+        self._reload_signatures(self.db.active_signature_index)
+        sl.addWidget(self.sig_edit)
+        sl.addLayout(row2)
+        rl.addWidget(sg)
+
+        ug = QGroupBox("上傳圖片到公開圖床（不用註冊）")
+        ul = QVBoxLayout(ug)
+        uh = QHBoxLayout()
+        self.upload_host = QComboBox()
+        for key, label in host_choices():
+            self.upload_host.addItem(label, key)
+        saved_host = self.db.get_setting("upload.host", "catbox")
+        host_index = self.upload_host.findData(saved_host)
+        self.upload_host.setCurrentIndex(max(0, host_index))
+        self.btn_upload_image = QPushButton("選擇圖片並上傳…")
+        uh.addWidget(QLabel("圖床"))
+        uh.addWidget(self.upload_host, 1)
+        uh.addWidget(self.btn_upload_image)
+        ul.addLayout(uh)
+        self.lbl_upload_note = QLabel("圖片會公開上傳到第三方圖床（Catbox 預設永久，Litterbox／uguu 會到期）；"
+                                      "請勿上傳個資或機密。上傳成功後網址會插入內文游標處。")
+        self.lbl_upload_note.setWordWrap(True)
+        ul.addWidget(self.lbl_upload_note)
+        rl.addWidget(ug)
         r2 = QHBoxLayout()
         self.btn_new = QPushButton("新增草稿")
         self.btn_save = QPushButton("儲存草稿")
@@ -1497,6 +1571,30 @@ class MainWindow(QMainWindow):
         tl.addWidget(self.chk_confirm)
         tl.addWidget(self.chk_nonempty)
         tl.addWidget(self.chk_retype)
+        self.radio_fast = QRadioButton("快速貼上")
+        self.radio_fast.setToolTip("沿用目前的分段輸入（每段最多 100 bytes），速度較快；"
+                                  "P 幣可能因 PTT 的速率上限而較少。")
+        self.radio_money = QRadioButton("賺 P 幣（逐字配速）")
+        self.radio_money.setToolTip("每字約 0.5 秒（每 2 秒最多 1 P）；長文可能要數分鐘，"
+                                   "實際 P 幣仍以 PTT 為準。")
+        self.input_mode_group = QButtonGroup(self)
+        self.input_mode_group.addButton(self.radio_fast)
+        self.input_mode_group.addButton(self.radio_money)
+        mode = self.db.get_setting("post.input_mode", "")
+        if not mode:
+            mode = "money" if self.db.get_setting("post.money_pace", "0") == "1" else "fast"
+        (self.radio_money if mode == "money" else self.radio_fast).setChecked(True)
+        self.radio_fast.toggled.connect(self._input_mode_changed)
+        self.radio_money.toggled.connect(self._input_mode_changed)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self.radio_fast)
+        mode_row.addWidget(self.radio_money)
+        mode_row.addStretch(1)
+        tl.addWidget(QLabel("輸入方式"))
+        tl.addLayout(mode_row)
+        self.lbl_money_estimate = QLabel()
+        self.lbl_money_estimate.setWordWrap(True)
+        tl.addWidget(self.lbl_money_estimate)
         r3 = QHBoxLayout()
         self.btn_type_title = QPushButton("輸入標題")
         self.btn_type_body = QPushButton("輸入內文")
@@ -1508,7 +1606,10 @@ class MainWindow(QMainWindow):
         self.type_status.setWordWrap(True)
         tl.addWidget(self.type_status)
         rl.addWidget(tg)
-        self.article_tabs.addTab(right, "預覽與輸入")
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setWidget(right)
+        self.article_tabs.addTab(right_scroll, "預覽與輸入")
 
         self.btn_fetch.clicked.connect(self.start_fetch)
         self.btn_reload.clicked.connect(self.reload_article)
@@ -1523,6 +1624,7 @@ class MainWindow(QMainWindow):
         self.btn_new.clicked.connect(self.new_draft)
         self.btn_save.clicked.connect(self.save_draft)
         self.btn_sig_save.clicked.connect(self.save_signature)
+        self.btn_upload_image.clicked.connect(self.upload_images_dialog)
         self.btn_board_fav.clicked.connect(self.toggle_board_favorite)
         self.btn_board_go.clicked.connect(self.goto_board)
         self.board_combo.activated.connect(lambda _i: self._board_changed())
@@ -1541,6 +1643,18 @@ class MainWindow(QMainWindow):
         return root
 
     # ---------------------------------------------------------------- fetching
+    def reload_ptt_article(self):
+        """Ask PTT to redraw the current article/screen with Ctrl+L (no navigation, no reply)."""
+        if self.term.locked or self.term.pasting:
+            self._notice("自動輸入／登入／貼上進行中，重新載入已暫停。")
+            return
+        if not self.session.send_user_bytes(b"\x0c"):
+            self._notice("尚未連線，無法重新載入 PTT 文章。")
+            return
+        self.term.clear_selection()
+        self.term.setFocus()
+        self._notice("已送出 Ctrl+L，請 PTT 重新繪製目前文章。")
+
     def reload_article(self):
         """Re-fetch the article's own URL (the URL field wins over whatever is in the input box)."""
         url = (self.w["url"].text().strip() if hasattr(self, "w") else "") or self.url_in.text().strip()
@@ -1603,6 +1717,81 @@ class MainWindow(QMainWindow):
         self.btn_zip.setEnabled(bool(self._article_image_urls))
         self._notice("打包下載圖片失敗：" + msg)
         QMessageBox.warning(self, "打包下載失敗", msg)
+
+    # ---------------------------------------------------------------- image upload
+    def upload_images_dialog(self):
+        """Pick local images and upload them to the selected anonymous public host."""
+        if self._upload_busy:
+            self._notice("圖片上傳進行中。")
+            return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "選擇要上傳的圖片", str(Path.home()),
+            "圖片 (*.jpg *.jpeg *.png *.gif *.webp *.bmp *.avif)")
+        if not paths:
+            return
+        if len(paths) > 20:
+            self._notice("一次最多上傳 20 張圖片。")
+            return
+        host_key = self.upload_host.currentData() or "catbox"
+        host = HOSTS.get(host_key)
+        if host is None:
+            self._notice("不支援的圖床。")
+            return
+        self.db.set_setting("upload.host", host_key)
+        if QMessageBox.question(
+                self, "上傳圖片",
+                f"要上傳 {len(paths)} 張圖片到 {host.label} 嗎？\n\n"
+                f"保存期限：{host.retention}\n"
+                f"單檔上限：{host.max_bytes // (1024 * 1024)} MB\n\n"
+                "圖片會公開給任何人下載，請勿上傳個資或機密。\n"
+                "上傳成功後網址會插入內文游標處。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self._upload_busy = True
+        self.btn_upload_image.setEnabled(False)
+        self._notice(f"上傳 {len(paths)} 張圖片到 {host.label}…")
+        task = ImageUploadTask(paths, host_key)
+        task.signals.progress.connect(self._upload_progress)
+        task.signals.done.connect(self._upload_done)
+        task.signals.failed.connect(self._upload_failed)
+        self._upload_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _upload_progress(self, done: int, total: int, name: str) -> None:
+        self._notice(f"上傳圖片… {done}/{total}（{name}）")
+
+    def _upload_done(self, batch: UploadBatch) -> None:
+        self._upload_busy = False
+        self._upload_task = None
+        self.btn_upload_image.setEnabled(True)
+        urls = [r.url for r in batch.results]
+        if urls:
+            self._insert_uploaded_urls(urls)
+        msg = f"已上傳 {len(urls)} 張圖片，網址已插入內文游標處。"
+        if batch.errors:
+            msg += "\n\n失敗：\n" + "\n".join(f"{name}：{why}" for name, why in batch.errors[:10])
+            if len(batch.errors) > 10:
+                msg += f"\n…另有 {len(batch.errors) - 10} 張失敗。"
+        self._notice(f"圖片上傳完成：{len(urls)} 張成功、{len(batch.errors)} 張失敗。")
+        QMessageBox.information(self, "圖片上傳完成", msg)
+
+    def _upload_failed(self, msg: str) -> None:
+        self._upload_busy = False
+        self._upload_task = None
+        self.btn_upload_image.setEnabled(True)
+        self._notice("上傳圖片失敗：" + msg)
+        QMessageBox.warning(self, "上傳圖片失敗", msg)
+
+    def _insert_uploaded_urls(self, urls: list[str]) -> None:
+        if not urls:
+            return
+        cursor = self.body.textCursor()
+        before = self.body.toPlainText()[:cursor.position()]
+        prefix = "" if not before or before.endswith("\n") else "\n"
+        cursor.insertText(prefix + "\n".join(urls) + "\n")
+        self.body.setTextCursor(cursor)
+        self.body.ensureCursorVisible()
 
     def start_fetch(self):
         if self._busy:
@@ -1728,6 +1917,41 @@ class MainWindow(QMainWindow):
             if dirty:
                 self._dirty = True
             self._refresh_timer.start()
+            self._update_money_estimate()
+
+    def _input_mode_changed(self, checked: bool) -> None:
+        if not checked:
+            return
+        mode = "money" if self.radio_money.isChecked() else "fast"
+        self.db.set_setting("post.input_mode", mode)
+        self.db.set_setting("post.money_pace", "1" if mode == "money" else "0")
+        self._update_money_estimate()
+        self._notice("輸入方式：賺 P 幣（逐字配速），會明顯變慢。" if mode == "money" else "輸入方式：快速貼上。")
+
+    def _update_money_estimate(self) -> None:
+        """Compare the P-coin estimates of fast pasting and the paced money mode."""
+        if not hasattr(self, "lbl_money_estimate"):
+            return
+        title = self.w["post_title"].text() if hasattr(self, "w") else ""
+        body = self.body.toPlainText() if hasattr(self, "body") else ""
+        if not pttmoney.valid_chars(body):
+            self.lbl_money_estimate.setText(
+                "P 幣預估：尚無內文。PTT 規則為每個有效字元 0.25 P、每 2 秒最多 1 P；"
+                "一般文章上限 1000 P，[新聞] 標題上限 25 P。")
+            return
+        fast = pttmoney.estimate(title, body, "fast")
+        money = pttmoney.estimate(title, body, "money")
+        cap_name = "新聞上限 25 P" if money.news else "一般上限 1000 P"
+        mark_fast = "（目前選用）" if self.radio_fast.isChecked() else ""
+        mark_money = "（目前選用）" if self.radio_money.isChecked() else ""
+        text = (f"P 幣預估（內文 {money.chars:,} 個有效字元；{cap_name}）：\n"
+                f"・快速貼上：約 {fast.points:g} P（傳輸約 {pttmoney.format_duration(fast.seconds)}）{mark_fast}\n"
+                f"・賺 P 幣（逐字配速）：約 {money.points:g} P"
+                f"（約 {pttmoney.format_duration(money.seconds)}）{mark_money}\n"
+                "實際 P 幣仍以 PTT 為準（快速貼上可能因速率上限或偵測而更少）；程式不會代按存檔或送出。")
+        if money.capped:
+            text += f"\n已達 P 幣上限：超過約 {int(money.cap / pttmoney.POINTS_PER_CHAR):,} 個字後不再增加。"
+        self.lbl_money_estimate.setText(text)
 
     def _auto_preview(self):
         if self._preview_manual:
@@ -2252,6 +2476,7 @@ class MainWindow(QMainWindow):
         self._sync_sig_snapshot_ui()
         self._last_result = None
         self._preview_manual = False
+        self._update_money_estimate()
         for f in FIELDS:
             self._paint_state(f)
         self.parse_status.setText("尚未擷取")
@@ -2321,6 +2546,7 @@ class MainWindow(QMainWindow):
         self._last_result = None
         for f in FIELDS:
             self._paint_state(f)
+        self._update_money_estimate()
         self.parse_status.setText(f"已載入草稿（原擷取狀態：{d['parse_status'] or '無'}／{d['body_status'] or '無'}）")
         self._parse_kind = None
         self._paint_parse_status()
@@ -2402,8 +2628,15 @@ class MainWindow(QMainWindow):
             self.type_status.setText("無法輸入：" + why)
             return
         what = "標題" if target is Target.TITLE else f"內文（{len(text.splitlines())} 行）"
+        money_pace = target is Target.BODY and self.radio_money.isChecked()
+        pace_note = ""
+        if money_pace:
+            est = pttmoney.estimate(title, text)
+            pace_note = (f"\n\nP 幣配速：每字約 0.5 秒，輸入約 {pttmoney.format_duration(est.seconds)}，"
+                         f"預估 {est.points:g} P（{'新聞' if est.news else '一般'}上限 {est.cap} P）。"
+                         "實際 P 幣仍以 PTT 為準，且要自行存檔／送出才會計入。")
         if QMessageBox.question(self, "輸入到 PTT 終端機",
-                                f"將把{what}輸入到目前已登入的終端機。\n\n程式不會按 Enter、Ctrl-X、存檔或送出；輸入完成後請在終端機自行檢查並決定是否發文。\n\n確定開始？") != QMessageBox.StandardButton.Yes:
+                                f"將把{what}輸入到目前已登入的終端機。\n\n程式不會按 Enter、Ctrl-X、存檔或送出；輸入完成後請在終端機自行檢查並決定是否發文。{pace_note}\n\n確定開始？") != QMessageBox.StandardButton.Yes:
             self._notice("已取消輸入。")
             return
         self._typing_target = target
@@ -2415,7 +2648,8 @@ class MainWindow(QMainWindow):
                 self._typing_draft_id = None
                 self._error(f"無法記錄輸入狀態，已取消輸入（未送出任何內容）：{e.message}")
                 return
-        reason = typer.start(target, text, self.chk_nonempty.isChecked(), pasting=self._paste_active())
+        reason = typer.start(target, text, self.chk_nonempty.isChecked(), pasting=self._paste_active(),
+                             money_pace=money_pace)
         if reason:
             self._typing_draft_id = None
             if target is Target.BODY:
@@ -2642,6 +2876,11 @@ class MainWindow(QMainWindow):
             zip_task.cancel()
             self._disconnect_task_signals(zip_task, ("progress", "done", "failed"))
             self._zip_task = None
+        upload_task = getattr(self, "_upload_task", None)
+        if upload_task is not None:
+            upload_task.cancel()
+            self._disconnect_task_signals(upload_task, ("progress", "done", "failed"))
+            self._upload_task = None
 
     def closeEvent(self, e):
         if (not self._quitting and self._tray is not None and self.chk_tray_close.isChecked()):

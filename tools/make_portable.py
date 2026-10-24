@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from src.version import BUILD_DATE, __version__  # noqa: E402
-from tools.spec_filters import KEEP_IMAGE_PLUGINS, base_name  # noqa: E402
+from tools.spec_filters import KEEP_IMAGE_PLUGINS, KEEP_TRANSLATIONS, base_name  # noqa: E402
 
 DIST = ROOT / "dist"
 BUILD_OUT = DIST / f"build-{__version__}"          # versioned: a running older copy never blocks a build
@@ -93,7 +93,7 @@ def layout_report(path: Path, onefile: bool = False) -> dict:
     unused = [p.relative_to(path).as_posix() for p in path.rglob("*") if p.is_file() and (
         p.name in ("opengl32sw.dll", "Qt6Quick.dll", "Qt6Qml.dll", "Qt6Pdf.dll", "Qt6OpenGL.dll", "Qt6Svg.dll")
         or ("plugins/imageformats/" in p.as_posix() and base_name(p.name) not in KEEP_IMAGE_PLUGINS)
-        or "translations/" in p.as_posix())]
+        or ("translations/" in p.as_posix() and base_name(p.name) not in KEEP_TRANSLATIONS))]
     return {
         "replaceable": bool(qt_dlls) and (path / "_internal").is_dir() and all(p.parent != path for p in qt_dlls),
         "platform": (path / "_internal/PySide6/plugins/platforms/qwindows.dll").is_file(),
@@ -109,8 +109,8 @@ def verify(onefile: bool = False):
         return 1
     home = tempfile.mkdtemp(prefix="pttpost_verify_")
     env = dict(os.environ, PTTAUTOPOST_HOME=home, QT_QPA_PLATFORM="offscreen")
-    r = subprocess.run([str(exe), "--selftest"], capture_output=True, text=True, env=env, timeout=180)
-    out = (r.stdout or "") + (r.stderr or "")
+    r = subprocess.run([str(exe), "--selftest"], capture_output=True, text=False, env=env, timeout=180)
+    out = ((r.stdout or b"") + (r.stderr or b"")).decode("utf-8", errors="replace")
     print(out.strip()[-400:])
     ok = r.returncode == 0 and f"version={__version__}" in out and "frozen=True" in out
     leaked = [p for p in PORTABLE.rglob("*") if "corpus" in p.name.lower()]
