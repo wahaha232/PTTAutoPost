@@ -152,10 +152,34 @@ def render(f: Fields, width: int = LINE_WIDTH, do_wrap: bool = True) -> tuple[st
     return n(f.post_title).replace("\n", " "), body
 
 
-def check(title: str, body: str, sig_text: str = "", used_signature: bool = False) -> list[Issue]:
+def reply_title(post_title: str) -> str:
+    """'Re: ' + the article title, without stacking a second Re: prefix."""
+    t = normalize(post_title)[0].replace("\n", " ").strip()
+    if not t:
+        return ""
+    return t if re.match(r"(?i)^re\s*:", t) else "Re: " + t
+
+
+def render_reply(post_title: str, notes: str, signature: str = "", use_signature: bool = False,
+                 width: int = LINE_WIDTH, do_wrap: bool = True) -> tuple[str, str]:
+    """Return (title, body) for a reply. PTT supplies the quoted original; only our own text is typed."""
+    def n(s):
+        return normalize(s)[0].strip()
+
+    w = (lambda t: wrap(t, width)) if do_wrap else (lambda t: t)
+    body = w(n(notes))
+    sig = n(signature)
+    if use_signature and sig:
+        body = (body + "\n--\n" + w(sig)) if body else ("--\n" + w(sig))
+    return reply_title(post_title), body.rstrip("\n")
+
+
+def check(title: str, body: str, sig_text: str = "", used_signature: bool = False,
+          require_title: bool = True) -> list[Issue]:
     issues: list[Issue] = []
     if not title.strip():
-        issues.append(Issue("error", "發文標題是空的。"))
+        if require_title:
+            issues.append(Issue("error", "發文標題是空的。"))
     else:
         b = byte_len(title)
         if b > TITLE_ERROR_BYTES:

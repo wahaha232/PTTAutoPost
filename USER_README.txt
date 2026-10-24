@@ -31,6 +31,8 @@ Windows 10／11（64 位元）。不需要另外安裝 Python 或 Qt。
 - Ctrl+Shift+C：複製選取；Ctrl+Shift+V：貼上；右鍵選單也有相同功能。
 - Esc、方向鍵、PgUp／PgDn、Home／End 會照常送進 PTT。
 - 連線端點預設 wss://ws.ptt.cc/bbs；連線中斷只提示，不會自動重連。
+- 回覆文章：在 PTT 文章畫面按 r → Enter 進入回覆編輯區；到「預覽與輸入」勾選
+  「回覆文章模式」，輸入回覆內容後按「輸入回覆內文」。程式不輸入標題、不存檔、不送出。
 
 【Windows SmartScreen】
 本程式沒有數位簽章，Windows 可能顯示「不明的發行者」警告。若您信任檔案來源，

@@ -12,11 +12,12 @@ from ..logging_setup import get_logger
 from ..paths import data_dir
 
 log = get_logger("db")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_SIGNATURES = 10
 
 DRAFT_FIELDS = ("title", "post_title", "site", "author", "published", "url", "body", "notes", "board",
-                "use_signature", "signature_text", "preview_override", "parse_status", "body_status", "field_states", "input_state")
+                "use_signature", "signature_text", "preview_override", "parse_status", "body_status", "field_states",
+                "input_state", "reply_mode")
 INPUT_STATES = ("none", "started", "done", "aborted")
 
 
@@ -112,11 +113,18 @@ class Database:
                 self.conn.executescript("""
                 ALTER TABLE drafts ADD COLUMN signature_text TEXT NOT NULL DEFAULT '';
                 PRAGMA user_version=2;""")
+        if v < 3:                                    # remember whether the draft was composed in reply mode
+            with self.conn:
+                self.conn.executescript("""
+                ALTER TABLE drafts ADD COLUMN reply_mode INTEGER NOT NULL DEFAULT 0;
+                PRAGMA user_version=3;""")
 
     # ---------------------------------------------------------------- drafts
     def save_draft(self, data: dict, draft_id: int | None = None) -> int:
-        vals = {k: data.get(k, "") for k in DRAFT_FIELDS if k not in ("use_signature", "input_state", "preview_override")}
+        vals = {k: data.get(k, "") for k in DRAFT_FIELDS
+                if k not in ("use_signature", "reply_mode", "input_state", "preview_override")}
         vals["use_signature"] = 1 if data.get("use_signature") else 0
+        vals["reply_mode"] = 1 if data.get("reply_mode") else 0
         vals["preview_override"] = data.get("preview_override") or None
         ts = now()
         try:

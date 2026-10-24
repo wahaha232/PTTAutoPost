@@ -581,3 +581,14 @@ def test_find_image_urls_uses_img_sources_and_image_links_only():
                     "https://cdn.example.com/g.webp", "https://cdn.example.com/d.jpeg"]
     assert find_image_urls(html, "https://news.example.com/", limit=1) == ["https://news.example.com/a.jpg"]
 
+
+def test_find_image_urls_reads_bare_image_links_from_post_text():
+    filler = "這是 PTT 貼文內文，包含足夠的字數讓內文判斷可以通過。" * 6
+    html = f"""<html><body><article><div>{filler}<br>
+    附圖：https://i.imgur.com/abc123.jpg。<br>
+    另一張 https://imgur.com/xyz789<br>
+    報導頁面：https://news.example.com/story/1<br>{filler}</div></article></body></html>"""
+    assert find_image_urls(html, "https://www.ptt.cc/bbs/Test/M.1.A.html") == [
+        "https://i.imgur.com/abc123.jpg", "https://imgur.com/xyz789"]
+    assert parse(html, "https://www.ptt.cc/bbs/Test/M.1.A.html").images == [
+        "https://i.imgur.com/abc123.jpg", "https://imgur.com/xyz789"]

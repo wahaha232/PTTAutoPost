@@ -57,6 +57,35 @@ def test_types_body_exactly_and_stops_before_save(rig):
     assert "存檔" in done[0][1]
 
 
+def test_reply_body_types_at_the_top_of_a_prefilled_quote(rig):
+    from fake_bbs import REPLY_EDITOR
+    bbs, sess, typer, done = rig
+    bbs.state = "editor"
+    bbs.push(REPLY_EDITOR)
+    assert wait_until(lambda: sess.kind is Kind.EDITOR)
+    reply = "我的回覆\n第二行 http://example.com/reply"
+    assert typer.start(Target.REPLY_BODY, reply) is None
+    assert wait_until(lambda: bool(done), 8000)
+    assert done[0][0] is True, done
+    assert bytes(bbs.after_login) == reply.replace("\n", "\r").encode("cp950")
+    for f in FORBIDDEN:
+        assert f not in bbs.after_login
+    assert bbs.state == "editor"
+
+
+def test_reply_body_without_a_quote_needs_the_advanced_allowance(rig):
+    from fake_bbs import EDITOR
+    bbs, sess, typer, done = rig
+    bbs.state = "editor"
+    bbs.push(EDITOR + "已有內容".encode("cp950"))   # non-empty but no reply quote, cursor at the end
+    assert wait_until(lambda: sess.kind is Kind.EDITOR)
+    why = typer.start(Target.REPLY_BODY, "回覆")
+    assert why and "回覆引文" in why
+    pump(100)
+    assert bytes(bbs.after_login) == b""
+
+
+
 def test_long_body_is_chunked_without_splitting_characters(rig):
     bbs, sess, typer, done = rig
     goto(bbs, sess, "editor", Kind.EDITOR)

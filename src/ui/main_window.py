@@ -40,6 +40,8 @@ STATE_TEXT = {"found": "已取得", "missing": "未取得", "inferred": "推定�
 BODY_TEXT = {"likely_complete": "內文可能完整（仍請對照原網頁）", "suspect_partial": "內文疑似不完整", "insufficient": "內文不足或沒有內文"}
 STATUS_TEXT = {"success": "擷取成功", "partial": "部分成功", "failed": "擷取失敗"}
 TYPE_HELP = "操作順序：在終端機進到「標題：」提示 → 輸入標題 → 自行按 Enter → 進入編輯畫面 → 輸入內文 → 自行檢查並存檔／發文。"
+REPLY_HELP = ("回覆流程：在 PTT 文章畫面按 r → 確認／Enter 進入回覆編輯區（PTT 會帶入 Re: 標題與引文）→ "
+              "回程式按「輸入回覆內文」→ 回終端機確認後自行存檔／送出。程式不輸入標題，也不按存檔或送出。")
 MAX_AUTO_OPEN_PER_MINUTE = 3
 MAX_AUTO_OPEN_PER_SCREEN = 1
 FIELDS = ("post_title", "title", "site", "author", "published", "url")
@@ -1545,7 +1547,16 @@ class MainWindow(QMainWindow):
 
         right = QWidget()
         rl = QVBoxLayout(right)
-        rl.addWidget(QLabel("PTT 發文預覽（可直接編輯；手動修改後不會被欄位變更覆蓋）"))
+        self.chk_reply = QCheckBox("回覆文章模式（只輸入回覆內文；PTT 會帶入 Re: 標題與引文）")
+        self.chk_reply.setToolTip("請先在 PTT 文章畫面按 r 並 Enter 進入回覆編輯區；程式只把下方的回覆內容"
+                                  "輸入在引文上方，不會輸入標題、按 Enter、存檔或送出。")
+        rl.addWidget(self.chk_reply)
+        self.lbl_preview_title = QLabel("PTT 發文預覽（可直接編輯；手動修改後不會被欄位變更覆蓋）")
+        rl.addWidget(self.lbl_preview_title)
+        self.lbl_reply_title = QLabel("")
+        self.lbl_reply_title.setWordWrap(True)
+        self.lbl_reply_title.setVisible(False)
+        rl.addWidget(self.lbl_reply_title)
         self.preview = QPlainTextEdit()
         self.preview.setFont(_mono())
         self.preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
@@ -1555,6 +1566,7 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.lbl_preview)
         r1 = QHBoxLayout()
         self.btn_regen = QPushButton("重新產生預覽")
+        self.btn_regen.setToolTip("依目前欄位重新產生預覽；有簽名檔時會自動附在貼文最下方，簽名檔為空值時不附加。")
         self.btn_check = QPushButton("檢查")
         self.btn_copy_all = QPushButton("複製全文（標題＋內文）")
         self.btn_copy_body = QPushButton("複製內文")
@@ -1567,7 +1579,8 @@ class MainWindow(QMainWindow):
         self.issues.setFixedHeight(110)
         rl.addWidget(self.issues)
 
-        rl.addWidget(QLabel("個人心得（與原文內文分開，會附在預覽中）"))
+        self.lbl_notes = QLabel("個人心得（與原文內文分開，會附在預覽中）")
+        rl.addWidget(self.lbl_notes)
         self.notes = QPlainTextEdit()
         self.notes.setFixedHeight(90)
         self.notes.textChanged.connect(self._schedule_preview)
@@ -1707,8 +1720,9 @@ class MainWindow(QMainWindow):
         self.sig_combo.activated.connect(self._pick_signature)
         self.chk_sig.toggled.connect(lambda _c: self._schedule_preview())
         self.sig_edit.textChanged.connect(lambda: self._schedule_preview(False))
+        self.chk_reply.toggled.connect(self._reply_mode_changed)
         self.btn_type_title.clicked.connect(lambda: self.type_into_ptt(Target.TITLE))
-        self.btn_type_body.clicked.connect(lambda: self.type_into_ptt(Target.BODY))
+        self.btn_type_body.clicked.connect(self._type_body_clicked)
         self.btn_type_cancel.clicked.connect(lambda: self._article_typer().cancel())
         for c in (self.chk_confirm,):
             c.toggled.connect(lambda _x: self._update_type_buttons())
@@ -1964,8 +1978,11 @@ class MainWindow(QMainWindow):
         self._article_image_urls = res.images
         self._article_referer = fetched.final_url
         self.btn_zip.setEnabled(bool(self._article_image_urls))
-        if self._article_image_urls and hasattr(self, "chk_article_image") and self.chk_article_image.isChecked():
-            self._open_article_images(self._article_image_urls, fetched.final_url)
+        if self._article_image_urls and hasattr(self, "chk_article_image"):
+            if not self.chk_article_image.isChecked():
+                self.chk_article_image.setChecked(True)        # detect images -> show checked + open the gallery
+            else:
+                self._open_article_images(self._article_image_urls, fetched.final_url)
         elif hasattr(self, "chk_article_image") and self.chk_article_image.isChecked():
             self._notice("這篇文章沒有抓到可顯示的圖片。")
         self.db.event("fetch", self.draft_id, f"{res.status}/{res.body_status}")
@@ -2024,6 +2041,9 @@ class MainWindow(QMainWindow):
             return
         title = self.w["post_title"].text() if hasattr(self, "w") else ""
         body = self.body.toPlainText() if hasattr(self, "body") else ""
+        if self._reply_mode():
+            title = self._reply_title()
+            body = self.notes.toPlainText() if hasattr(self, "notes") else ""
         if not pttmoney.valid_chars(body):
             self.lbl_money_estimate.setText(
                 "P 幣預估：尚無內文。PTT 規則為每個有效字元 0.25 P、每 2 秒最多 1 P；"
@@ -2043,6 +2063,36 @@ class MainWindow(QMainWindow):
             text += f"\n已達 P 幣上限：超過約 {int(money.cap / pttmoney.POINTS_PER_CHAR):,} 個字後不再增加。"
         self.lbl_money_estimate.setText(text)
 
+    def _reply_mode(self) -> bool:
+        return bool(hasattr(self, "chk_reply") and self.chk_reply.isChecked())
+
+    def _reply_title(self) -> str:
+        return compose.reply_title(self.w["post_title"].text())
+
+    def _reply_mode_changed(self, _checked: bool) -> None:
+        self._update_reply_mode_ui()
+        if not self._loading:
+            self._dirty = True
+            self._schedule_preview(False)
+
+    def _update_reply_mode_ui(self) -> None:
+        reply = self._reply_mode()
+        if hasattr(self, "lbl_preview_title"):
+            self.lbl_preview_title.setText(
+                "PTT 回覆預覽（只含回覆內容與簽名檔；引文與 Re: 標題由 PTT 產生）" if reply
+                else "PTT 發文預覽（可直接編輯；手動修改後不會被欄位變更覆蓋）")
+        if hasattr(self, "lbl_notes"):
+            self.lbl_notes.setText("回覆內容（會輸入在 PTT 引文上方）" if reply
+                                   else "個人心得（與原文內文分開，會附在預覽中）")
+        if hasattr(self, "btn_type_body"):
+            self.btn_type_body.setText("輸入回覆內文" if reply else "輸入內文")
+        if hasattr(self, "type_status") and not self._article_typer().running:
+            self.type_status.setText(REPLY_HELP if reply else TYPE_HELP)
+        self._update_type_buttons()
+
+    def _type_body_clicked(self) -> None:
+        self.type_into_ptt(Target.REPLY_BODY if self._reply_mode() else Target.BODY)
+
     def _auto_preview(self):
         if self._preview_manual:
             self.lbl_preview.setText("預覽已手動修改：欄位變更不會自動覆蓋。按「重新產生預覽」會捨棄手動修改。")
@@ -2052,7 +2102,15 @@ class MainWindow(QMainWindow):
     def render_preview(self, force: bool = False):
         if self._preview_manual and not force:
             return
-        _t, body = compose.render(self.fields())
+        if self._reply_mode():
+            title, body = compose.render_reply(self.w["post_title"].text(), self.notes.toPlainText(),
+                                               self._sig_text(), self.chk_sig.isChecked())
+            self.lbl_reply_title.setText(
+                "回覆標題（PTT 會自動帶入，程式不輸入）：" + (title or "（未填；PTT 仍會使用原文的 Re: 標題）"))
+            self.lbl_reply_title.setVisible(True)
+        else:
+            _title, body = compose.render(self.fields())
+            self.lbl_reply_title.setVisible(False)
         self._setting_preview = True
         self.preview.setPlainText(body)
         self._setting_preview = False
@@ -2062,6 +2120,12 @@ class MainWindow(QMainWindow):
     def _sig_text(self) -> str:
         """Signature text for preview / checks / saving: the opened draft's snapshot, else the selected signature."""
         return self._draft_sig if self._draft_sig is not None else self.sig_edit.toPlainText()
+
+    def _apply_signature_if_present(self, text: str | None = None) -> None:
+        """Apply a non-empty signature automatically; an empty one stays blank (no separator)."""
+        text = self._sig_text() if text is None else text
+        if text.strip() and not self.chk_sig.isChecked():
+            self.chk_sig.setChecked(True)
 
     def _sync_sig_snapshot_ui(self) -> None:
         on = self._draft_sig is not None
@@ -2079,6 +2143,7 @@ class MainWindow(QMainWindow):
         if self._preview_manual and QMessageBox.question(
                 self, "重新產生預覽", "預覽已被手動修改，重新產生會捨棄這些修改。確定？") != QMessageBox.StandardButton.Yes:
             return
+        self._apply_signature_if_present()          # signature at the very bottom; empty stays blank
         self.render_preview(force=True)
 
     def _confirm_unsaved(self, what: str) -> bool:
@@ -2109,14 +2174,17 @@ class MainWindow(QMainWindow):
         if not self._preview_manual:                      # never read a stale preview (debounce timer still pending)
             self._refresh_timer.stop()
             self.render_preview()
-        title = compose.normalize(self.w["post_title"].text())[0].replace("\n", " ").strip()
+        if self._reply_mode():
+            title = self._reply_title()
+        else:
+            title = compose.normalize(self.w["post_title"].text())[0].replace("\n", " ").strip()
         return title, self.preview.toPlainText().rstrip("\n")
 
     def run_checks(self) -> list[compose.Issue]:
         title, body = self.current_texts()
         used = self.chk_sig.isChecked() and bool(self._sig_text().strip())
-        issues = compose.check(title, body, self._sig_text(), used)
-        if self._last_result is not None and self._last_result.body_status != "likely_complete":
+        issues = compose.check(title, body, self._sig_text(), used, require_title=not self._reply_mode())
+        if not self._reply_mode() and self._last_result is not None and self._last_result.body_status != "likely_complete":
             issues.append(compose.Issue("warn", "擷取內文" + BODY_TEXT[self._last_result.body_status] + "，請對照原網頁確認。"))
         lines = [str(i) for i in issues] or ["通過基本檢查（標題、內文、編碼、控制字元、行寬）。"]
         lines.append(f"標題 {compose.byte_len(title)} bytes｜內文 {len(body.splitlines())} 行 / {compose.byte_len(body)} bytes")
@@ -2129,7 +2197,7 @@ class MainWindow(QMainWindow):
         if compose.has_errors(issues):
             self._notice("有「錯誤」等級的檢查項目，已拒絕複製（請先修正）。")
             return
-        text = {"all": f"{title}\n\n{body}", "body": body, "title": title}[what]
+        text = {"all": f"{title}\n\n{body}" if title else body, "body": body, "title": title}[what]
         cb = QApplication.clipboard()
         cb.setText(text)
         ok = cb.text().replace("\r\n", "\n") == text
@@ -2214,6 +2282,7 @@ class MainWindow(QMainWindow):
             self._notice(f"{e}，請先刪除不用的簽名檔。")
             return
         self._reload_signatures(idx)
+        self._apply_signature_if_present(text)
         self._notice("簽名檔已儲存。")
         self._schedule_preview(False)
 
@@ -2244,6 +2313,7 @@ class MainWindow(QMainWindow):
         self._sync_sig_snapshot_ui()
         self.db.set_active_signature(idx)
         self._show_signature(idx)
+        self._apply_signature_if_present(self.sig_edit.toPlainText())
         if had_snapshot:
             self._dirty = True
         self._schedule_preview(False)
@@ -2560,12 +2630,14 @@ class MainWindow(QMainWindow):
             self.notes.setPlainText("")
             self.url_in.setText("")
             self.chk_sig.setChecked(bool(self.db.signature.strip()))
+            self.chk_reply.setChecked(False)
         finally:
             self._loading = False
         self._draft_sig = None
         self._sync_sig_snapshot_ui()
         self._last_result = None
         self._preview_manual = False
+        self._update_reply_mode_ui()
         self._update_money_estimate()
         for f in FIELDS:
             self._paint_state(f)
@@ -2586,6 +2658,7 @@ class MainWindow(QMainWindow):
         data = {f: self.w[f].text() for f in FIELDS}
         data.update(board=self.current_board(), body=self.body.toPlainText(), notes=self.notes.toPlainText(), use_signature=self.chk_sig.isChecked(),
                     signature_text=self._sig_text() if self.chk_sig.isChecked() else "",
+                    reply_mode=self._reply_mode(),
                     preview_override=self.preview.toPlainText() if self._preview_manual else None,
                     parse_status=self._last_result.status if self._last_result else "",
                     body_status=self._last_result.body_status if self._last_result else "",
@@ -2617,6 +2690,9 @@ class MainWindow(QMainWindow):
             return
         self.draft_id = d["id"]
         self._loading = True
+        self.chk_reply.blockSignals(True)
+        self.chk_reply.setChecked(bool(d.get("reply_mode", 0)))
+        self.chk_reply.blockSignals(False)
         for f in FIELDS:
             self.w[f].setText(d[f])
         self.body.setPlainText(d["body"])
@@ -2633,6 +2709,7 @@ class MainWindow(QMainWindow):
         for f in FIELDS:
             self.states[f] = states.get(f, "edited" if d[f] else "missing")
         self._loading = False
+        self._update_reply_mode_ui()
         self._last_result = None
         for f in FIELDS:
             self._paint_state(f)
@@ -2678,13 +2755,18 @@ class MainWindow(QMainWindow):
         connected = session.client.state is State.CONNECTED
         ok = (connected and session.logged_in and self.chk_confirm.isChecked()
               and not typer.running and not self._paste_active())
-        self.btn_type_title.setEnabled(ok)
+        self.btn_type_title.setEnabled(ok and not self._reply_mode())
         self.btn_type_body.setEnabled(ok)
         self.btn_type_cancel.setEnabled(typer.running)
+        if hasattr(self, "chk_reply"):
+            self.chk_reply.setEnabled(not typer.running)
 
     def type_into_ptt(self, target: Target):
         typer = self._article_typer()
         if typer.running:
+            return
+        if target is Target.TITLE and self._reply_mode():
+            self._notice("回覆模式不輸入標題；請在 PTT 的標題列自行確認 Re: 標題後按 Enter。")
             return
         if self._paste_active():
             self._notice("貼上進行中，已暫停輸入標題／內文；請等貼上結束。")
@@ -2702,7 +2784,8 @@ class MainWindow(QMainWindow):
         if d is None:
             self._notice("找不到目前的草稿（可能已被刪除），已取消輸入。")
             return
-        if target is Target.BODY and d["input_state"] != "none" and not self.chk_retype.isChecked():
+        body_target = target in (Target.BODY, Target.REPLY_BODY)
+        if body_target and d["input_state"] != "none" and not self.chk_retype.isChecked():
             self._notice(f"此草稿的輸入狀態為「{d['input_state']}」：為避免重複輸入整篇文章，已拒絕。請先在終端機確認／清空編輯區，再勾選允許重新輸入。")
             return
         text = title if target is Target.TITLE else body
@@ -2717,8 +2800,10 @@ class MainWindow(QMainWindow):
             self._notice("無法輸入：" + why)
             self.type_status.setText("無法輸入：" + why)
             return
-        what = "標題" if target is Target.TITLE else f"內文（{len(text.splitlines())} 行）"
-        money_pace = target is Target.BODY and self.radio_money.isChecked()
+        what = ("標題" if target is Target.TITLE else
+                f"回覆內文（{len(text.splitlines())} 行）" if target is Target.REPLY_BODY else
+                f"內文（{len(text.splitlines())} 行）")
+        money_pace = body_target and self.radio_money.isChecked()
         pace_note = ""
         if money_pace:
             est = pttmoney.estimate(title, text)
@@ -2731,7 +2816,7 @@ class MainWindow(QMainWindow):
             return
         self._typing_target = target
         self._typing_draft_id = did
-        if target is Target.BODY:                         # write-ahead gate: no byte is sent unless "started" is durably recorded
+        if body_target:                                   # write-ahead gate: no byte is sent unless "started" is durably recorded
             try:
                 self.db.set_input_state(did, "started")
             except ToolError as e:
@@ -2742,7 +2827,7 @@ class MainWindow(QMainWindow):
                              money_pace=money_pace)
         if reason:
             self._typing_draft_id = None
-            if target is Target.BODY:
+            if body_target:
                 try:
                     self.db.set_input_state(did, d["input_state"])      # refused: put the previous state back
                 except ToolError:
@@ -2758,7 +2843,7 @@ class MainWindow(QMainWindow):
 
     def _typing_finished(self, ok: bool, msg: str):
         self._update_input_lock()
-        if self._typing_target is Target.BODY and self._typing_draft_id:
+        if self._typing_target in (Target.BODY, Target.REPLY_BODY) and self._typing_draft_id:
             try:
                 self.db.set_input_state(self._typing_draft_id, "done" if ok else "aborted")
             except ToolError as e:

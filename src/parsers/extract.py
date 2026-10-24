@@ -16,7 +16,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
-from ..links import is_article_image_url
+from ..links import is_article_image_url, is_image_url
 from ..logging_setup import get_logger
 
 log = get_logger("extract")
@@ -664,6 +664,8 @@ def _finish(res: ParseResult, ld, visible: str = "", html: str = "", container=N
 
 
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
+_BARE_IMAGE_URL = re.compile(r"(?i)https?://[^\s<>\"'）】」』，。；：！？、]+")
+_BARE_URL_TRAIL = ".,;:!?，。；：！？、\"'」』】》〉)]}"
 _BAD_IMAGE_TOKENS = {
     "logo", "logos", "icon", "icons", "sprite", "badge", "avatar", "avatars",
     "ad", "ads", "advert", "advertisement", "banner", "share", "sharing", "social",
@@ -809,6 +811,21 @@ def _images_from(root: Tag, base_url: str, limit: int = 16, doc: Tag | None = No
         if (_looks_like_image_file(url) and is_article_image_url(url)
                 and not _is_generic_image_url(url) and _node_allowed(a, root)):
             add(_safe_original(url))
+    for node in root.find_all(string=True):           # PTT/news posts often paste image URLs as plain text
+        if len(found) >= limit:
+            break
+        parent = node.parent
+        if not isinstance(parent, Tag) or parent.name in ("script", "style", "noscript", "template"):
+            continue
+        if not _node_allowed(parent, root):
+            continue
+        for m in _BARE_IMAGE_URL.finditer(str(node)):
+            url = m.group(0).rstrip(_BARE_URL_TRAIL)
+            if (is_article_image_url(url) and is_image_url(url)
+                    and not _is_generic_image_url(url)):
+                add(_safe_original(url))
+            if len(found) >= limit:
+                break
     if not found:                                     # og:image is a fallback, not the article's first picture
         for name in ("og:image", "twitter:image"):
             raw = _meta(meta_doc, name)

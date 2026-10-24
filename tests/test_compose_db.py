@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from src import compose
-from src.compose import Fields, check, has_errors, normalize, render, wrap, wrap_line
+from src.compose import Fields, check, has_errors, normalize, render, render_reply, wrap, wrap_line
 from src.errors import StorageError
 from src.storage.db import Database
 
@@ -50,6 +50,22 @@ def test_signature_applied_only_when_enabled_and_non_empty():
     assert "--" not in render(f)[1]
 
 
+def test_render_reply_uses_re_title_body_and_signature_without_the_news_header():
+    title, body = render_reply("[新聞] 原始標題", "我的回覆\n第二行", "簽名", use_signature=True)
+    assert title == "Re: [新聞] 原始標題"
+    assert "1.媒體來源" not in body and body.startswith("我的回覆")
+    assert body.endswith("\n--\n簽名")
+    assert render_reply("Re: 已是回覆標題", "內容")[0] == "Re: 已是回覆標題"
+    assert render_reply("", "內容")[0] == ""
+    assert render_reply("標題", "  ", "簽名", use_signature=True)[1] == "--\n簽名"
+
+
+def test_check_can_skip_the_title_for_replies():
+    assert not has_errors(check("", "回覆內容", require_title=False))
+    assert has_errors(check("", "回覆內容"))
+    assert has_errors(check("", "", require_title=False))       # the reply body is still required
+
+
 def test_check_flags_errors_and_warnings():
     issues = check("", "")
     assert has_errors(issues)
@@ -91,6 +107,13 @@ def test_draft_crud_and_search(db):
     assert db.delete_draft(b) and db.get_draft(b) is None and not db.delete_draft(b)
     with pytest.raises(StorageError):
         db.save_draft({"title": "x"}, 9999)
+
+
+def test_draft_reply_mode_roundtrip(db):
+    did = db.save_draft({"title": "回覆草稿", "reply_mode": True})
+    assert db.get_draft(did)["reply_mode"] == 1
+    db.save_draft({"title": "一般草稿"}, did)
+    assert db.get_draft(did)["reply_mode"] == 0
 
 
 def test_signature_roundtrip_and_persistence(tmp_path):
@@ -183,7 +206,7 @@ def test_database_init_failure_is_storage_error_and_connection_closed(tmp_path):
     newer.unlink()                                        # would fail on Windows if the connection had been left open
 
 
-def test_migration_v1_to_v2_keeps_drafts_and_adds_signature_snapshot(tmp_path):
+def test_migration_v1_to_latest_keeps_drafts_and_adds_columns(tmp_path):
     p = tmp_path / "old.db"
     conn = sqlite3.connect(p)
     conn.executescript("""
@@ -200,8 +223,30 @@ def test_migration_v1_to_v2_keeps_drafts_and_adds_signature_snapshot(tmp_path):
     conn.close()
     d = Database(p)
     row = d.get_draft(1)
-    assert row["title"] == "舊草稿" and row["signature_text"] == ""
-    assert d.conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert row["title"] == "舊草稿" and row["signature_text"] == "" and row["reply_mode"] == 0
+    assert d.conn.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_migration_v2_adds_reply_mode_without_touching_drafts(tmp_path):
+    p = tmp_path / "v2.db"
+    conn = sqlite3.connect(p)
+    conn.executescript("""
+        CREATE TABLE drafts(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL DEFAULT '', post_title TEXT NOT NULL DEFAULT '',
+          site TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', published TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+          body TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', board TEXT NOT NULL DEFAULT '', use_signature INTEGER NOT NULL DEFAULT 0,
+          preview_override TEXT, parse_status TEXT NOT NULL DEFAULT '', body_status TEXT NOT NULL DEFAULT '', field_states TEXT NOT NULL DEFAULT '',
+          input_state TEXT NOT NULL DEFAULT 'none', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, signature_text TEXT NOT NULL DEFAULT '');
+        CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, kind TEXT NOT NULL, draft_id INTEGER, detail TEXT NOT NULL DEFAULT '');
+        INSERT INTO drafts(title, body, created_at, updated_at) VALUES('既有草稿', '內容', 'x', 'x');
+        PRAGMA user_version=2;""")
+    conn.commit()
+    conn.close()
+    d = Database(p)
+    row = d.get_draft(1)
+    assert row["title"] == "既有草稿" and row["body"] == "內容" and row["reply_mode"] == 0
+    assert d.conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    d.close()
 
 
 def test_draft_search_treats_percent_and_underscore_literally(tmp_path):

@@ -72,3 +72,20 @@ def title_prompt_is_empty(s: Screen) -> bool:
 def editor_is_empty(s: Screen) -> bool:
     """Editor text area (all rows above the status line) blank and cursor at the top-left."""
     return all(not s.row_text(y) for y in range(s.rows - 1)) and (s.cur.x, s.cur.y) == (0, 0)
+
+
+def reply_editor_ready(s: Screen) -> bool:
+    """True for PTT's reply editor: cursor at the top-left above a prefilled quote.
+
+    The quote markers are deliberately conservative; if PTT changes the format the user can still
+    use the advanced 'non-empty editor' allowance, but nothing is typed by surprise.
+    """
+    if (s.cur.x, s.cur.y) != (0, 0):
+        return False
+    for y in range(s.rows - 1):
+        line = s.row_text(y)
+        if "※ 引述" in line or "引述《" in line or "之銘言" in line:
+            return True
+        if line.lstrip().startswith((":", "：")):
+            return True
+    return False

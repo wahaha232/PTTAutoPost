@@ -171,6 +171,73 @@ def test_signature_save_apply_and_snapshot_in_draft(win):
     assert "--\n簽名" not in win.preview.toPlainText()
 
 
+def test_regen_preview_always_applies_a_non_empty_signature(win):
+    fill_article(win)
+    win.sig_edit.setPlainText("簽名一行\n簽名二行")
+    win.chk_sig.setChecked(False)
+    win.render_preview(force=True)
+    assert "--\n簽名" not in win.preview.toPlainText()
+    win.regen_preview()
+    assert win.chk_sig.isChecked()
+    assert win.preview.toPlainText().endswith("\n--\n簽名一行\n簽名二行")
+    win.sig_edit.setPlainText("")
+    win.regen_preview()
+    assert "--\n簽名" not in win.preview.toPlainText()
+
+
+def test_reply_mode_preview_uses_notes_signature_and_re_title(win):
+    fill_article(win)
+    win.notes.setPlainText("我的回覆")
+    win.sig_edit.setPlainText("簽名")
+    win.chk_sig.setChecked(True)
+    win.chk_reply.setChecked(True)
+    win.render_preview(force=True)
+    text = win.preview.toPlainText()
+    assert "1.媒體來源" not in text and not text.startswith("Re:")
+    assert text.endswith("我的回覆\n--\n簽名")
+    assert win.current_texts()[0] == "Re: [新聞] 測試文章"
+    assert win.btn_type_body.text() == "輸入回覆內文"
+    assert "回覆標題" in win.lbl_reply_title.text()
+    win.chk_reply.setChecked(False)
+    win.render_preview(force=True)
+    assert "1.媒體來源" in win.preview.toPlainText()
+
+
+def test_reply_mode_without_a_title_still_passes_checks(win):
+    fill_article(win)
+    win.w["post_title"].setText("")
+    win.notes.setPlainText("回覆內容")
+    win.chk_reply.setChecked(True)
+    win.render_preview(force=True)
+    assert win.current_texts()[0] == ""
+    assert all(i.level != "error" for i in win.run_checks())
+
+
+def test_type_body_button_uses_the_reply_target_in_reply_mode(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win, "type_into_ptt", lambda target: calls.append(target))
+    win.chk_reply.setChecked(True)
+    win._type_body_clicked()
+    win.chk_reply.setChecked(False)
+    win._type_body_clicked()
+    assert calls == [Target.REPLY_BODY, Target.BODY]
+
+
+def test_reply_mode_is_saved_and_restored_with_the_draft(win):
+    fill_article(win)
+    win.notes.setPlainText("回覆內容")
+    win.chk_reply.setChecked(True)
+    assert win.save_draft()
+    win.new_draft()
+    assert not win.chk_reply.isChecked()
+    win.search.setText("測試文章")
+    win.draft_list.setCurrentRow(0)
+    win.open_selected()
+    assert win.chk_reply.isChecked()
+    assert win.preview.toPlainText().endswith("回覆內容")
+    assert win.current_texts()[0] == "Re: [新聞] 測試文章"
+
+
 def test_draft_save_open_search_delete(win):
     fill_article(win)
     did = win.save_draft()
@@ -1341,6 +1408,29 @@ def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, mon
     assert wait_until(lambda: not win._busy, 8000)
     assert calls == [(["https://cdn.example.com/photo.jpg"], False)]
     assert win.btn_zip.isEnabled()
+
+
+def test_fetch_with_images_checks_the_setting_and_opens_the_gallery(win, http_server, monkeypatch):
+    from src.ui import main_window as mw
+    calls = []
+    real_parse = mw.parse
+
+    def fake_parse(html, url, warnings=None):
+        res = real_parse(html, url, warnings)
+        res.images = ["https://cdn.example.com/photo.jpg"]
+        return res
+
+    monkeypatch.setattr(mw, "parse", fake_parse)
+    monkeypatch.setattr(mw.ImageViewer, "show_images",
+                        lambda self, urls, strict=True, referer=None: calls.append(urls))
+    assert not win.chk_article_image.isChecked()
+    win.url_in.setText(http_server + "/ok")
+    win.start_fetch()
+    assert wait_until(lambda: not win._busy, 8000)
+    assert win.chk_article_image.isChecked()
+    assert win.db.get_setting("links.article_images_open") == "1"
+    assert calls == [["https://cdn.example.com/photo.jpg"]]
+
 
 
 def test_auto_image_off_by_default(win, monkeypatch):

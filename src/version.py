@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.11"
+__version__ = "0.8.13"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,24 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.13", "2026/10/24", [
+        "Reply mode in Preview & input: a new '回覆文章模式' checkbox composes only the reply content (personal "
+        "notes + signature) and the derived 'Re: ...' title, without the news-repost header. The user presses r "
+        "and Enter in PTT; the app can then type the reply body above PTT's quoted original. It never types the "
+        "title, presses Enter, saves or sends.",
+        "Reply typing safety: a non-empty reply editor is accepted only when the cursor is at the top-left and the "
+        "screen shows PTT quote markers ('※ 引述' or ':' lines); otherwise 0 bytes are sent unless the existing "
+        "advanced non-empty allowance is checked. Reply drafts keep the mode (database schema v3), with automatic "
+        "migration from v1/v2.",
+    ]),
+    ("0.8.12", "2026/10/24", [
+        "Preview & input: '重新產生預覽' now applies a non-empty signature at the very bottom of the post even "
+        "when the per-draft checkbox was off; saving or picking a signature also applies it automatically. An "
+        "empty signature adds nothing (no '--' separator, the bottom stays blank).",
+        "Article images: image URLs pasted as plain text inside a post body (common on PTT and news pages) are now "
+        "extracted as article images. When a fetch finds images, '文章內有圖片連結時直接顯示' is checked "
+        "automatically and the in-app gallery opens, instead of requiring the setting to be enabled beforehand.",
+    ]),
     ("0.8.11", "2026/10/24", [
         "Critical update fix: the PowerShell helper was started with DETACHED_PROCESS, which makes powershell.exe "
         "exit immediately without running the script. Updates were downloaded into updates/ but never copied over "

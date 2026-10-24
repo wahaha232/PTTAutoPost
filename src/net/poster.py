@@ -14,7 +14,7 @@ import enum
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..logging_setup import get_logger
-from ..terminal.detect import Kind, editor_is_empty, title_prompt_is_empty
+from ..terminal.detect import Kind, editor_is_empty, reply_editor_ready, title_prompt_is_empty
 from .client import State
 from .sendlock import PASTE, TYPING
 from .session import PttSession
@@ -30,6 +30,7 @@ MONEY_CHAR_MS = 500            # PTT: at most 1 P per 2 seconds = 4 chars per 2 
 class Target(enum.Enum):
     TITLE = "title"
     BODY = "body"
+    REPLY_BODY = "reply_body"
 
 
 def encode_big5(text: str) -> tuple[bytes | None, list[tuple[int, str]]]:
@@ -100,6 +101,12 @@ def preflight(session: PttSession, target: Target, text: str, allow_nonempty: bo
             return f"目前畫面不是『標題』輸入提示（偵測為：{k.value}）。請先在終端機中進到發文的標題提示。"
         if not title_prompt_is_empty(session.screen) and not allow_nonempty:
             return "標題欄已有內容，已拒絕輸入（避免覆蓋）。"
+    elif target is Target.REPLY_BODY:
+        if k is not Kind.EDITOR:
+            return f"目前畫面不是文章編輯畫面（偵測為：{k.value}）。請先在 PTT 文章按 r，Enter 進入回覆編輯區。"
+        if not editor_is_empty(session.screen) and not allow_nonempty and not reply_editor_ready(session.screen):
+            return ("編輯區不是空白，且不像 PTT 的回覆引文（游標需在開頭，且畫面要有『※ 引述』或『: 』引文）。"
+                    "請確認已在回覆編輯區，或勾選進階的允許非空白編輯區。")
     else:
         if k is not Kind.EDITOR:
             return f"目前畫面不是文章編輯畫面（偵測為：{k.value}）。請先在終端機中進到編輯畫面。"

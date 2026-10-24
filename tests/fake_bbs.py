@@ -26,6 +26,9 @@ MENU = CLS + b5("【主功能表】 批踢踢實業坊\r\n\r\n(A)nnounce (F)avor
 WEIRD = CLS + b5("這是一個不認得的畫面\r\n")
 TITLE = CLS + b5("看板 Test\r\n\r\n標題：")
 EDITOR = (CLS + b"\x1b[24;1H\x1b[34;46m" + b5(" 編輯文章  (^Z/F1)說明 (^P/^G)插入符號/範本 (^X/^Q)離開") + b"\x1b[K\x1b[m\x1b[1;1H")
+REPLY_EDITOR = (CLS + b5("※ 引述《tester (暱稱)》之銘言：\r\n: 原文第一行\r\n: 原文第二行\r\n")
+                + b"\x1b[24;1H\x1b[34;46m" + b5(" 編輯文章  (^Z/F1)說明 (^P/^G)插入符號/範本 (^X/^Q)離開")
+                + b"\x1b[K\x1b[m\x1b[1;1H")
 
 
 class FakeBBS(QObject):
