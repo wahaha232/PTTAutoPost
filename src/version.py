@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.9"
+__version__ = "0.8.10"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,17 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.10", "2026/10/24", [
+        "Freeze fix: article images used to be extracted a second time with BeautifulSoup on the GUI thread after "
+        "every fetch (and the HTML fallback parsed again), which could stall the window and the mouse on large "
+        "pages. Extraction now happens only inside the fetch worker; the result is used as-is.",
+        "Image viewer/hover: decoding moved off the GUI thread (QImage in the worker, QPixmap only on the GUI), so a "
+        "large photo cannot freeze the window. Terminal font fitting uses a binary search instead of building ~90 "
+        "fonts per resize.",
+        "One-click image ZIP: the save-path dialog is shown before any download, a confirmation shows the chosen "
+        "path, and the file is always saved as .zip (a .7z/.rar name is changed to .zip). Button renamed "
+        "'打包下載圖片（ZIP）'.",
+    ]),
     ("0.8.9", "2026/10/24", [
         "Interface font: changing the interface font/size now updates every existing widget too (menu bar, tabs, "
         "buttons, labels, line edits, article body and preview), not only widgets created after the change; the "

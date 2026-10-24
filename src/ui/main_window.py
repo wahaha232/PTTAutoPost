@@ -25,7 +25,7 @@ from ..terminal.detect import Kind
 from ..net.poster import PostTyper, Target, preflight
 from ..net.session import Login, PttSession
 from ..net.upload import HOSTS, UploadBatch, host_choices, upload_images as upload_image_files
-from ..parsers.extract import ParseResult, find_image_urls, parse
+from ..parsers.extract import ParseResult, parse
 from ..net.image import download_images_zip
 from ..parsers.fetch import fetch
 from ..storage.db import MAX_SIGNATURES, Database
@@ -69,7 +69,8 @@ class FetchTask(QRunnable):
             f = fetch(self.url, ignore_robots=self.ignore_robots, cancel=self._cancel)
             if self._cancel.is_set():                         # the window is closing: do not touch anything
                 return
-            self.signals.done.emit(f, parse(f.html, f.final_url, f.warnings))
+            res = parse(f.html, f.final_url, f.warnings)
+            self.signals.done.emit(f, res)
         except ToolError as e:
             if not self._cancel.is_set():
                 self.signals.failed.emit(e.message, e.detail)
@@ -1426,8 +1427,8 @@ class MainWindow(QMainWindow):
         self.btn_clear = QPushButton("清除全部欄位")
         self.btn_clear.setToolTip("清除所有欄位、預覽與程式暫存狀態；不會刪除已儲存的草稿。")
         row.addWidget(self.btn_clear)
-        self.btn_zip = QPushButton("打包下載圖片")
-        self.btn_zip.setToolTip("把文章內所有圖片以原始網址下載成 ZIP；不會縮圖，也不含導覽列或廣告圖。")
+        self.btn_zip = QPushButton("打包下載圖片（ZIP）")
+        self.btn_zip.setToolTip("先選擇 ZIP 儲存路徑，再把文章內所有圖片以原始網址下載成 .zip；不會縮圖，也不含導覽列或廣告圖。")
         self.btn_zip.setEnabled(False)
         row.addWidget(self.btn_zip)
         ll.addLayout(row)
@@ -1670,8 +1671,23 @@ class MainWindow(QMainWindow):
         self.url_in.setText(url)
         self.start_fetch()
 
+    def _ask_zip_target(self, count: int) -> Path | None:
+        """Ask where to save the ZIP; always return a .zip path (or None when cancelled)."""
+        default_dir = (QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+                       or str(Path.home()))
+        name = f"PTTAutoPost-{time.strftime('%Y%m%d-%H%M%S')}-images.zip"
+        target, _ = QFileDialog.getSaveFileName(self, "儲存文章圖片 ZIP 壓縮檔",
+                                                str(Path(default_dir) / name), "ZIP 壓縮檔 (*.zip)")
+        if not target:
+            return None
+        path = Path(target)
+        if path.suffix.lower() != ".zip":
+            path = path.with_suffix(".zip") if path.suffix else path.with_name(path.name + ".zip")
+            self._notice(f"儲存格式固定為 ZIP，檔名已改為 {path.name}")
+        return path
+
     def download_article_images(self):
-        """Download every image of the loaded article, at its original URL, into one ZIP."""
+        """Ask for the ZIP path first, then download every article image at its original URL."""
         if self._zip_busy:
             self._notice("圖片打包下載進行中。")
             return
@@ -1679,19 +1695,22 @@ class MainWindow(QMainWindow):
         if not urls:
             self._notice("目前文章沒有可下載的圖片。")
             return
-        default_dir = (QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
-                       or str(Path.home()))
-        name = f"PTTAutoPost-{time.strftime('%Y%m%d-%H%M%S')}-images.zip"
-        target, _ = QFileDialog.getSaveFileName(self, "打包下載文章圖片",
-                                                str(Path(default_dir) / name), "ZIP (*.zip)")
-        if not target:
+        target = self._ask_zip_target(len(urls))
+        if target is None:
+            self._notice("已取消打包下載。")
             return
-        if not target.lower().endswith(".zip"):
-            target += ".zip"
+        if QMessageBox.question(
+                self, "打包下載圖片",
+                f"將下載文章內 {len(urls)} 張原圖，並存成 ZIP 壓縮檔：\n{target}\n\n"
+                "下載期間請勿關閉程式。要開始下載嗎？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
+            self._notice("已取消打包下載。")
+            return
         self._zip_busy = True
         self.btn_zip.setEnabled(False)
         self._notice(f"打包下載 {len(urls)} 張原圖…")
-        task = ArticleImagesZipTask(urls, Path(target), self._article_referer)
+        task = ArticleImagesZipTask(urls, target, self._article_referer)
         task.signals.progress.connect(self._zip_progress)
         task.signals.done.connect(self._zip_done)
         task.signals.failed.connect(self._zip_failed)
@@ -1871,7 +1890,7 @@ class MainWindow(QMainWindow):
         self.preview_manual_reset()
         self.render_preview(force=True)
         self._dirty = True                                 # fetched content is not saved yet
-        self._article_image_urls = res.images or find_image_urls(fetched.html, fetched.final_url)
+        self._article_image_urls = res.images
         self._article_referer = fetched.final_url
         self.btn_zip.setEnabled(bool(self._article_image_urls))
         if self._article_image_urls and hasattr(self, "chk_article_image") and self.chk_article_image.isChecked():

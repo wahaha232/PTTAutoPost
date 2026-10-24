@@ -1171,10 +1171,11 @@ def test_reload_article_needs_a_url_and_is_blocked_while_fetching(win, monkeypat
 
 def test_download_article_images_runs_the_zip_task(win, monkeypatch, tmp_path):
     from PySide6.QtCore import QRunnable
-    from PySide6.QtWidgets import QFileDialog
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
     from src.ui import main_window as mw
     target = tmp_path / "imgs.zip"
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
     started = []
 
     class FakeTask(QRunnable):
@@ -1196,6 +1197,30 @@ def test_download_article_images_runs_the_zip_task(win, monkeypatch, tmp_path):
     win.download_article_images()
     assert started == [(["https://cdn.example.com/a.jpg"], str(target), "https://news.example.com/a")]
     assert win._zip_busy and not win.btn_zip.isEnabled()
+
+
+def test_zip_path_always_ends_with_zip(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "photos.7z"), "")))
+    target = win._ask_zip_target(3)
+    assert target is not None and target.suffix.lower() == ".zip" and target.stem == "photos"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: ("", "")))
+    assert win._ask_zip_target(3) is None
+
+
+def test_zip_download_declined_after_choosing_the_path_does_not_start(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from src.ui import main_window as mw
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "x.zip"), "")))
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    started = []
+    monkeypatch.setattr(mw, "ArticleImagesZipTask", lambda *a, **k: started.append(a))
+    win._article_image_urls = ["https://cdn.example.com/a.jpg"]
+    win.download_article_images()
+    assert started == [] and not win._zip_busy
 
 
 def test_zip_result_reenables_the_button(win, monkeypatch):
@@ -1266,8 +1291,14 @@ def test_update_download_keeps_the_delta_when_the_user_declines(win, monkeypatch
 def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, monkeypatch):
     from src.ui import main_window as mw
     calls = []
-    monkeypatch.setattr(mw, "find_image_urls",
-                        lambda html, base: ["https://cdn.example.com/photo.jpg"])
+    real_parse = mw.parse
+
+    def fake_parse(html, url, warnings=None):
+        res = real_parse(html, url, warnings)
+        res.images = ["https://cdn.example.com/photo.jpg"]
+        return res
+
+    monkeypatch.setattr(mw, "parse", fake_parse)
     monkeypatch.setattr(mw.ImageViewer, "show_images",
                         lambda self, urls, strict=True, referer=None: calls.append((urls, strict)))
     win.chk_article_image.setChecked(True)

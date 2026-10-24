@@ -510,12 +510,15 @@ class TerminalWidget(QWidget):
         cols, rows = self.s.screen.cols, self.s.screen.rows
         tw, th = w / cols, h / rows
         best = 6
-        for px in range(6, 97):
+        lo, hi = 6, 96                                   # metrics grow with px: binary search, not 91 font builds
+        while lo <= hi:
+            px = (lo + hi) // 2
             cw, ch = cell_metrics(self._make_font(self.font_.family(), px))
             if cw <= tw and ch <= th:
                 best = px
+                lo = px + 1
             else:
-                break
+                hi = px - 1
         self.draw_font = self._make_font(self.font_.family(), best)
         cwf, chf = cell_metrics(self.draw_font)
         if self.stretch:                                   # fill every pixel: distort the glyphs to the cell

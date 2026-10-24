@@ -1,15 +1,16 @@
 """In-app image viewer for auto-opened / hovered / article images.
 
-The image is downloaded and rendered inside this program; no browser process is
-started.  Decoding happens on the GUI thread, downloading in a QRunnable.
+The image is downloaded and decoded in a QRunnable; only a QImage crosses back
+to the GUI thread, so a large photo cannot freeze the window or the mouse.
 """
 from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPoint, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtGui import QGuiApplication, QImageReader, QPixmap
+from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ..errors import ToolError
@@ -56,12 +57,20 @@ def cache_clear() -> None:
 
 
 class _Signals(QObject):
-    done = Signal(object)                  # ImageData
+    done = Signal(object)                  # LoadedImage
     failed = Signal(str, str)              # message, detail
 
 
+@dataclass(frozen=True)
+class LoadedImage:
+    """Decoded image plus its metadata; created off the GUI thread."""
+    data: ImageData
+    image: QImage | None
+    error: str
+
+
 class ImageFetchTask(QRunnable):
-    """Download one image off the GUI thread; only bytes cross back through signals."""
+    """Download and decode one image off the GUI thread."""
 
     def __init__(self, url: str, strict_host: bool = True, referer: str | None = None):
         super().__init__()
@@ -74,19 +83,24 @@ class ImageFetchTask(QRunnable):
     def cancel(self) -> None:
         self._cancel.set()
 
+    def _emit(self, data: ImageData) -> None:
+        if self._cancel.is_set():
+            return
+        image, error = load_image(data.data)
+        if not self._cancel.is_set():
+            self.signals.done.emit(LoadedImage(data, image, error))
+
     def run(self):
         try:
             key = f"{self.url}\n{self.referer or ''}"
             cached = cache_get(key)
             if cached is not None:
-                if not self._cancel.is_set():
-                    self.signals.done.emit(cached)
+                self._emit(cached)
                 return
             data = fetch_image(self.url, max_bytes=MAX_IMAGE_BYTES, cancel=self._cancel,
                                strict_host=self.strict_host, referer=self.referer)
             cache_put(key, data)
-            if not self._cancel.is_set():
-                self.signals.done.emit(data)
+            self._emit(data)
         except ToolError as e:
             if not self._cancel.is_set():
                 self.signals.failed.emit(e.message, e.detail)
@@ -96,8 +110,8 @@ class ImageFetchTask(QRunnable):
                 self.signals.failed.emit("讀取圖片時發生未預期的錯誤。", f"{type(e).__name__}: {e}")
 
 
-def decode_image(data: bytes) -> tuple[QPixmap | None, str]:
-    """Decode bytes with Qt's image plugins; returns (pixmap, error message)."""
+def load_image(data: bytes) -> tuple[QImage | None, str]:
+    """Decode bytes with Qt's image plugins (safe off the GUI thread)."""
     buf = QBuffer()
     buf.setData(QByteArray(data))
     buf.open(QIODevice.OpenModeFlag.ReadOnly)
@@ -113,9 +127,15 @@ def decode_image(data: bytes) -> tuple[QPixmap | None, str]:
             return None, f"無法顯示此圖片（{reader.errorString() or '不支援的格式'}）。"
         if img.width() > MAX_SIDE or img.height() > MAX_SIDE or img.width() * img.height() > MAX_PIXELS:
             return None, "圖片尺寸過大，已停止顯示。"
-        return QPixmap.fromImage(img), ""
+        return img, ""
     finally:
         buf.close()
+
+
+def decode_image(data: bytes) -> tuple[QPixmap | None, str]:
+    """GUI-thread convenience wrapper used by tests."""
+    image, error = load_image(data)
+    return (QPixmap.fromImage(image) if image is not None else None), error
 
 
 class ImageViewer(QDialog):
@@ -213,15 +233,16 @@ class ImageViewer(QDialog):
         self._task = task
         QThreadPool.globalInstance().start(task)
 
-    def _on_done(self, task: ImageFetchTask, data: ImageData) -> None:
+    def _on_done(self, task: ImageFetchTask, loaded: LoadedImage) -> None:
         if self._task is not task:
             return                                         # a newer image replaced this download
         self._task = None
-        pixmap, error = decode_image(data.data)
-        if pixmap is None:
-            self.image_label.setText(error)
-            self.info.setText(f"{error}\n{data.url}")
+        data = loaded.data
+        if loaded.image is None:
+            self.image_label.setText(loaded.error)
+            self.info.setText(f"{loaded.error}\n{data.url}")
             return
+        pixmap = QPixmap.fromImage(loaded.image)
         self._pixmap = pixmap
         self._update_pixmap()
         self.info.setText(f"{pixmap.width()} x {pixmap.height()} · {len(data.data) / 1024:.0f} KB · "
@@ -321,14 +342,14 @@ class ImageHoverPreview(QWidget):
         self.label.clear()
         self.hide()
 
-    def _on_done(self, task: ImageFetchTask, data: ImageData) -> None:
+    def _on_done(self, task: ImageFetchTask, loaded: LoadedImage) -> None:
         if self._task is not task:
             return
         self._task = None
-        pixmap, error = decode_image(data.data)
-        if pixmap is None:
-            self._show_error(error)
+        if loaded.image is None:
+            self._show_error(loaded.error)
             return
+        pixmap = QPixmap.fromImage(loaded.image)
         self._pixmap = pixmap
         scaled = pixmap.scaled(self.MAX_WIDTH - 8, self.MAX_HEIGHT - 8,
                                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
