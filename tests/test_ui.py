@@ -440,6 +440,20 @@ def test_goto_board_only_from_main_menu_and_never_posts(win, bbs_factory):
     assert b"\x18" not in bbs.after_login
 
 
+def test_start_post_sends_only_ctrl_p_from_a_board_screen(win, bbs_factory, monkeypatch):
+    bbs = bbs_factory()
+    connect_and_login(win, bbs)
+    sent = []
+    monkeypatch.setattr(win.session, "send_user_bytes", lambda data: sent.append(bytes(data)) or True)
+    win.start_post()                                                 # main menu: refused
+    assert sent == []
+    win.session.screen.feed("\x1b[2J\x1b[H".encode("cp950") + "看板文章列表".encode("cp950"))
+    assert win.session.kind is Kind.UNKNOWN
+    win.start_post()
+    assert sent == [b"\x10"]
+    assert all(b"\r" not in x and b"\x18" not in x for x in sent)
+
+
 def test_block_triangle_and_box_chars_are_drawn_geometrically(qapp):
     from PySide6.QtCore import QRectF
     from PySide6.QtGui import QColor, QImage, QPainter
@@ -1219,6 +1233,56 @@ def test_money_estimate_and_input_mode_setting(win):
     win._update_money_estimate()
     text = win.lbl_money_estimate.text()
     assert "新聞上限 25 P" in text and "已達 P 幣上限" in text
+
+
+def test_money_counter_updates_while_typing_and_shows_the_final_estimate(win, bbs_factory, monkeypatch):
+    import src.net.poster as poster
+    monkeypatch.setattr(poster, "MONEY_CHAR_MS", 5)
+    bbs = bbs_factory()
+    fill_article(win)
+    connect_and_login(win, bbs)
+    bbs.goto("editor")
+    assert wait_until(lambda: win.session.kind is Kind.EDITOR)
+    win.chk_confirm.setChecked(True)
+    win.radio_money.setChecked(True)
+    seen = []
+    win.typer.progress.connect(lambda i, n: seen.append(win.lbl_money_counter.text()))
+    win.type_into_ptt(Target.BODY)
+    assert wait_until(lambda: not win.typer.running, 10000)
+    assert any("P 幣計數：" in text and "0/" not in text for text in seen)
+    final = win.lbl_money_counter.text()
+    assert "此文章預估賺取" in final and "實際 P 幣以 PTT 為準" in final
+    assert win._typing_money is None
+
+
+def test_shorten_url_button_updates_the_original_url_field(win, monkeypatch):
+    from PySide6.QtCore import QRunnable
+    from src.ui import main_window as mw
+    from src.ui.tasks import _ShortenSignals
+    started = []
+
+    class FakeTask(QRunnable):
+        def __init__(self, key, url):
+            super().__init__()
+            self.signals = _ShortenSignals()
+            started.append((key, url))
+
+        def cancel(self):
+            pass
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(mw, "ShortenTask", FakeTask)
+    win.w["url"].setText("https://example.com/a?b=1")
+    win.shortener_combo.setCurrentIndex(win.shortener_combo.findData("isgd"))
+    win.shorten_url_field()
+    assert started == [("isgd", "https://example.com/a?b=1")]
+    assert not win.btn_shorten.isEnabled()
+    win._on_shortened("https://is.gd/x")
+    assert win.w["url"].text() == "https://is.gd/x"
+    assert win.url_in.text() == "https://is.gd/x"
+    assert win.btn_shorten.isEnabled()
 
 
 def test_reload_article_uses_the_article_url(win, monkeypatch):

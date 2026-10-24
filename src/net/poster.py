@@ -125,6 +125,8 @@ class PostTyper(QObject):
         self.s = session
         self.running = False
         self.bytes_sent = 0
+        self.total_chars = 0
+        self.sent_chars = 0
         self._chunks: list[bytes] = []
         self._i = 0
         self._target = Target.BODY
@@ -156,6 +158,8 @@ class PostTyper(QObject):
         if lock is not None and not lock.acquire(TYPING):
             return f"{lock.label()}進行中，已暫停自動輸入；請等它結束後再試。"
         self._target, self._i, self.bytes_sent = target, 0, 0
+        self.total_chars = sum(1 for ch in text if not ch.isspace() and ch.isprintable())
+        self.sent_chars = 0
         self._chunks = build_chunks(text, limit=MONEY_CHUNK_BYTES if money_pace else CHUNK_BYTES)
         self._quiet.setInterval(MONEY_CHAR_MS if money_pace else IDLE_MS)
         self.running = True
@@ -196,6 +200,8 @@ class PostTyper(QObject):
             self._abort("傳送失敗。")
             return
         self.bytes_sent += len(chunk)
+        self.sent_chars += sum(1 for ch in chunk.decode("cp950", errors="ignore")
+                               if not ch.isspace() and ch.isprintable())
         self._i += 1
         self.progress.emit(self._i, len(self._chunks))
         self._cap.start()

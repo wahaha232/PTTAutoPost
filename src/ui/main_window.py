@@ -19,6 +19,7 @@ from .. import boards, compose, pttmoney, sites, update
 from ..errors import ToolError
 from ..links import is_auto_open_image_url, validate_http_url
 from ..logging_setup import get_logger
+from ..net import shortener
 from ..net.client import DEFAULT_URL, State
 from ..terminal.detect import Kind
 from ..net.poster import PostTyper, Target, preflight
@@ -33,14 +34,15 @@ from . import browser, theme
 from .icon import app_icon, tray_icon
 from .image_viewer import ImageHoverPreview, ImageViewer
 from .terminal_widget import TerminalWidget
-from .tasks import (ArticleImagesZipTask, FetchTask, ImageUploadTask, SiteCheckTask,
+from .tasks import (ArticleImagesZipTask, FetchTask, ImageUploadTask, ShortenTask, SiteCheckTask,
                     UpdateCheckTask, UpdateDownloadTask)
 
 log = get_logger("ui")
 STATE_TEXT = {"found": "已取得", "missing": "未取得", "inferred": "推定（請確認）", "edited": "已修改", "manual": "手動輸入"}
 BODY_TEXT = {"likely_complete": "內文可能完整（仍請對照原網頁）", "suspect_partial": "內文疑似不完整", "insufficient": "內文不足或沒有內文"}
 STATUS_TEXT = {"success": "擷取成功", "partial": "部分成功", "failed": "擷取失敗"}
-TYPE_HELP = "操作順序：在終端機進到「標題：」提示 → 輸入標題 → 自行按 Enter → 進入編輯畫面 → 輸入內文 → 自行檢查並存檔／發文。"
+TYPE_HELP = ("操作順序：在目標看板文章列表按「開始發文（Ctrl+P）」→ 確認標題提示 → 輸入標題 → "
+             "自行按 Enter → 進入編輯畫面 → 輸入內文 → 自行檢查並存檔／發文。")
 REPLY_HELP = ("回覆流程：在 PTT 文章畫面按 r → 確認／Enter 進入回覆編輯區（PTT 會帶入 Re: 標題與引文）→ "
               "回程式按「輸入回覆內文」→ 回終端機確認後自行存檔／送出。程式不輸入標題，也不按存檔或送出。")
 MAX_AUTO_OPEN_PER_MINUTE = 3
@@ -74,6 +76,7 @@ class MainWindow(QMainWindow):
         self._update_busy = False
         self._update_check_task = None
         self._update_download_task = None
+        self._shorten_task = None
         self._update_asset: update.Asset | None = None
         self._update_version = ""
         self._update_token: str | None = None
@@ -84,6 +87,8 @@ class MainWindow(QMainWindow):
         self._site_check_task = None
         self._task = None                                  # running FetchTask (cancelled on close)
         self._typing_target: Target | None = None
+        self._typing_money: pttmoney.Estimate | None = None
+        self._typing_money_mode = "money"
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         self.setWindowIcon(app_icon())
         self.setMinimumSize(760, 560)                     # freely resizable above this
@@ -153,7 +158,7 @@ class MainWindow(QMainWindow):
         self.session.notice.connect(self._notice)
         self.typer.started.connect(self._typing_started)
         self.typer.finished.connect(self._typing_finished)
-        self.typer.progress.connect(lambda i, n: self.type_status.setText(f"輸入中… {i}/{n} 段"))
+        self.typer.progress.connect(self._typing_progress)
         self.new_draft()
         self.db.recover_interrupted_inputs()               # before the first list load, so aborted runs show correctly
         self.reload_drafts()
@@ -1340,6 +1345,23 @@ class MainWindow(QMainWindow):
         self.btn_zip.setEnabled(False)
         row.addWidget(self.btn_zip)
         ll.addLayout(row)
+        srow = QHBoxLayout()
+        srow.addWidget(QLabel("縮短原文網址"))
+        self.shortener_combo = QComboBox()
+        for key, label in shortener.choices():
+            self.shortener_combo.addItem(label, key)
+        saved = self.db.get_setting("shortener.service", "tinyurl")
+        self.shortener_combo.setCurrentIndex(max(0, self.shortener_combo.findData(saved)))
+        self.btn_shorten = QPushButton("縮短網址")
+        self.btn_shorten.setToolTip("只縮短「原文網址」欄位；會把網址送給您選的第三方服務，需確認。")
+        srow.addWidget(self.shortener_combo, 1)
+        srow.addWidget(self.btn_shorten)
+        ll.addLayout(srow)
+        self.lbl_shortener_note = QLabel(
+            "縮網址會把原文網址送給第三方服務，對方可能記錄網址與 IP；短網址可能永久有效。"
+            "含 token、個資或機密的網址請勿縮短。")
+        self.lbl_shortener_note.setWordWrap(True)
+        ll.addWidget(self.lbl_shortener_note)
         self.parse_status = QLabel("尚未擷取")
         self.parse_status.setWordWrap(True)
         ll.addWidget(self.parse_status)
@@ -1489,7 +1511,7 @@ class MainWindow(QMainWindow):
         self.lbl_draft = QLabel("未儲存")
         r2.addWidget(self.lbl_draft, 1)
         rl.addLayout(r2)
-        tg = QGroupBox("輸入到已登入的 PTT 終端機（只輸入文字；不會按 Enter／Ctrl-X／存檔／送出）")
+        tg = QGroupBox("輸入到已登入的 PTT 終端機（不按 Enter／Ctrl-X／存檔／送出）")
         tl = QVBoxLayout(tg)
         self.chk_confirm = QCheckBox("我已確認這篇文章的內容（預覽、檢查）")
         self.chk_nonempty = QCheckBox("允許輸入到非空白的標題欄／編輯區（進階，可能插入到既有內容）")
@@ -1520,12 +1542,21 @@ class MainWindow(QMainWindow):
         tl.addLayout(mode_row)
         self.lbl_money_estimate = QLabel()
         self.lbl_money_estimate.setWordWrap(True)
-        tl.addWidget(self.lbl_money_estimate)
+        self.lbl_money_counter = QLabel("P 幣計數：0 P")
+        self.lbl_money_counter.setWordWrap(True)
+        self.lbl_money_counter.setMinimumWidth(220)
+        money_row = QHBoxLayout()
+        money_row.addWidget(self.lbl_money_estimate, 1)
+        money_row.addWidget(self.lbl_money_counter)
+        tl.addLayout(money_row)
         r3 = QHBoxLayout()
+        self.btn_start_post = QPushButton("開始發文（Ctrl+P）")
+        self.btn_start_post.setToolTip("只在已登入且已進入目標看板文章列表時使用；送出 Ctrl+P 開啟發文編輯，"
+                                       "不會按 Enter、Ctrl-X、存檔或送出。")
         self.btn_type_title = QPushButton("輸入標題")
         self.btn_type_body = QPushButton("輸入內文")
         self.btn_type_cancel = QPushButton("取消輸入")
-        for b in (self.btn_type_title, self.btn_type_body, self.btn_type_cancel):
+        for b in (self.btn_start_post, self.btn_type_title, self.btn_type_body, self.btn_type_cancel):
             r3.addWidget(b)
         tl.addLayout(r3)
         self.type_status = QLabel(TYPE_HELP)
@@ -1540,6 +1571,9 @@ class MainWindow(QMainWindow):
         self.btn_fetch.clicked.connect(self.start_fetch)
         self.btn_reload.clicked.connect(self.reload_article)
         self.btn_zip.clicked.connect(self.download_article_images)
+        self.btn_shorten.clicked.connect(self.shorten_url_field)
+        self.shortener_combo.currentIndexChanged.connect(
+            lambda _i: self.db.set_setting("shortener.service", self.shortener_combo.currentData()))
         self.btn_clear.clicked.connect(self.clear_all_fields)
         self.url_in.returnPressed.connect(self.start_fetch)
         self.btn_regen.clicked.connect(self.regen_preview)
@@ -1564,6 +1598,7 @@ class MainWindow(QMainWindow):
         self.chk_reply.toggled.connect(self._reply_mode_changed)
         self.btn_type_title.clicked.connect(lambda: self.type_into_ptt(Target.TITLE))
         self.btn_type_body.clicked.connect(self._type_body_clicked)
+        self.btn_start_post.clicked.connect(self.start_post)
         self.btn_type_cancel.clicked.connect(lambda: self._article_typer().cancel())
         for c in (self.chk_confirm,):
             c.toggled.connect(lambda _x: self._update_type_buttons())
@@ -1881,6 +1916,8 @@ class MainWindow(QMainWindow):
         """Compare the P-coin estimates of fast pasting and the paced money mode."""
         if not hasattr(self, "lbl_money_estimate"):
             return
+        if hasattr(self, "lbl_money_counter") and not self._article_typer().running:
+            self.lbl_money_counter.setText("P 幣計數：0 P")
         title = self.w["post_title"].text() if hasattr(self, "w") else ""
         body = self.body.toPlainText() if hasattr(self, "body") else ""
         if self._reply_mode():
@@ -2093,6 +2130,47 @@ class MainWindow(QMainWindow):
         self._reload_boards(b)
         self._notice(f"看板 {b} 已{'加入' if on else '移出'}我的最愛。")
 
+    def shorten_url_field(self) -> None:
+        if self._shorten_task is not None:
+            return
+        url = self.w["url"].text().strip() or self.url_in.text().strip()
+        if not validate_http_url(url):
+            self._notice("原文網址不是有效的 http／https 網址。")
+            return
+        key = self.shortener_combo.currentData()
+        svc = shortener.SERVICES.get(key)
+        if svc is None:
+            self._notice("請選擇縮網址服務。")
+            return
+        if QMessageBox.question(
+                self, "縮短網址",
+                f"將把原文網址送給第三方服務：\n{svc.label}\n\n{url}\n\n"
+                "對方可能記錄網址與 IP，短網址可能永久有效；含 token、個資或機密的網址請勿縮短。\n\n"
+                "確定要縮短並覆蓋原文網址欄位嗎？") != QMessageBox.StandardButton.Yes:
+            return
+        task = ShortenTask(key, url)
+        task.signals.done.connect(self._on_shortened)
+        task.signals.failed.connect(self._on_shorten_failed)
+        self._shorten_task = task
+        self.btn_shorten.setEnabled(False)
+        self.parse_status.setText(f"縮短網址中…（{svc.label}）")
+        QThreadPool.globalInstance().start(task)
+
+    def _on_shortened(self, short: str) -> None:
+        self._shorten_task = None
+        self.btn_shorten.setEnabled(True)
+        self.w["url"].setText(short)
+        self.url_in.setText(short)
+        self._field_edited("url")
+        self.parse_status.setText("已縮短原文網址（原始網址未保留；可重新擷取或手動貼回）。")
+        self._notice(f"已縮短原文網址：{short}")
+
+    def _on_shorten_failed(self, msg: str) -> None:
+        self._shorten_task = None
+        self.btn_shorten.setEnabled(True)
+        self.parse_status.setText("縮短網址失敗。")
+        self._notice("縮短網址失敗：" + msg)
+
     def goto_board(self) -> None:
         """User-initiated navigation only: 's' + board id + Enter from the main menu. Never posts anything."""
         if self._paste_active():
@@ -2111,6 +2189,32 @@ class MainWindow(QMainWindow):
         session.send_user_bytes(b"s" + b.encode("ascii") + b"\r")      # one frame: no ordering race
         self.db.event("goto_board", self.draft_id, b)
         self._notice(f"已送出前往看板 {b}；請在終端機確認畫面（可能需要按任意鍵），發文仍由您自行操作。")
+
+    def start_post(self) -> None:
+        """Open PTT's post editor with Ctrl+P. Navigation only: no Enter, Ctrl-X, save or send."""
+        if self._paste_active():
+            self._notice("貼上進行中，已暫停開始發文；請等貼上結束。")
+            return
+        if self._article_typer().running:
+            self._notice("自動輸入進行中，已暫停開始發文。")
+            return
+        session = self._article_session()
+        if not session.logged_in or session.client.state is not State.CONNECTED:
+            self._notice("需要先登入 PTT 才能開始發文。")
+            return
+        if session.kind in (Kind.MAIN_MENU, Kind.TITLE_PROMPT, Kind.EDITOR, Kind.LOGIN_PROMPT,
+                            Kind.PASSWORD_PROMPT):
+            self._notice("請先在終端機進入目標看板的文章列表，再按「開始發文」。")
+            return
+        if QMessageBox.question(
+                self, "開始發文",
+                "將送出 Ctrl+P 開啟 PTT 發文編輯（標題提示）。\n\n"
+                "請先確認終端機畫面在正確的看板文章列表。程式只送 Ctrl+P，"
+                "不會按 Enter、Ctrl-X、存檔或送出。\n\n確定？") != QMessageBox.StandardButton.Yes:
+            return
+        session.send_user_bytes(b"\x10")
+        self.db.event("start_post", self.draft_id, self.current_board())
+        self._notice("已送出 Ctrl+P；請確認標題提示，再用「輸入標題」。程式不會送出文章。")
 
     # ---------------------------------------------------------------- signature
     def save_signature(self):
@@ -2597,8 +2701,11 @@ class MainWindow(QMainWindow):
         connected = session.client.state is State.CONNECTED
         ok = (connected and session.logged_in and self.chk_confirm.isChecked()
               and not typer.running and not self._paste_active())
+        nav_ok = (connected and session.logged_in and not typer.running
+                  and not self._paste_active() and session.kind is not Kind.MAIN_MENU)
         self.btn_type_title.setEnabled(ok and not self._reply_mode())
         self.btn_type_body.setEnabled(ok)
+        self.btn_start_post.setEnabled(nav_ok and not self._reply_mode())
         self.btn_type_cancel.setEnabled(typer.running)
         if hasattr(self, "chk_reply"):
             self.chk_reply.setEnabled(not typer.running)
@@ -2647,8 +2754,9 @@ class MainWindow(QMainWindow):
                 f"內文（{len(text.splitlines())} 行）")
         money_pace = body_target and self.radio_money.isChecked()
         pace_note = ""
+        est = (pttmoney.estimate(title, text, "money" if money_pace else "fast")
+               if body_target else None)
         if money_pace:
-            est = pttmoney.estimate(title, text)
             pace_note = (f"\n\nP 幣配速：每字約 0.5 秒，輸入約 {pttmoney.format_duration(est.seconds)}，"
                          f"預估 {est.points:g} P（{'新聞' if est.news else '一般'}上限 {est.cap} P）。"
                          "實際 P 幣仍以 PTT 為準，且要自行存檔／送出才會計入。")
@@ -2657,18 +2765,22 @@ class MainWindow(QMainWindow):
             self._notice("已取消輸入。")
             return
         self._typing_target = target
+        self._typing_money = est
+        self._typing_money_mode = "money" if money_pace else "fast"
         self._typing_draft_id = did
         if body_target:                                   # write-ahead gate: no byte is sent unless "started" is durably recorded
             try:
                 self.db.set_input_state(did, "started")
             except ToolError as e:
                 self._typing_draft_id = None
+                self._typing_money = None
                 self._error(f"無法記錄輸入狀態，已取消輸入（未送出任何內容）：{e.message}")
                 return
         reason = typer.start(target, text, self.chk_nonempty.isChecked(), pasting=self._paste_active(),
                              money_pace=money_pace)
         if reason:
             self._typing_draft_id = None
+            self._typing_money = None
             if body_target:
                 try:
                     self.db.set_input_state(did, d["input_state"])      # refused: put the previous state back
@@ -2681,10 +2793,34 @@ class MainWindow(QMainWindow):
     def _typing_started(self, target: Target):
         self._update_input_lock()
         self.type_status.setText("輸入中…（可按「取消輸入」；取消不會清除已輸入的內容）")
+        if self._typing_money is not None:
+            self.lbl_money_counter.setText(
+                f"P 幣計數：0 P（0/{self._typing_money.chars} 字）")
         self._update_type_buttons()
+
+    def _typing_progress(self, i: int, n: int) -> None:
+        self.type_status.setText(f"輸入中… {i}/{n} 段")
+        if self._typing_money is None or not hasattr(self, "lbl_money_counter"):
+            return
+        if self._typing_money_mode != "money":
+            self.lbl_money_counter.setText("P 幣計數：快速貼上中…")
+            return
+        chars = self._article_typer().sent_chars
+        points = min(self._typing_money.cap, chars * pttmoney.POINTS_PER_CHAR)
+        self.lbl_money_counter.setText(
+            f"P 幣計數：{points:g} P（{chars}/{self._typing_money.chars} 字）")
 
     def _typing_finished(self, ok: bool, msg: str):
         self._update_input_lock()
+        if self._typing_money is not None and hasattr(self, "lbl_money_counter"):
+            chars = self._article_typer().sent_chars
+            points = min(self._typing_money.cap, self._typing_money.points)
+            state = "輸入完成" if ok else "輸入中止"
+            mode = "逐字配速" if self._typing_money_mode == "money" else "快速貼上"
+            self.lbl_money_counter.setText(
+                f"{state}：此文章預估賺取 {points:g} P（{mode}；已送 {chars}/{self._typing_money.chars} 字；"
+                "實際 P 幣以 PTT 為準）")
+            self._typing_money = None
         if self._typing_target in (Target.BODY, Target.REPLY_BODY) and self._typing_draft_id:
             try:
                 self.db.set_input_state(self._typing_draft_id, "done" if ok else "aborted")
@@ -2899,7 +3035,12 @@ class MainWindow(QMainWindow):
         if download_task is not None:
             download_task.cancel()
             self._disconnect_task_signals(download_task, ("progress", "done", "failed"))
-            self._update_download_task = None
+        self._update_download_task = None
+        shorten_task = getattr(self, "_shorten_task", None)
+        if shorten_task is not None:
+            shorten_task.cancel()
+            self._disconnect_task_signals(shorten_task, ("done", "failed"))
+            self._shorten_task = None
         self._disconnect_task_signals(getattr(self, "_site_check_task", None), ("done",))
         zip_task = getattr(self, "_zip_task", None)
         if zip_task is not None:

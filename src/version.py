@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.14"
+__version__ = "0.8.15"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,19 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.15", "2026/10/24", [
+        "Preview & input now has a '開始發文（Ctrl+P）' button. It only sends Ctrl+P from a non-menu, "
+        "non-editor, logged-in board screen after confirmation, to open PTT's title prompt. It still never "
+        "presses Enter, Ctrl-X, saves or sends; title/body typing and the final save remain separate, explicit "
+        "user actions. The button is disabled in reply mode and while typing or pasting.",
+        "Money-paced typing now shows a live 'P 幣計數' beside the P-coin estimate; when the run ends it shows "
+        "'此文章預估賺取 X P' with the sent/total valid characters. This is an estimate from PTT's published "
+        "rate, not a server-confirmed award.",
+        "Article URL field now has an explicit '縮短網址' action with a user-selected service (TinyURL, is.gd, "
+        "v.gd, CleanURI). It asks before sending the URL to a third party, uses fixed HTTPS endpoints with the "
+        "same DNS pinning as fetches, validates that the response is an HTTPS URL on that service's host, and "
+        "never logs the long URL. is.gd/v.gd/TinyURL/CleanURI can log URLs and IPs, so shortening is never auto.",
+    ]),
     ("0.8.14", "2026/10/24", [
         "Update security: download_asset now refuses an update asset without a GitHub-provided SHA-256 before "
         "making any network request. Digest mismatch, size mismatch, unknown redirects and oversized responses "

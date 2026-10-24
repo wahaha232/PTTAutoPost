@@ -55,6 +55,7 @@ def test_types_body_exactly_and_stops_before_save(rig):
         assert f not in bbs.after_login
     assert bbs.state == "editor"                  # never left the editor, never saved
     assert "存檔" in done[0][1]
+    assert typer.sent_chars == typer.total_chars > 0
 
 
 def test_reply_body_types_at_the_top_of_a_prefilled_quote(rig):

@@ -16,6 +16,7 @@ from ..errors import ToolError
 from ..logging_setup import get_logger
 from ..net.image import download_images_zip
 from ..net.image_meta import strip_metadata
+from ..net.shortener import shorten_url
 from ..net.upload import upload_images
 from ..parsers.extract import parse
 from ..parsers.fetch import fetch
@@ -213,4 +214,36 @@ class ImageUploadTask(QRunnable):
         finally:
             if temp is not None:
                 temp.cleanup()
+
+
+class _ShortenSignals(QObject):
+    done = Signal(str)
+    failed = Signal(str)
+
+
+class ShortenTask(QRunnable):
+    """Shorten one URL off the UI thread; the caller updates fields only on success."""
+
+    def __init__(self, service_key: str, url: str):
+        super().__init__()
+        self.service_key, self.url = service_key, url
+        self.signals = _ShortenSignals()
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self):
+        try:
+            short = shorten_url(self.service_key, self.url, cancel=self._cancel)
+            if not self._cancel.is_set():
+                self.signals.done.emit(short)
+        except ToolError as e:
+            if not self._cancel.is_set():
+                self.signals.failed.emit(e.message)
+        except Exception as e:  # noqa: BLE001
+            log.exception("unexpected error while shortening a URL")
+            if not self._cancel.is_set():
+                self.signals.failed.emit(f"縮網址時發生未預期的錯誤（{type(e).__name__}）。")
+
 
