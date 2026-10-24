@@ -197,6 +197,38 @@ def test_stage_delta_rejects_wrong_base_traversal_and_hash(monkeypatch, tmp_path
         update.stage_delta(good)
 
 
+def test_stage_full_zip_strips_the_folder_and_skips_user_data(monkeypatch, tmp_path):
+    import zipfile
+    monkeypatch.setattr(update, "updates_dir", lambda: tmp_path / "updates")
+    path = tmp_path / "full.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("PTTAutoPost-9.9.9-portable/PTTAutoPost.exe", b"exe")
+        zf.writestr("PTTAutoPost-9.9.9-portable/_internal/x.dll", b"dll")
+        zf.writestr("PTTAutoPost-9.9.9-portable/README.txt", b"readme")
+        zf.writestr("PTTAutoPost-9.9.9-portable/config/user.cfg", b"keep")
+        zf.writestr("PTTAutoPost-9.9.9-portable/data/db.sqlite", b"keep")
+        zf.writestr("PTTAutoPost-9.9.9-portable/logs/app.log", b"keep")
+    raw = path.read_bytes()
+    result = update.DownloadResult(path, hashlib.sha256(raw).hexdigest(), True, len(raw))
+    staged = update.stage_full_zip(result, "9.9.9")
+    assert staged.files == ("PTTAutoPost.exe", "_internal/x.dll", "README.txt")
+    assert (staged.folder / "PTTAutoPost.exe").read_bytes() == b"exe"
+    assert not (staged.folder / "config").exists() and not (staged.folder / "data").exists()
+    assert not result.path.exists()
+
+
+def test_stage_full_zip_requires_the_exe(monkeypatch, tmp_path):
+    import zipfile
+    monkeypatch.setattr(update, "updates_dir", lambda: tmp_path / "updates")
+    path = tmp_path / "bad.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("readme.txt", b"x")
+    raw = path.read_bytes()
+    result = update.DownloadResult(path, hashlib.sha256(raw).hexdigest(), True, len(raw))
+    with pytest.raises(update.UpdateError, match="PTTAutoPost.exe"):
+        update.stage_full_zip(result, "9.9.9")
+
+
 def test_apply_staged_update_writes_a_helper_and_launches_it(monkeypatch, tmp_path):
     app = tmp_path / "app"
     app.mkdir()
@@ -215,3 +247,7 @@ def test_apply_staged_update_writes_a_helper_and_launches_it(monkeypatch, tmp_pa
     assert str(app) in text and "PTTAutoPost.exe" in text and "Start-Process" in text
     assert (tmp_path / "updates" / "backup-9.9.9").is_dir()
     assert calls and calls[0][0][0][0] == "powershell.exe"
+    import subprocess as sp
+    flags = calls[0][1]["creationflags"]
+    assert flags & sp.CREATE_NO_WINDOW
+    assert not flags & getattr(sp, "DETACHED_PROCESS", 0)

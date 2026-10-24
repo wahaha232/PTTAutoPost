@@ -273,6 +273,55 @@ def _ps_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def stage_full_zip(result: DownloadResult, version: str) -> "StagedUpdate":
+    """Validate a full portable ZIP and unpack the program files (never config/data/logs/updates)."""
+    if not result.verified:
+        raise UpdateError("更新檔沒有可核對的 SHA-256，已停止套用。")
+    staging = updates_dir() / f"staging-{version}"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    files: list[str] = []
+    total = 0
+    try:
+        with zipfile.ZipFile(result.path) as zf:
+            infos = [i for i in zf.infolist() if not i.is_dir()]
+            if not infos:
+                raise UpdateError("更新檔是空的。")
+            tops = {PurePosixPath(i.filename.replace("\\", "/")).parts[0] for i in infos}
+            prefix = ""
+            if len(tops) == 1:
+                top = next(iter(tops))
+                if any(PurePosixPath(i.filename.replace("\\", "/")).parts[1:] == ("PTTAutoPost.exe",)
+                       for i in infos):
+                    prefix = top + "/"
+            for info in infos:
+                name = info.filename.replace("\\", "/")
+                if prefix and name.startswith(prefix):
+                    name = name[len(prefix):]
+                rel = _safe_rel(name)
+                if rel.parts[0].lower() in ("config", "data", "logs", "updates"):
+                    continue                                  # user data is never replaced
+                if info.file_size > 250 * 1024 * 1024:
+                    raise UpdateError(f"更新檔中的 {rel} 過大，已停止。")
+                data = zf.read(info)
+                if len(data) != info.file_size:
+                    raise UpdateError(f"更新檔中的 {rel} 大小不符，已停止。")
+                total += len(data)
+                if total > MAX_ASSET_BYTES:
+                    raise UpdateError("更新檔內容超過大小上限，已停止。")
+                dest = staging.joinpath(*rel.parts)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+                files.append(rel.as_posix())
+            if "PTTAutoPost.exe" not in files:
+                raise UpdateError("更新檔沒有 PTTAutoPost.exe，已停止。")
+            return StagedUpdate(staging, version, tuple(files), ())
+    except zipfile.BadZipFile:
+        raise UpdateError("更新檔不是有效的 ZIP。") from None
+    finally:
+        result.path.unlink(missing_ok=True)
+
+
 def apply_staged_update(staged: "StagedUpdate", app_dir: Path | None = None) -> Path:
     """Write a helper script that waits for this process, applies the staged files, and restarts the app."""
     app = (app_dir or application_dir()).resolve()
@@ -291,26 +340,32 @@ while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep 
 $base = {_ps_quote(str(app))}
 $staging = {_ps_quote(str(staged.folder))}
 $backup = {_ps_quote(str(backup))}
-foreach ($f in @({files_ps})) {{
-  $src = Join-Path -Path $staging -ChildPath $f
-  $dst = Join-Path -Path $base -ChildPath $f
-  if (Test-Path -LiteralPath $dst) {{
-    $bak = Join-Path -Path $backup -ChildPath $f
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $bak) | Out-Null
-    Copy-Item -LiteralPath $dst -Destination $bak -Force
+try {{
+  foreach ($f in @({files_ps})) {{
+    $src = Join-Path -Path $staging -ChildPath $f
+    $dst = Join-Path -Path $base -ChildPath $f
+    if (Test-Path -LiteralPath $dst) {{
+      $bak = Join-Path -Path $backup -ChildPath $f
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $bak) | Out-Null
+      Copy-Item -LiteralPath $dst -Destination $bak -Force
+    }}
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+    Copy-Item -LiteralPath $src -Destination $dst -Force
   }}
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
-  Copy-Item -LiteralPath $src -Destination $dst -Force
-}}
-foreach ($f in @({deletes_ps})) {{
-  Remove-Item -LiteralPath (Join-Path -Path $base -ChildPath $f) -Force -ErrorAction SilentlyContinue
+  foreach ($f in @({deletes_ps})) {{
+    Remove-Item -LiteralPath (Join-Path -Path $base -ChildPath $f) -Force -ErrorAction SilentlyContinue
+  }}
+}} catch {{
+  New-Item -ItemType Directory -Force -Path (Join-Path -Path $base -ChildPath 'updates') | Out-Null
+  "update failed: $($_.Exception.Message)" | Out-File -LiteralPath (Join-Path -Path $base -ChildPath 'updates\\apply-error.log') -Append -Encoding utf8
 }}
 Start-Process -FilePath (Join-Path -Path $base -ChildPath 'PTTAutoPost.exe') -WorkingDirectory $base
 Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 """
     script.write_text("\ufeff" + body, encoding="utf-8")
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    # CREATE_NO_WINDOW works for powershell.exe; DETACHED_PROCESS makes it exit without running the script.
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
                       "-File", str(script)], creationflags=flags, close_fds=True)
     log.info("delta update staged: %s files, backup %s", len(staged.files), backup)

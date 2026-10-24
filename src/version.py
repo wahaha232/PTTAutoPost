@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.10"
+__version__ = "0.8.11"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,23 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.11", "2026/10/24", [
+        "Critical update fix: the PowerShell helper was started with DETACHED_PROCESS, which makes powershell.exe "
+        "exit immediately without running the script. Updates were downloaded into updates/ but never copied over "
+        "the old version, and the app did not restart. The helper now uses CREATE_NO_WINDOW; verified end to end "
+        "(waits for exit, copies, removes staging, restarts).",
+        "Updates now apply automatically after download and verification (no second 'apply?' prompt): the app backs "
+        "up the replaced files, closes, copies, and restarts. A full portable ZIP is staged and applied the same way "
+        "(top folder stripped; config/data/logs/updates are never replaced), not only delta files. The app calls "
+        "quit() after closing so a tray/hidden window cannot keep the old process alive and block the copy.",
+        "If a copy fails, the helper writes updates/apply-error.log and still restarts the app so the failure is "
+        "visible. Versions 0.8.10 and older have the broken helper, so they must be replaced with 0.8.11 manually "
+        "once; from 0.8.11 onward automatic apply/restart works.",
+        "Device-adaptive layout and font: the interface size now defaults to automatic (system point size, already "
+        "DPI-scaled by Qt) and can still be overridden manually. The settings tab scrolls, long CJK notes wrap "
+        "instead of forcing a 3000 px wide window, and the window is clamped to the current screen and its content "
+        "minimum so controls no longer overlap on high-DPI or small displays.",
+    ]),
     ("0.8.10", "2026/10/24", [
         "Freeze fix: article images used to be extracted a second time with BeautifulSoup on the GUI thread after "
         "every fetch (and the HTML fallback parsed again), which could stall the window and the mouse on large "

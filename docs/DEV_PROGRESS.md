@@ -4,8 +4,8 @@
 - 分支：`dev/roadmap`（自 `main` @ `6d390c4` 建立）
 - 基準版本：0.6.2
 - 基準測試：`python -m pytest -q`（`QT_QPA_PLATFORM=offscreen`）→ 168 passed
-- 目前測試：同一指令 → 425 passed（0.8.10 卡頓修正、ZIP 儲存路徑）
-- 目前版本：0.8.10（2026/10/24）
+- 目前測試：同一指令 → 430 passed（0.8.11 更新套用修正、裝置自動版面）
+- 目前版本：0.8.11（2026/10/24）
 - 開始時間 T0：2026-10-23 09:13（UTC+8）／2026-10-23 01:13 UTC
 - 額度基準 B：**暫不追蹤**
 
@@ -399,6 +399,18 @@
   `python tools/make_update_bundle.py --new dist\PTTAutoPost-<新版>-portable --base dist\PTTAutoPost-<前一版>-portable`
   並把 `dist\PTTAutoPost-<新版>-delta-<前一版>.zip` 一起上傳 Release。
 
+## 0.8.11 修正（更新檔沒覆蓋、裝置自動版面）
+
+- 更新沒有覆蓋／重啟的真正原因：`apply_staged_update()` 用 `DETACHED_PROCESS` 啟動 `powershell.exe`，在這個旗標下 PowerShell 會直接結束、不執行腳本；下載檔留在 `updates\staging-*`，舊版完全沒被覆蓋。改為 `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`，並以「等待 PID 結束 → 複製 → 清暫存 → 啟動新版」實測通過（含 `_internal` 子目錄）。
+- 下載並驗證後**自動套用**，不再問第二次：關閉程式 → 備份舊檔 → 覆蓋 → 自動重啟；`app.quit()` 確保有系統匣／隱藏視窗時舊程序也會結束，避免 helper 一直等 PID。完整攜帶版 ZIP 也會自動套用（剝掉頂層資料夾，`config／data／logs／updates` 不覆蓋），不再只支援 delta。
+- helper 若複製失敗會寫 `updates\apply-error.log` 並仍嘗試啟動程式，失敗才看得出來。0.8.10（含）以前都是壞的 helper，必須手動換成 0.8.11 一次；之後才能自動套用。
+- 裝置自動版面：介面字級預設改為「隨裝置自動調整」（使用 Qt 已依 DPI 縮放的系統字級，可用手動 8–24 pt 覆蓋）；設定頁改為可捲動，長中文說明改為可換行（不再把內容撐到 3000 px 寬）；視窗尺寸會依目前螢幕可用範圍與內容最小尺寸夾住，避免高 DPI／小螢幕時控制項重疊。
+- 新增測試：helper 啟動旗標、完整 ZIP 剝頂層與略過使用者資料、下載後自動套用（delta／完整 ZIP）、介面字級自動模式、設定頁可捲動；全套 **430 passed**。
+- 本機 0.8.11 建置：資料夾版 77.9 MB、7z 22.7 MB、完整 ZIP 33.7 MB；凍結版 `--selftest` OK。
+- helper 實測（以 `where.exe` 代替程式）：等待 PID 結束後成功複製 `_internal/x.dll`、刪除 staging／腳本；`DETACHED_PROCESS` 會讓 PowerShell 不執行腳本，已改 `CREATE_NO_WINDOW`。
+- 純文字原始碼清單：`dist\PTTAutoPost-0.8.11-source.txt`（90 檔、834.9 KB）。
+- 0.8.10 以前的自動套用是壞的，因此 0.8.11 不提供 delta（舊版無法套用）；請手動解壓完整 ZIP 覆蓋一次。
+
 ## 0.8.10 修正（隨機卡頓、ZIP 儲存路徑）
 
 - 隨機卡頓的可能主因：每次文章擷取完成後，`_fetch_done` 會在 GUI 執行緒再跑一次 `find_image_urls()` 解析整份 HTML（沒有圖片時必定發生）；大頁面會讓視窗與滑鼠停住。現在只在擷取 worker 內用 `parse()` 產生的 `res.images`，GUI 不再解析 HTML。
@@ -460,6 +472,7 @@
 - 0.8.7：先手動換到 0.8.7；下一版發布後確認只下載 delta、備份舊檔、套用後自動重啟且版本正確，`config／logs／data` 保留。
 - 0.8.9：介面字級 8–24 pt 在選單、分頁、按鈕、文章內文與預覽都要一起變；PTT 文章按「重新載入文章」後畫面重繪、圖片連結重新判定；兩種輸入模式的 P 幣預估與實際獲得量；圖片上傳到三個圖床的網址與插入位置；右鍵選單為繁體中文。
 - 0.8.10：長時間使用與大量圖片頁面是否還會卡頓、滑鼠是否可移動；「打包下載圖片（ZIP）」是否先問路徑、選 `.7z` 也存成 `.zip`。
+- 0.8.11：先手動換到 0.8.11；下一版發布後確認下載後會自動關閉、覆蓋、重新啟動（不再停在 `updates`）；高 DPI／小螢幕下設定頁不重疊、可捲動；介面字級自動模式符合系統縮放。
 - 0.8.9：上傳圖片前確認公開風險；Catbox 永久、Litterbox／uguu 到期後連結失效的實際情況。
 - 真實 PTT 登入後畫面仍從未驗證；本階段不需要登入真實帳號。
 

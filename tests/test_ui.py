@@ -1243,12 +1243,14 @@ def test_ui_font_settings_apply_and_persist(win):
     old = app.font()
     term_size = win.term.font().pointSize()
     try:
+        win.chk_ui_font_auto.setChecked(False)
         win.ui_font.setCurrentFont(QFont("Arial"))
         win.ui_font_size.setValue(13)
         win._apply_ui_font(save=True)
         family = win.ui_font.currentFont().family()
         assert family and win.db.get_setting("ui.font_family") == family
         assert win.db.get_setting("ui.font_size") == "13"
+        assert win.db.get_setting("ui.font_auto") == "0"
         assert app.font().pointSize() == 13
         for widget in (win.menuBar(), win.tabs.tabBar(), win.url_in, win.body, win.preview,
                        win.lbl_login, win.parse_status, win.btn_fetch, win.chk_auto_image):
@@ -1258,34 +1260,66 @@ def test_ui_font_settings_apply_and_persist(win):
         app.setFont(old)
 
 
+def test_ui_font_auto_mode_uses_the_system_size(win):
+    from PySide6.QtWidgets import QApplication
+    assert win.chk_ui_font_auto.isChecked()
+    assert not win.ui_font_size.isEnabled()
+    win._apply_ui_font(save=True)
+    assert win.db.get_setting("ui.font_auto") == "1"
+    assert QApplication.instance().font().pointSize() == win._default_ui_font_size()
+
+
+def test_settings_tab_is_scrollable(win):
+    from PySide6.QtWidgets import QScrollArea
+    settings_tab = win.tabs.widget(3)
+    assert isinstance(settings_tab, QScrollArea) and settings_tab.widget() is win.settings_content
+
+
 def test_update_download_applies_a_delta_and_restarts(win, monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QMessageBox
+    from PySide6.QtWidgets import QApplication
     from src import update as up
     staged = up.StagedUpdate(tmp_path / "staging", "9.9.9", ("PTTAutoPost.exe",), ())
     applied, closed = [], []
     monkeypatch.setattr(up, "is_delta_asset", lambda asset: True)
     monkeypatch.setattr(up, "stage_delta", lambda result: staged)
     monkeypatch.setattr(up, "apply_staged_update", lambda s: applied.append(s) or tmp_path / "s.ps1")
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
     monkeypatch.setattr(win, "_confirm_unsaved", lambda what: True)
     monkeypatch.setattr(win, "close", lambda: closed.append(True))
+    monkeypatch.setattr(QApplication, "quit", lambda self: None)
     win._update_asset = up.Asset(f"PTTAutoPost-9.9.9-delta-{up.__version__}.zip", "https://github.com/x", 10)
     win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 10))
     assert applied == [staged] and win._quitting and closed
 
 
-def test_update_download_keeps_the_delta_when_the_user_declines(win, monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QMessageBox
+def test_update_download_can_be_cancelled_at_the_unsaved_prompt(win, monkeypatch, tmp_path):
     from src import update as up
     staged = up.StagedUpdate(tmp_path / "staging", "9.9.9", ("PTTAutoPost.exe",), ())
     applied = []
     monkeypatch.setattr(up, "is_delta_asset", lambda asset: True)
     monkeypatch.setattr(up, "stage_delta", lambda result: staged)
     monkeypatch.setattr(up, "apply_staged_update", lambda s: applied.append(s))
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    monkeypatch.setattr(win, "_confirm_unsaved", lambda what: False)
     win._update_asset = up.Asset(f"PTTAutoPost-9.9.9-delta-{up.__version__}.zip", "https://github.com/x", 10)
     win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 10))
     assert applied == [] and not win._quitting
+
+
+def test_update_download_applies_a_full_portable_zip(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QApplication
+    from src import update as up
+    staged = up.StagedUpdate(tmp_path / "staging", "9.9.9", ("PTTAutoPost.exe", "_internal/x.dll"), ())
+    applied, closed = [], []
+    monkeypatch.setattr(up, "is_delta_asset", lambda asset: False)
+    monkeypatch.setattr(up, "can_apply_delta", lambda app_dir=None: True)
+    monkeypatch.setattr(up, "stage_full_zip", lambda result, version: staged)
+    monkeypatch.setattr(up, "apply_staged_update", lambda s: applied.append(s))
+    monkeypatch.setattr(win, "_confirm_unsaved", lambda what: True)
+    monkeypatch.setattr(win, "close", lambda: closed.append(True))
+    monkeypatch.setattr(QApplication, "quit", lambda self: None)
+    win._update_asset = up.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/x", 100)
+    win._update_version = "9.9.9"
+    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 100))
+    assert applied == [staged] and win._quitting and closed
 
 
 def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, monkeypatch):

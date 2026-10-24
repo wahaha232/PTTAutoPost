@@ -13,8 +13,8 @@ from PySide6.QtCore import QByteArray, QEvent, QObject, QRunnable, QStandardPath
 from PySide6.QtGui import QAction, QCursor, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox,
                                QHBoxLayout, QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-                               QMenu, QPlainTextEdit, QPushButton, QProgressBar, QRadioButton, QScrollArea, QSpinBox, QSplitter,
-                               QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
+                               QMenu, QPlainTextEdit, QPushButton, QProgressBar, QRadioButton, QScrollArea, QSizePolicy,
+                               QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import boards, compose, pttmoney, sites, update
 from ..errors import ToolError
@@ -238,6 +238,7 @@ class MainWindow(QMainWindow):
         self._update_check_task = None
         self._update_download_task = None
         self._update_asset: update.Asset | None = None
+        self._update_version = ""
         self._update_token: str | None = None
         self._update_auto = False
         self._update_force = False
@@ -283,7 +284,7 @@ class MainWindow(QMainWindow):
         self._article_width_timer.setInterval(500)
         self._article_width_timer.timeout.connect(self._save_article_width)
         self.compact = self._screen_is_compact()      # typical 1366x768 laptop
-        self._init_geometry()
+        self._default_ui_font = QFont(QApplication.font())
         self._build_article_toggle_action()
         self._build_menu()
         tabs = QTabWidget()
@@ -300,6 +301,7 @@ class MainWindow(QMainWindow):
         self._apply_ui_font(save=False)
         self._update_money_estimate()
         self._apply_theme(self._theme_choice, save=False)
+        self._init_geometry()
         try:
             QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_scheme_changed)
         except AttributeError:                            # older Qt: no live system-theme signal
@@ -764,7 +766,9 @@ class MainWindow(QMainWindow):
         self.theme_combo.setCurrentIndex(max(0, idx))
         self.theme_combo.currentIndexChanged.connect(self._on_theme_combo)
         af.addRow("主題", self.theme_combo)
-        af.addRow(QLabel("「跟隨系統」會依 Windows 的淺色／深色設定即時切換。"))
+        theme_note = QLabel("「跟隨系統」會依 Windows 的淺色／深色設定即時切換。")
+        theme_note.setWordWrap(True)
+        af.addRow(theme_note)
         self.ui_font = QFontComboBox()
         stored_family = self.db.get_setting("ui.font_family", "")
         self.ui_font.setCurrentFont(QFont(stored_family) if stored_family else QApplication.font())
@@ -773,16 +777,34 @@ class MainWindow(QMainWindow):
         except ValueError:
             stored_size = 0
         if not stored_size:
-            stored_size = QApplication.font().pointSize() if QApplication.font().pointSize() > 0 else 10
+            stored_size = self._default_ui_font_size()
         self.ui_font_size = QSpinBox()
         self.ui_font_size.setRange(8, 24)
         self.ui_font_size.setSuffix(" pt")
         self.ui_font_size.setValue(max(8, min(24, stored_size)))
+        self.chk_ui_font_auto = QCheckBox("隨裝置自動調整（建議）")
+        auto = self.db.get_setting("ui.font_auto", "1") == "1"
+        self.chk_ui_font_auto.setChecked(auto)
+        self.chk_ui_font_auto.setToolTip("使用系統預設字級，並隨 Windows 縮放／不同裝置自動調整；"
+                                        "取消後才使用右側自訂字級。")
+        self.ui_font_size.setEnabled(not auto)
+        if auto:
+            self.ui_font_size.blockSignals(True)
+            self.ui_font_size.setValue(self._default_ui_font_size())
+            self.ui_font_size.blockSignals(False)
         self.ui_font.currentFontChanged.connect(lambda _f: self._apply_ui_font(save=True))
         self.ui_font_size.valueChanged.connect(lambda _n: self._apply_ui_font(save=True))
+        self.chk_ui_font_auto.toggled.connect(self._ui_font_auto_changed)
+        size_row = QHBoxLayout()
+        size_row.addWidget(self.chk_ui_font_auto)
+        size_row.addWidget(self.ui_font_size)
+        size_row.addStretch(1)
         af.addRow("介面字型", self.ui_font)
-        af.addRow("介面字級", self.ui_font_size)
-        af.addRow(QLabel("只影響程式介面（選單、按鈕、文章與設定）；終端機字型由下方「終端機顯示」控制。"))
+        af.addRow("介面字級", size_row)
+        ui_note = QLabel("預設跟隨系統字級與 Windows 縮放；只影響程式介面（選單、按鈕、文章與設定），"
+                         "終端機字型由下方「終端機顯示」控制。")
+        ui_note.setWordWrap(True)
+        af.addRow(ui_note)
         self.terminal_palette_combo = QComboBox()
         for key, label in theme.TERMINAL_PALETTE_CHOICES:
             self.terminal_palette_combo.addItem(label, key)
@@ -790,7 +812,9 @@ class MainWindow(QMainWindow):
         self.terminal_palette_combo.setCurrentIndex(max(0, idx))
         self.terminal_palette_combo.currentIndexChanged.connect(self._on_terminal_palette_combo)
         af.addRow("終端機配色", self.terminal_palette_combo)
-        af.addRow(QLabel("只影響終端機；「永遠深色」固定黑底，「跟隨主題」在淺色主題使用淺色配色。"))
+        palette_note = QLabel("只影響終端機；「永遠深色」固定黑底，「跟隨主題」在淺色主題使用淺色配色。")
+        palette_note.setWordWrap(True)
+        af.addRow(palette_note)
         lay.addWidget(ap)
 
         bg = QGroupBox("連結與瀏覽器")
@@ -888,7 +912,9 @@ class MainWindow(QMainWindow):
         lrow.addWidget(self.btn_pttlogin_browse)
         lrow.addWidget(self.btn_pttlogin_open)
         ll_.addLayout(lrow)
-        ll_.addWidget(QLabel("以獨立程式啟動，帳號密碼與排程仍由登入小幫手自己管理；本程式不讀取、不保存其帳密。"))
+        helper_note = QLabel("以獨立程式啟動，帳號密碼與排程仍由登入小幫手自己管理；本程式不讀取、不保存其帳密。")
+        helper_note.setWordWrap(True)
+        ll_.addWidget(helper_note)
         lay.addWidget(lg)
         self.btn_pttlogin_browse.clicked.connect(self._browse_pttlogin)
         self.btn_pttlogin_open.clicked.connect(self.launch_pttlogin)
@@ -937,9 +963,12 @@ class MainWindow(QMainWindow):
         drow.addWidget(self.btn_data_backup)
         drow.addStretch(1)
         dl.addLayout(drow)
-        dl.addWidget(QLabel("可攜版資料在程式資料夾的 data/；若該位置不可寫入，會改用 %LOCALAPPDATA%\\PTTAutoPost\\data。"
-                            "備份使用 SQLite 線上備份（包含 WAL 中已提交的資料）。還原時請先關閉程式、保留目前資料庫，"
-                            "再以備份檔覆蓋 data\\pttpost.db。程式在升級資料庫結構前也會先保留備份。"))
+        data_note = QLabel(
+            "可攜版資料在程式資料夾的 data/；若該位置不可寫入，會改用 %LOCALAPPDATA%\\PTTAutoPost\\data。"
+            "備份使用 SQLite 線上備份（包含 WAL 中已提交的資料）。還原時請先關閉程式、保留目前資料庫，"
+            "再以備份檔覆蓋 data\\pttpost.db。程式在升級資料庫結構前也會先保留備份。")
+        data_note.setWordWrap(True)
+        dl.addWidget(data_note)
         lay.addWidget(dg)
         sg = QGroupBox("贊助作者")
         sl = QVBoxLayout(sg)
@@ -969,7 +998,15 @@ class MainWindow(QMainWindow):
         self.set_stretch.toggled.connect(lambda _c: self._apply_terminal_settings())
         self.btn_font_default.clicked.connect(self._reset_terminal_settings)
         self.set_dfyuan.clicked.connect(self.use_dfyuan)
-        return w
+        self.settings_content = w
+        for label in w.findChildren(QLabel):
+            if label.wordWrap():                       # let CJK notes wrap instead of forcing a huge minimum width
+                label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                label.setMinimumWidth(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(w)
+        return scroll
 
     def backup_data(self) -> None:
         default = self.db.path.with_name(f"PTTAutoPost-backup-{time.strftime('%Y%m%d-%H%M%S')}.db")
@@ -1105,15 +1142,17 @@ class MainWindow(QMainWindow):
             notes = notes[:1200] + "…"
         size = f"{asset.size / 1024 / 1024:.1f} MB" if asset.size else "大小未知"
         delta = update.is_delta_asset(asset)
+        auto_apply = delta or (not installed and asset.name.lower().endswith("-portable.zip")
+                               and update.can_apply_delta())
         if installed:
             target = "安裝版 setup.exe"
         elif delta:
             target = "增量更新檔（只含變更檔案）"
         else:
             target = "攜帶版完整壓縮檔"
-        if delta:
-            how = ("下載並驗證後，程式會詢問是否立即關閉、備份舊檔、覆蓋變更檔案並自動重新啟動；"
-                   "config／logs／data 不會被覆蓋。Windows 無法覆蓋正在執行的程式，所以需要重新啟動。")
+        if auto_apply:
+            how = ("下載並驗證後會自動關閉程式、備份舊檔、覆蓋程式檔案並重新啟動；"
+                   "config／logs／data 不會被覆蓋。Windows 無法覆蓋正在執行的程式，所以會自動重新啟動。")
         else:
             how = "下載後不會自動安裝或執行；完成後請關閉本程式，再依指示更新。"
         msg = (f"目前版本 {__version__}，最新版本 {release.version}。\n\n"
@@ -1121,6 +1160,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "lbl_update_status"):
             self.lbl_update_status.setText(f"發現新版本 {release.version}，等待下載確認。")
         self._notice(f"發現新版本 {release.version}。")
+        self._update_version = release.version
         if QMessageBox.question(self, "發現更新", msg,
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
@@ -1168,6 +1208,7 @@ class MainWindow(QMainWindow):
         verified = ("已核對 GitHub 提供的 SHA-256（僅確認檔案與該 digest 相符，不代表發布者身分）"
                     if result.verified else "GitHub 未提供 digest，未完成雜湊核對（僅完成下載）")
         asset = self._update_asset
+        staged = None
         if update.is_delta_asset(asset):
             try:
                 staged = update.stage_delta(result)
@@ -1176,21 +1217,23 @@ class MainWindow(QMainWindow):
                     self.lbl_update_status.setText("增量更新檔驗證失敗。")
                 QMessageBox.warning(self, "套用更新失敗", str(e))
                 return
-            if hasattr(self, "lbl_update_status"):
-                self.lbl_update_status.setText(f"增量更新已下載並驗證（{len(staged.files)} 個檔案），等待套用。")
-            answer = QMessageBox.question(
-                self, "套用更新",
-                f"增量更新檔已下載並通過驗證：{len(staged.files)} 個檔案。\n\n"
-                "套用時會：關閉本程式 → 備份被覆蓋的舊檔 → 覆蓋變更檔案 → 自動重新啟動。\n"
-                "config／logs／data 不會被覆蓋。\n\n"
-                "Windows 無法覆蓋正在執行的程式，所以一定要重新啟動。要現在套用嗎？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes)
-            if answer != QMessageBox.StandardButton.Yes:
-                self._notice(f"更新已保留在 {staged.folder}；下次檢查時可重新下載套用。")
+        elif (asset is not None and asset.name.lower().endswith("-portable.zip")
+              and update.can_apply_delta()):
+            try:
+                staged = update.stage_full_zip(result, self._update_version or "update")
+            except update.UpdateError as e:
+                if hasattr(self, "lbl_update_status"):
+                    self.lbl_update_status.setText("完整更新檔驗證失敗。")
+                QMessageBox.warning(self, "套用更新失敗", str(e))
                 return
+        if staged is not None:
+            kind = "增量" if update.is_delta_asset(asset) else "完整"
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(
+                    f"{kind}更新已下載並驗證（{len(staged.files)} 個檔案），正在關閉程式套用…")
+            self._notice(f"{kind}更新已驗證，正在關閉程式、覆蓋舊版並自動重新啟動…")
             if not self._confirm_unsaved("套用更新並重新啟動"):
-                self._notice("已取消套用更新；暫存檔保留在更新資料夾。")
+                self._notice("已取消套用更新；暫存檔保留在 updates 資料夾。")
                 return
             try:
                 update.apply_staged_update(staged)
@@ -1199,8 +1242,10 @@ class MainWindow(QMainWindow):
                 return
             self._dirty = False
             self._quitting = True
-            self._notice("正在套用更新，程式會自動重新啟動…")
             self.close()
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()                                # exit even if a tray/hidden window remains
             return
         if asset is not None and asset.name.lower().endswith("-setup.exe"):
             how = "請關閉本程式，執行下載的 setup.exe。安裝程式會保留 config／logs／data。"
@@ -1308,12 +1353,32 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "錯誤", msg)
 
     # ------------------------------------------------------------------ theme
+    def _default_ui_font_size(self) -> int:
+        """System point size (already DPI-scaled by Qt) used by the automatic mode."""
+        ps = self._default_ui_font.pointSize() if hasattr(self, "_default_ui_font") else QApplication.font().pointSize()
+        if ps <= 0:
+            from PySide6.QtGui import QFontInfo
+            ps = QFontInfo(self._default_ui_font if hasattr(self, "_default_ui_font")
+                           else QApplication.font()).pointSize()
+        return max(8, min(24, ps or 10))
+
+    def _ui_font_auto_changed(self, on: bool) -> None:
+        self.db.set_setting("ui.font_auto", "1" if on else "0")
+        self.ui_font_size.setEnabled(not on)
+        if on:
+            self.ui_font_size.blockSignals(True)
+            self.ui_font_size.setValue(self._default_ui_font_size())
+            self.ui_font_size.blockSignals(False)
+        self._apply_ui_font(save=True)
+        self._notice("介面字級已改為隨裝置自動調整。" if on else "介面字級改為自訂。")
+
     def _apply_ui_font(self, save: bool = False) -> None:
         """Set the application UI font (menus/buttons/article panel); the terminal keeps its own font."""
         if not hasattr(self, "ui_font"):
             return
         family = self.ui_font.currentFont().family()
-        size = max(8, min(24, self.ui_font_size.value()))
+        auto = bool(hasattr(self, "chk_ui_font_auto") and self.chk_ui_font_auto.isChecked())
+        size = self._default_ui_font_size() if auto else max(8, min(24, self.ui_font_size.value()))
         app = QApplication.instance()
         if app is not None and family:
             font = QFont(family)
@@ -1326,9 +1391,15 @@ class MainWindow(QMainWindow):
                 if skip is not None and (widget is skip or skip.isAncestorOf(widget)):
                     continue
                 widget.setFont(font)
+                widget.updateGeometry()
+            content = getattr(self, "settings_content", None)
+            if content is not None:
+                content.updateGeometry()
         if save:
             self.db.set_setting("ui.font_family", family)
-            self.db.set_setting("ui.font_size", str(size))
+            self.db.set_setting("ui.font_auto", "1" if auto else "0")
+            if not auto:
+                self.db.set_setting("ui.font_size", str(size))
 
     def _load_theme_choice(self) -> str:
         raw = self.db.get_setting("ui.theme", "system")
@@ -2771,19 +2842,28 @@ class MainWindow(QMainWindow):
 
     # ================================================================== window geometry / tray
     def _init_geometry(self) -> None:
-        """Adapt to the device: restore the last window geometry when it still fits a connected screen, otherwise
-        size the window to the current screen (never larger than 92% of it) and centre it."""
+        """Adapt to the device: restore the last geometry when it still fits, otherwise size to the screen;
+        never leave the window smaller than its content or larger than the available screen."""
         raw = self.db.get_setting("window.geometry", "")
-        if raw and self.restoreGeometry(QByteArray.fromBase64(raw.encode("ascii"))):
-            return
+        restored = bool(raw and self.restoreGeometry(QByteArray.fromBase64(raw.encode("ascii"))))
         scr = QGuiApplication.primaryScreen()
+        if restored:
+            scr = QGuiApplication.screenAt(self.frameGeometry().center()) or scr
         area = scr.availableGeometry() if scr else None
-        w, h = 1280, 860
+        hint = self.minimumSizeHint()
+        w = self.width() if restored else 1280
+        h = self.height() if restored else 860
+        w, h = max(w, hint.width()), max(h, hint.height())
         if area is not None:
-            w, h = min(w, int(area.width() * 0.92)), min(h, int(area.height() * 0.92))
+            w, h = min(w, int(area.width() * 0.98)), min(h, int(area.height() * 0.98))
         self.resize(max(w, self.minimumWidth()), max(h, self.minimumHeight()))
         if area is not None:
-            self.move(area.center().x() - self.width() // 2, area.center().y() - self.height() // 2)
+            if restored:
+                x = min(max(self.x(), area.left()), area.right() - self.width() + 1)
+                y = min(max(self.y(), area.top()), area.bottom() - self.height() + 1)
+            else:
+                x, y = area.center().x() - self.width() // 2, area.center().y() - self.height() // 2
+            self.move(x, y)
 
     def _save_geometry(self) -> None:
         self.db.set_setting("window.geometry", bytes(self.saveGeometry().toBase64()).decode("ascii"))
