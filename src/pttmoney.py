@@ -1,7 +1,7 @@
 """PTT P-coin estimates for article text (based on PTT's published rule).
 
 Rule: each valid typed character gives 0.25 P, but at most 1 P per 2 seconds;
-a normal article is capped at 1000 P, a news-category title at 25 P.  These are
+a normal article is capped at 1000 P, a news-category title at 5 P.  These are
 estimates only: PTT remains authoritative.
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 POINTS_PER_CHAR = 0.25
 MAX_POINTS_PER_TWO_SECONDS = 1.0
 NORMAL_CAP = 1000
-NEWS_CAP = 25
+NEWS_CAP = 5
 NEWS_PREFIX = "[新聞]"
 SECONDS_PER_CHAR_AT_MAX_RATE = 2 / 4          # 4 chars per 2 seconds
 FAST_CHUNK_BYTES = 100

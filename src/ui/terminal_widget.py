@@ -125,6 +125,7 @@ class TerminalWidget(QWidget):
         self.cw, self.ch = 9.0, 19.0
         self.sx, self.sy, self.ox, self.oy = 1.0, 1.0, 0.0, 0.0   # glyph stretch and grid offset (fit mode)
         self.locked = False                             # True while an automatic typing / login run owns the keyboard
+        self.cursor_style = "outline"                   # outline / block / underline / bar
         self.stretch = False                            # True: distort glyphs so the grid fills the area completely
         self._adv: dict[str, float] = {}
         self._links: list[Link] = []
@@ -706,6 +707,21 @@ class TerminalWidget(QWidget):
         cursor = QColor(*self.colors.cursor)
         if not self.hasFocus():
             cursor.setAlpha(140)
-        p.setPen(QPen(cursor, 1))
-        p.drawRect(QRectF(cur.x * cw, cur.y * ch, cw - 1, ch - 1))
+        rect = QRectF(cur.x * cw, cur.y * ch, cw - 1, ch - 1)
+        style = getattr(self, "cursor_style", "outline")
+        if style == "block":
+            fill = QColor(cursor)
+            fill.setAlpha(80 if self.hasFocus() else 45)
+            p.fillRect(rect, fill)
+            p.setPen(QPen(cursor, 1))
+            p.drawRect(rect)
+        elif style == "underline":
+            p.setPen(QPen(cursor, max(2.0, ch / 10)))
+            p.drawLine(int(rect.left()), int(rect.bottom()), int(rect.right()), int(rect.bottom()))
+        elif style == "bar":
+            p.setPen(QPen(cursor, max(2.0, cw / 8)))
+            p.drawLine(int(rect.left() + 1), int(rect.top()), int(rect.left() + 1), int(rect.bottom()))
+        else:
+            p.setPen(QPen(cursor, 1))
+            p.drawRect(rect)
         p.end()

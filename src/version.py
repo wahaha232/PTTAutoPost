@@ -21,6 +21,10 @@ CHANGELOG = [
         "v.gd, CleanURI). It asks before sending the URL to a third party, uses fixed HTTPS endpoints with the "
         "same DNS pinning as fetches, validates that the response is an HTTPS URL on that service's host, and "
         "never logs the long URL. is.gd/v.gd/TinyURL/CleanURI can log URLs and IPs, so shortening is never auto.",
+        "Terminal display settings can now choose the cursor style: outline (default), translucent block, "
+        "underline or vertical bar; the choice applies immediately and is stored in ui.cursor_style.",
+        "P-coin estimates now use the confirmed [新聞] cap of 5 P (was 25 P); normal articles remain capped at "
+        "1000 P. The live counter and final estimate follow the same cap.",
     ]),
     ("0.8.14", "2026/10/24", [
         "Update security: download_asset now refuses an update asset without a GitHub-provided SHA-256 before "

@@ -47,6 +47,8 @@ REPLY_HELP = ("回覆流程：在 PTT 文章畫面按 r → 確認／Enter 進�
               "回程式按「輸入回覆內文」→ 回終端機確認後自行存檔／送出。程式不輸入標題，也不按存檔或送出。")
 MAX_AUTO_OPEN_PER_MINUTE = 3
 MAX_AUTO_OPEN_PER_SCREEN = 1
+CURSOR_STYLES = (("outline", "外框方塊（預設）"), ("block", "半透明實心方塊"),
+                 ("underline", "底線"), ("bar", "細直線"))
 FIELDS = ("post_title", "title", "site", "author", "published", "url")
 LABELS = {"post_title": "發文標題", "title": "新聞標題", "site": "媒體來源", "author": "記者／作者", "published": "發布時間", "url": "原文網址"}
 
@@ -278,6 +280,8 @@ class MainWindow(QMainWindow):
             px = 17
         fill = self.db.get_setting("terminal.fill", "1") == "1"      # default: fit the window
         self.term = TerminalWidget(self.session, family=fam, px=px, fill=fill)
+        saved_cursor = self.db.get_setting("ui.cursor_style", "outline")
+        self.term.cursor_style = saved_cursor if saved_cursor in dict(CURSOR_STYLES) else "outline"
         self.term.set_stretch(self.db.get_setting("terminal.stretch", "0") == "1")
         self.term.notice.connect(self._notice)
         self.term_holder = QGridLayout()
@@ -723,6 +727,16 @@ class MainWindow(QMainWindow):
         form.addRow("字型大小", self.set_size)
         form.addRow("", self.set_fill)
         form.addRow("", self.set_stretch)
+        self.set_cursor_style = QComboBox()
+        for key, label in CURSOR_STYLES:
+            self.set_cursor_style.addItem(label, key)
+        saved_style = self.db.get_setting("ui.cursor_style", "outline")
+        self.set_cursor_style.setCurrentIndex(max(0, self.set_cursor_style.findData(saved_style)))
+        self.set_cursor_style.currentIndexChanged.connect(self._cursor_style_changed)
+        form.addRow("游標樣式", self.set_cursor_style)
+        cursor_note = QLabel("可選外框、半透明實心、底線或細直線；立即套用到終端機。")
+        cursor_note.setWordWrap(True)
+        form.addRow(cursor_note)
         form.addRow("", self.btn_font_default)
         lay.addWidget(g)
         tg = QGroupBox("視窗與系統匣")
@@ -863,6 +877,14 @@ class MainWindow(QMainWindow):
             return
         self._notice(f"已備份資料庫：{target}")
 
+    def _cursor_style_changed(self, _index: int) -> None:
+        style = self.set_cursor_style.currentData()
+        style = style if style in dict(CURSOR_STYLES) else "outline"
+        self.term.cursor_style = style
+        self.term.update()
+        self.db.set_setting("ui.cursor_style", style)
+        self._notice(f"終端機游標樣式已設為「{dict(CURSOR_STYLES).get(style, style)}」。")
+
     def _apply_terminal_settings(self, bar: bool = False):
         src = (self.tb_font, self.tb_size, self.tb_fill, self.tb_stretch) if bar else (self.set_font, self.set_size, self.set_fill, self.set_stretch)
         dst = (self.set_font, self.set_size, self.set_fill, self.set_stretch) if bar else (self.tb_font, self.tb_size, self.tb_fill, self.tb_stretch)
@@ -922,6 +944,11 @@ class MainWindow(QMainWindow):
         if self.chk_auto_image.isChecked():
             self._on_links_changed(self.term.links())
         self._apply_terminal_settings()
+        style = self.set_cursor_style.currentData()
+        style = style if style in dict(CURSOR_STYLES) else "outline"
+        self.term.cursor_style = style
+        self.term.update()
+        self.db.set_setting("ui.cursor_style", style)
         self._tray_settings_changed()
         self.db.set_setting("pttlogin.path", self.pttlogin_path.text().strip())
         QMessageBox.information(self, "設定已套用", "設定已成功套用並儲存。")
@@ -1926,11 +1953,11 @@ class MainWindow(QMainWindow):
         if not pttmoney.valid_chars(body):
             self.lbl_money_estimate.setText(
                 "P 幣預估：尚無內文。PTT 規則為每個有效字元 0.25 P、每 2 秒最多 1 P；"
-                "一般文章上限 1000 P，[新聞] 標題上限 25 P。")
+                "一般文章上限 1000 P，[新聞] 標題上限 5 P。")
             return
         fast = pttmoney.estimate(title, body, "fast")
         money = pttmoney.estimate(title, body, "money")
-        cap_name = "新聞上限 25 P" if money.news else "一般上限 1000 P"
+        cap_name = "新聞上限 5 P" if money.news else "一般上限 1000 P"
         mark_fast = "（目前選用）" if self.radio_fast.isChecked() else ""
         mark_money = "（目前選用）" if self.radio_money.isChecked() else ""
         text = (f"P 幣預估（內文 {money.chars:,} 個有效字元；{cap_name}）：\n"

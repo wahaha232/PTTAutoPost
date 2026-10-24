@@ -1043,6 +1043,14 @@ def test_f12_toggles_panel_and_ctrl_shift_a_stays_terminal_input(win, bbs_factor
     assert wait_until(lambda: bytes(bbs.after_login) == b"\x01")
 
 
+def test_cursor_style_setting_is_applied_immediately_and_saved(win):
+    win.set_cursor_style.setCurrentIndex(win.set_cursor_style.findData("bar"))
+    assert win.term.cursor_style == "bar"
+    assert win.db.get_setting("ui.cursor_style") == "bar"
+    win.set_cursor_style.setCurrentIndex(win.set_cursor_style.findData("underline"))
+    assert win.term.cursor_style == "underline"
+
+
 def test_browser_settings_defaults_and_persist(win):
     assert win.browser_combo.currentData() == "system"
     assert not win.chk_auto_image.isChecked()
@@ -1232,7 +1240,7 @@ def test_money_estimate_and_input_mode_setting(win):
     win.body.setPlainText("字" * 200)
     win._update_money_estimate()
     text = win.lbl_money_estimate.text()
-    assert "新聞上限 25 P" in text and "已達 P 幣上限" in text
+    assert "新聞上限 5 P" in text and "已達 P 幣上限" in text
 
 
 def test_money_counter_updates_while_typing_and_shows_the_final_estimate(win, bbs_factory, monkeypatch):

@@ -245,6 +245,3 @@ class ShortenTask(QRunnable):
             log.exception("unexpected error while shortening a URL")
             if not self._cancel.is_set():
                 self.signals.failed.emit(f"縮網址時發生未預期的錯誤（{type(e).__name__}）。")
-
-
-\n

@@ -7,9 +7,9 @@ def test_normal_article_estimate():
     assert not est.capped and not est.news and est.cap == 1000
 
 
-def test_news_title_cap_is_25_points():
+def test_news_title_cap_is_5_points():
     est = pttmoney.estimate("[新聞] 標題", "字" * 200)      # raw 50 P
-    assert est.news and est.cap == 25 and est.points == 25 and est.capped
+    assert est.news and est.cap == 5 and est.points == 5 and est.capped
 
 
 def test_normal_cap_is_1000_points():
