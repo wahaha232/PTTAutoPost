@@ -1143,6 +1143,36 @@ def test_ui_font_settings_apply_and_persist(win):
         app.setFont(old)
 
 
+def test_update_download_applies_a_delta_and_restarts(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QMessageBox
+    from src import update as up
+    staged = up.StagedUpdate(tmp_path / "staging", "9.9.9", ("PTTAutoPost.exe",), ())
+    applied, closed = [], []
+    monkeypatch.setattr(up, "is_delta_asset", lambda asset: True)
+    monkeypatch.setattr(up, "stage_delta", lambda result: staged)
+    monkeypatch.setattr(up, "apply_staged_update", lambda s: applied.append(s) or tmp_path / "s.ps1")
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(win, "_confirm_unsaved", lambda what: True)
+    monkeypatch.setattr(win, "close", lambda: closed.append(True))
+    win._update_asset = up.Asset(f"PTTAutoPost-9.9.9-delta-{up.__version__}.zip", "https://github.com/x", 10)
+    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 10))
+    assert applied == [staged] and win._quitting and closed
+
+
+def test_update_download_keeps_the_delta_when_the_user_declines(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QMessageBox
+    from src import update as up
+    staged = up.StagedUpdate(tmp_path / "staging", "9.9.9", ("PTTAutoPost.exe",), ())
+    applied = []
+    monkeypatch.setattr(up, "is_delta_asset", lambda asset: True)
+    monkeypatch.setattr(up, "stage_delta", lambda result: staged)
+    monkeypatch.setattr(up, "apply_staged_update", lambda s: applied.append(s))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    win._update_asset = up.Asset(f"PTTAutoPost-9.9.9-delta-{up.__version__}.zip", "https://github.com/x", 10)
+    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 10))
+    assert applied == [] and not win._quitting
+
+
 def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, monkeypatch):
     from src.ui import main_window as mw
     calls = []

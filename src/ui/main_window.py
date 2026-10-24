@@ -850,7 +850,7 @@ class MainWindow(QMainWindow):
         self.pttlogin_path.editingFinished.connect(lambda: self.db.set_setting("pttlogin.path", self.pttlogin_path.text().strip()))
         ug = QGroupBox("更新")
         ul = QVBoxLayout(ug)
-        self.lbl_update_status = QLabel(f"目前版本 {__version__}。從 GitHub Releases 檢查更新；攜帶版下載 ZIP，安裝版下載 setup.exe。程式只會下載並驗證檔案，不會自動執行。")
+        self.lbl_update_status = QLabel(f"目前版本 {__version__}。從 GitHub Releases 檢查更新；攜帶版優先下載增量更新檔，安裝版下載 setup.exe。下載後會驗證 SHA-256，套用前一定先詢問。")
         self.lbl_update_status.setWordWrap(True)
         urow = QHBoxLayout()
         self.btn_update_check = QPushButton("檢查更新")
@@ -1059,10 +1059,20 @@ class MainWindow(QMainWindow):
         if len(notes) > 1200:
             notes = notes[:1200] + "…"
         size = f"{asset.size / 1024 / 1024:.1f} MB" if asset.size else "大小未知"
-        target = "安裝版 setup.exe" if installed else "攜帶版壓縮檔"
+        delta = update.is_delta_asset(asset)
+        if installed:
+            target = "安裝版 setup.exe"
+        elif delta:
+            target = "增量更新檔（只含變更檔案）"
+        else:
+            target = "攜帶版完整壓縮檔"
+        if delta:
+            how = ("下載並驗證後，程式會詢問是否立即關閉、備份舊檔、覆蓋變更檔案並自動重新啟動；"
+                   "config／logs／data 不會被覆蓋。Windows 無法覆蓋正在執行的程式，所以需要重新啟動。")
+        else:
+            how = "下載後不會自動安裝或執行；完成後請關閉本程式，再依指示更新。"
         msg = (f"目前版本 {__version__}，最新版本 {release.version}。\n\n"
-               f"更新檔（{target}）：{asset.name}（{size}）\n\n{notes}\n\n"
-               "下載後不會自動安裝或執行；完成後請關閉本程式，再依指示更新。\n\n要下載嗎？")
+               f"更新檔（{target}）：{asset.name}（{size}）\n\n{notes}\n\n{how}\n\n要下載嗎？")
         if hasattr(self, "lbl_update_status"):
             self.lbl_update_status.setText(f"發現新版本 {release.version}，等待下載確認。")
         self._notice(f"發現新版本 {release.version}。")
@@ -1113,6 +1123,40 @@ class MainWindow(QMainWindow):
         verified = ("已核對 GitHub 提供的 SHA-256（僅確認檔案與該 digest 相符，不代表發布者身分）"
                     if result.verified else "GitHub 未提供 digest，未完成雜湊核對（僅完成下載）")
         asset = self._update_asset
+        if update.is_delta_asset(asset):
+            try:
+                staged = update.stage_delta(result)
+            except update.UpdateError as e:
+                if hasattr(self, "lbl_update_status"):
+                    self.lbl_update_status.setText("增量更新檔驗證失敗。")
+                QMessageBox.warning(self, "套用更新失敗", str(e))
+                return
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(f"增量更新已下載並驗證（{len(staged.files)} 個檔案），等待套用。")
+            answer = QMessageBox.question(
+                self, "套用更新",
+                f"增量更新檔已下載並通過驗證：{len(staged.files)} 個檔案。\n\n"
+                "套用時會：關閉本程式 → 備份被覆蓋的舊檔 → 覆蓋變更檔案 → 自動重新啟動。\n"
+                "config／logs／data 不會被覆蓋。\n\n"
+                "Windows 無法覆蓋正在執行的程式，所以一定要重新啟動。要現在套用嗎？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if answer != QMessageBox.StandardButton.Yes:
+                self._notice(f"更新已保留在 {staged.folder}；下次檢查時可重新下載套用。")
+                return
+            if not self._confirm_unsaved("套用更新並重新啟動"):
+                self._notice("已取消套用更新；暫存檔保留在更新資料夾。")
+                return
+            try:
+                update.apply_staged_update(staged)
+            except update.UpdateError as e:
+                QMessageBox.warning(self, "套用更新失敗", str(e))
+                return
+            self._dirty = False
+            self._quitting = True
+            self._notice("正在套用更新，程式會自動重新啟動…")
+            self.close()
+            return
         if asset is not None and asset.name.lower().endswith("-setup.exe"):
             how = "請關閉本程式，執行下載的 setup.exe。安裝程式會保留 config／logs／data。"
         else:
@@ -1734,6 +1778,7 @@ class MainWindow(QMainWindow):
             return False
         if r == QMessageBox.StandardButton.Save:
             return self.save_draft() is not None
+        self._dirty = False                            # the user chose to discard: do not ask again on close
         return True
 
     def preview_manual_reset(self):

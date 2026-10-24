@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.6"
+__version__ = "0.8.7"
 BUILD_DATE = "2026/10/24"
 APP_NAME = "PTT AutoPost"
 
@@ -9,6 +9,19 @@ SPONSOR_TEXT = ""
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.7", "2026/10/24", [
+        "Incremental updates for portable builds: a release can ship a small "
+        "PTTAutoPost-<version>-delta-<base>.zip containing only changed files. The app picks the delta matching its "
+        "current version, verifies update.json and every file's SHA-256, backs up replaced files under "
+        "updates/backup-<version>/, and applies the update with a detached PowerShell helper that waits for exit, "
+        "copies, and restarts. Wrong bases, unsafe paths, hash failures and older clients fall back to the full "
+        "portable ZIP.",
+        "A restart is still required because Windows locks the running exe, so files cannot be hot-swapped "
+        "reliably; the app now restarts itself automatically after applying. config/logs/data are never part of a "
+        "delta.",
+        "Added tools/make_update_bundle.py to build deltas between two portable folders; unknown asset hosts are "
+        "still refused.",
+    ]),
     ("0.8.6", "2026/10/24", [
         "Article images: extraction is now scoped to the article's own content (nav / related / ad blocks are "
         "excluded), follows lazy data-src and the largest srcset, prefers a linked original, upgrades known "
