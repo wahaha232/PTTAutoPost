@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QMessageBox
 from src import update
 from src.net.session import PttSession
 from src.storage.db import Database
+from src.ui import main_window as mw
 from src.ui.main_window import MainWindow
 from src.version import __version__
 
@@ -100,6 +101,7 @@ def test_about_dialog_has_version_and_license(win, monkeypatch):
 
 def test_sponsor_menu_explains_missing_link(win, monkeypatch):
     infos = []
+    monkeypatch.setattr(mw, "SPONSOR_URL", "")
     monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: infos.append(a[2]) or QMessageBox.StandardButton.Ok))
     win.act_sponsor.trigger()
     assert infos and "贊助" in infos[-1]

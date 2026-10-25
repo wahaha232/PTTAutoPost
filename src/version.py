@@ -1,14 +1,20 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.15"
-BUILD_DATE = "2026/10/24"
+__version__ = "0.8.16"
+BUILD_DATE = "2026/10/25"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
-SPONSOR_URL = ""
-SPONSOR_TEXT = ""
+SPONSOR_URL = "https://www.buymeacoffee.com/wahaha232z"
+SPONSOR_TEXT = "☕ Buy me a coffee"
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.16", "2026/10/25", [
+        "Sponsorship: the Settings '贊助作者' block and Help → '贊助 PTT AutoPost' now open the Buy Me a Coffee "
+        "page (https://www.buymeacoffee.com/wahaha232z) in the default browser. The web button script itself is "
+        "not embedded: this is a desktop Qt app with no browser surface, so only the validated https URL is opened, "
+        "and only when the user clicks.",
+    ]),
     ("0.8.15", "2026/10/24", [
         "Preview & input now has a '開始發文（Ctrl+P）' button. It only sends Ctrl+P from a non-menu, "
         "non-editor, logged-in board screen after confirmation, to open PTT's title prompt. It still never "
