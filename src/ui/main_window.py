@@ -1,6 +1,7 @@
 """Main window: terminal tab, article tab (parse / edit / preview / check / copy / type into PTT), drafts tab."""
 from __future__ import annotations
 
+import html
 import os
 import subprocess
 import sys
@@ -8,9 +9,9 @@ import time
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QStandardPaths, Qt, QThreadPool, QTimer, QUrl
-from PySide6.QtGui import QAction, QCursor, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QKeySequence
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGridLayout, QGroupBox,
+from PySide6.QtCore import QByteArray, QEvent, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl
+from PySide6.QtGui import QAction, QCursor, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QIcon, QKeySequence, QPixmap
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFontComboBox, QFormLayout, QGridLayout, QGroupBox,
                                QHBoxLayout, QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                                QMenu, QPlainTextEdit, QPushButton, QProgressBar, QRadioButton, QScrollArea, QSizePolicy,
                                QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
@@ -21,6 +22,7 @@ from ..links import is_auto_open_image_url, validate_http_url
 from ..logging_setup import get_logger
 from ..net import shortener
 from ..net.client import DEFAULT_URL, State
+from ..net.proxy import KINDS, ProxyConfig
 from ..terminal.detect import Kind
 from ..net.poster import PostTyper, Target, preflight
 from ..net.session import Login, PttSession
@@ -28,8 +30,9 @@ from ..net.upload import HOSTS, UploadBatch, host_choices, upload_images as uplo
 from ..parsers.extract import ParseResult, parse
 from ..net.image import download_images_zip
 from ..parsers.fetch import fetch
+from ..paths import resource_path
 from ..storage.db import MAX_SIGNATURES, Database
-from ..version import APP_NAME, BUILD_DATE, SPONSOR_TEXT, SPONSOR_URL, __version__
+from ..version import APP_NAME, BUILD_DATE, SPONSOR_MESSAGE, SPONSOR_TEXT, SPONSOR_URL, __version__
 from . import browser, theme
 from .icon import app_icon, tray_icon
 from .image_viewer import ImageHoverPreview, ImageViewer
@@ -86,6 +89,7 @@ class MainWindow(QMainWindow):
         self._update_force = False
         self._update_phase = ""
         self._pending_site_url: str | None = None
+        self.sponsor_dialog: QDialog | None = None
         self._site_check_task = None
         self._task = None                                  # running FetchTask (cancelled on close)
         self._typing_target: Target | None = None
@@ -269,8 +273,10 @@ class MainWindow(QMainWindow):
         st = QHBoxLayout()
         self.lbl_conn = QLabel()
         self.lbl_login = QLabel()
+        self.lbl_proxy = QLabel()
         st.addWidget(self.lbl_conn)
         st.addWidget(self.lbl_login)
+        st.addWidget(self.lbl_proxy)
         st.addStretch(1)
         lay.addLayout(st)
         fam = self.db.get_setting("terminal.font", "")
@@ -330,7 +336,7 @@ class MainWindow(QMainWindow):
         self.tb_size.valueChanged.connect(lambda _v: self._apply_terminal_settings(bar=True))
         self.tb_fill.toggled.connect(lambda _c: self._apply_terminal_settings(bar=True))
         self.tb_stretch.toggled.connect(lambda _c: self._apply_terminal_settings(bar=True))
-        self.btn_connect.clicked.connect(lambda: self.session.connect_to(self.url_box.currentText().strip() or DEFAULT_URL))
+        self.btn_connect.clicked.connect(lambda: self._connect_bbs(self.url_box.currentText().strip() or DEFAULT_URL))
         self.btn_disconnect.clicked.connect(self.session.disconnect_)
         self.btn_login.clicked.connect(self._do_login)
         self.password.returnPressed.connect(self._do_login)
@@ -438,6 +444,56 @@ class MainWindow(QMainWindow):
         return self.typer
 
     # ================================================================== settings tab
+    def _proxy_kind_changed(self, _index: int = -1) -> None:
+        self._sync_proxy_ui()
+        self._save_proxy_settings()
+
+    def _sync_proxy_ui(self) -> None:
+        enabled = (self.proxy_kind.currentData() or "none") != "none"
+        for widget in (self.proxy_host, self.proxy_port, self.proxy_user, self.proxy_password):
+            widget.setEnabled(enabled)
+        if hasattr(self, "lbl_proxy"):
+            if enabled:
+                host = self.proxy_host.text().strip() or "（未設定主機）"
+                self.lbl_proxy.setText(f"代理：{self.proxy_kind.currentText()} {host}:{self.proxy_port.value()}")
+            else:
+                self.lbl_proxy.setText("")
+
+    def _save_proxy_settings(self) -> None:
+        self.db.set_setting("proxy.kind", self.proxy_kind.currentData() or "none")
+        self.db.set_setting("proxy.host", self.proxy_host.text().strip())
+        self.db.set_setting("proxy.port", str(self.proxy_port.value()))
+        self.db.set_setting("proxy.user", self.proxy_user.text().strip())
+        self._sync_proxy_ui()
+
+    def _proxy_config(self) -> ProxyConfig | None:
+        """Current UI proxy settings, or None after telling the user what is wrong."""
+        config = ProxyConfig(
+            kind=self.proxy_kind.currentData() or "none",
+            host=self.proxy_host.text().strip(),
+            port=self.proxy_port.value(),
+            user=self.proxy_user.text().strip(),
+            password=self.proxy_password.text(),
+        )
+        problem = config.problem()
+        if problem:
+            self._notice(f"代理設定無效：{problem}")
+            QMessageBox.warning(self, "代理設定", f"{problem}\n\n修正前不會建立連線。")
+            return None
+        self._save_proxy_settings()
+        return config
+
+    def _connect_bbs(self, url: str) -> bool:
+        config = self._proxy_config()
+        if config is None:
+            return False
+        if config.enabled:
+            self._notice(f"連線經 {config.label()}；PTT 會看到代理的對外 IP，請遵守 PTT 站規。")
+        else:
+            self._notice(f"直連 {url}。")
+        self.session.connect_to(url, config)
+        return True
+
     def _load_browser_mode(self) -> str:
         raw = self.db.get_setting("browser.mode", "system")
         return raw if raw in browser.BROWSER_KEYS else "system"
@@ -496,15 +552,83 @@ class MainWindow(QMainWindow):
             self._on_links_changed(self.term.links())          # apply to images already on screen
         self._notice("已開啟圖片連結自動開啟（在程式內顯示）；圖床會看到您的 IP。" if on else "已關閉圖片連結自動開啟。")
 
+    def _sponsor_dialog(self) -> QDialog | None:
+        """Thank-you dialog; only its yellow link button opens the sponsor page."""
+        url = SPONSOR_URL.strip()
+        if not url or not validate_http_url(url):
+            return None
+        if self.sponsor_dialog is not None:
+            return self.sponsor_dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("感謝您的贊助")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(460)
+        lay = QVBoxLayout(dialog)
+        title = QLabel(f"<b>感謝支持 {html.escape(APP_NAME)}</b>")
+        title.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(title)
+        message = QLabel("".join(
+            f"<p>{html.escape(paragraph)}</p>"
+            for paragraph in SPONSOR_MESSAGE.split("\n\n") if paragraph.strip()))
+        message.setTextFormat(Qt.TextFormat.RichText)
+        message.setWordWrap(True)
+        lay.addWidget(message)
+        link = QPushButton()
+        link.setObjectName("sponsorLink")
+        link.setAccessibleName(SPONSOR_TEXT.strip() or "☕ Buy me a coffee")
+        link.setCursor(Qt.CursorShape.PointingHandCursor)
+        link.setToolTip(url)
+        pixmap = QPixmap(str(resource_path("assets", "buymeacoffee.png")))
+        if pixmap.isNull():
+            link.setText(SPONSOR_TEXT.strip() or "☕ Buy me a coffee")
+            link.setStyleSheet(
+                "QPushButton#sponsorLink { background-color:#FFDD00; color:#000000; border:2px solid #000000;"
+                " border-radius:10px; padding:10px 18px; font-size:16px; font-weight:600; }")
+        else:
+            width = 320
+            height = max(1, round(width * pixmap.height() / pixmap.width()))
+            link.setIcon(QIcon(pixmap))
+            link.setIconSize(QSize(width, height))
+            link.setFixedSize(width, height)
+            link.setStyleSheet("QPushButton#sponsorLink { border:none; background:transparent; padding:0; }")
+        link.clicked.connect(lambda: self._open_sponsor_page(url, dialog))
+        row = QHBoxLayout()
+        row.addWidget(link)
+        row.addStretch(1)
+        close = QPushButton("關閉")
+        close.clicked.connect(dialog.reject)
+        row.addWidget(close)
+        lay.addLayout(row)
+        dialog.finished.connect(self._sponsor_dialog_closed)
+        self.sponsor_dialog = dialog
+        return dialog
+
+    def _sponsor_dialog_closed(self, _result: int = 0) -> None:
+        dialog, self.sponsor_dialog = self.sponsor_dialog, None
+        if dialog is not None:
+            dialog.deleteLater()
+
+    def _open_sponsor_page(self, url: str, dialog: QDialog | None = None) -> bool:
+        ok, msg = browser.open_url(url, "system")
+        self._notice(msg)
+        if ok and dialog is not None:
+            dialog.accept()
+        return ok
+
     def _open_sponsor(self) -> bool:
         url = SPONSOR_URL.strip()
-        if not url:
+        if not url or not validate_http_url(url):
             self._notice("未設定贊助連結。")
             QMessageBox.information(self, "贊助作者", "目前沒有設定贊助連結。感謝您的支持！")
             return False
-        ok, msg = browser.open_url(url, "system")
-        self._notice(msg)
-        return ok
+        dialog = self._sponsor_dialog()
+        if dialog is None:
+            self._notice("贊助連結無效。")
+            return False
+        dialog.open()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
 
     def _open_link(self, url: str) -> bool:
         """Open a manually clicked link in the configured browser."""
@@ -739,6 +863,50 @@ class MainWindow(QMainWindow):
         form.addRow(cursor_note)
         form.addRow("", self.btn_font_default)
         lay.addWidget(g)
+
+        pg = QGroupBox("連線代理（跳板／VPN）")
+        pf = QFormLayout(pg)
+        self.proxy_kind = QComboBox()
+        for key, label in KINDS:
+            self.proxy_kind.addItem(label, key)
+        saved_kind = self.db.get_setting("proxy.kind", "none")
+        self.proxy_kind.setCurrentIndex(max(0, self.proxy_kind.findData(saved_kind)))
+        self.proxy_host = QLineEdit(self.db.get_setting("proxy.host", ""))
+        self.proxy_host.setPlaceholderText("127.0.0.1 或 proxy.example.com")
+        self.proxy_port = QSpinBox()
+        self.proxy_port.setRange(1, 65535)
+        try:
+            saved_port = int(self.db.get_setting("proxy.port", "") or 1080)
+        except ValueError:
+            saved_port = 1080
+        self.proxy_port.setValue(max(1, min(65535, saved_port)))
+        self.proxy_user = QLineEdit(self.db.get_setting("proxy.user", ""))
+        self.proxy_user.setPlaceholderText("選填")
+        self.proxy_password = QLineEdit()
+        self.proxy_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.proxy_password.setPlaceholderText("只保留在記憶體，不寫入資料庫")
+        proxy_row = QHBoxLayout()
+        proxy_row.addWidget(self.proxy_host, 1)
+        proxy_row.addWidget(QLabel("埠"))
+        proxy_row.addWidget(self.proxy_port)
+        pf.addRow("類型", self.proxy_kind)
+        pf.addRow("主機", proxy_row)
+        pf.addRow("帳號", self.proxy_user)
+        pf.addRow("密碼", self.proxy_password)
+        proxy_note = QLabel(
+            "只套用在 BBS 連線（WSS／Telnet）；文章擷取、更新、圖片下載與上傳仍直連。"
+            "PTT 會看到代理的對外 IP，代理端看得到連線目標與時間，請使用可信任的代理。"
+            "使用跳板可能違反 PTT 站規或觸發站方安全機制，帳號風險請自行承擔。"
+            "代理密碼不會寫入資料庫，程式重新啟動後需重新輸入；變更於下次連線生效。")
+        proxy_note.setWordWrap(True)
+        pf.addRow("", proxy_note)
+        lay.addWidget(pg)
+        self.proxy_kind.currentIndexChanged.connect(self._proxy_kind_changed)
+        self.proxy_host.editingFinished.connect(self._save_proxy_settings)
+        self.proxy_port.valueChanged.connect(lambda _v: self._save_proxy_settings())
+        self.proxy_user.editingFinished.connect(self._save_proxy_settings)
+        self._sync_proxy_ui()
+
         tg = QGroupBox("視窗與系統匣")
         tl = QVBoxLayout(tg)
         self.chk_tray_min = QCheckBox("最小化時縮到系統匣（工作列不顯示，從系統匣圖示還原）")
@@ -938,6 +1106,7 @@ class MainWindow(QMainWindow):
         self.db.set_setting("ui.terminal_palette", self._terminal_palette_choice)
         self._browser_mode_changed(self.browser_combo.currentIndex())
         self._save_browser_path()
+        self._save_proxy_settings()
         self.db.set_setting("links.image_auto_open", "1" if self.chk_auto_image.isChecked() else "0")
         self.db.set_setting("links.image_hover_preview", "1" if self.chk_hover_image.isChecked() else "0")
         self.db.set_setting("links.article_images_open", "1" if self.chk_article_image.isChecked() else "0")
@@ -1191,7 +1360,7 @@ class MainWindow(QMainWindow):
         self._update_type_buttons()
         if st is State.DISCONNECTED and self._pending_site_url:
             url, self._pending_site_url = self._pending_site_url, None
-            self.session.connect_to(url)
+            self._connect_bbs(url)
 
     def _on_paste_state(self, on: bool) -> None:
         """Pasting owns the connection text stream: pause every other text/navigation action."""
@@ -2526,7 +2695,7 @@ class MainWindow(QMainWindow):
             self._pending_site_url = url
             self.session.disconnect_()
         else:
-            self.session.connect_to(url)
+            self._connect_bbs(url)
         self.tabs.setCurrentIndex(0)
         if site["protocol"] == "telnet":
             self._notice(f"正在以 Telnet（明文）連線 {site['name']}：{url}；請勿在公用網路輸入重要密碼。")

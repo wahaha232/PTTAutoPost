@@ -32,7 +32,7 @@ a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[],
+    datas=[(str(ROOT / "assets" / "buymeacoffee.png"), "assets")],
     hiddenimports=["PySide6.QtWebSockets", "PySide6.QtNetwork", "lxml.etree", "lxml._elementpath", "charset_normalizer"],
     hookspath=[],
     runtime_hooks=[],

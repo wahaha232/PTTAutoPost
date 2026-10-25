@@ -44,6 +44,12 @@ def test_user_readme_has_version_placeholder_and_safety_notes():
     assert "D:/Claude" not in text and "D:\\Claude" not in text
 
 
+def test_sponsor_button_asset_is_bundled():
+    assert (ROOT / "assets" / "buymeacoffee.png").is_file()
+    text = (ROOT / "PTTAutoPost.spec").read_text(encoding="utf-8")
+    assert "buymeacoffee.png" in text and '"assets"' in text
+
+
 def test_spec_builds_a_folder_with_replaceable_qt_libraries():
     text = (ROOT / "PTTAutoPost.spec").read_text(encoding="utf-8")
     assert "exclude_binaries=True" in text

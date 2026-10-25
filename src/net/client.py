@@ -18,6 +18,7 @@ from PySide6.QtNetwork import QAbstractSocket, QNetworkRequest, QTcpSocket
 from PySide6.QtWebSockets import QWebSocket, QWebSocketHandshakeOptions
 
 from ..logging_setup import get_logger
+from .proxy import ProxyConfig
 from .telnet import IacFilter
 
 log = get_logger("net")
@@ -93,15 +94,27 @@ class PttClient(QObject):
         self.bytes_sent = 0
         self.bytes_received = 0
         self._iac = IacFilter()
+        self.proxy = ProxyConfig()
 
     # ----------------------------------------------------------------- control
-    def connect_to(self, url: str = DEFAULT_URL) -> None:
+    def set_proxy(self, proxy: ProxyConfig) -> None:
+        """Use this proxy for the next BBS connection (WSS and Telnet).  Ignored by other transports."""
+        self.proxy = proxy
+
+    def connect_to(self, url: str = DEFAULT_URL, proxy: ProxyConfig | None = None) -> None:
         if self.state is not State.DISCONNECTED:
             return
+        if proxy is not None:
+            self.proxy = proxy
         problem = endpoint_problem(url)
         if problem:
             log.warning("endpoint refused: %s", problem)
             self.failed.emit(problem)
+            return
+        proxy_problem = self.proxy.problem()
+        if proxy_problem:
+            log.warning("proxy refused: %s", proxy_problem)
+            self.failed.emit(f"代理設定無效：{proxy_problem}")
             return
         self.url = url
         self._first, self._intentional_close, self._head = True, False, b""
@@ -114,6 +127,10 @@ class PttClient(QObject):
             self._connect_telnet(parsed.hostname or "", parsed.port or 23)
             return
         ws = QWebSocket(ORIGIN)
+        qt_proxy = self.proxy.to_qt()
+        if qt_proxy is not None:
+            ws.setProxy(qt_proxy)                             # must be set before open()
+            log.info("BBS connection uses %s", self.proxy.label())
         ws.setMaxAllowedIncomingFrameSize(256 * 1024)         # PTT frames are a few KB; refuse absurd ones
         ws.setMaxAllowedIncomingMessageSize(1024 * 1024)
         self._ws = ws
@@ -158,6 +175,10 @@ class PttClient(QObject):
 
     def _connect_telnet(self, host: str, port: int) -> None:
         tcp = QTcpSocket(self)
+        qt_proxy = self.proxy.to_qt()
+        if qt_proxy is not None:
+            tcp.setProxy(qt_proxy)                            # must be set before connectToHost()
+            log.info("BBS connection uses %s", self.proxy.label())
         self._tcp = tcp
         tcp.connected.connect(self._on_tcp_connected)
         tcp.readyRead.connect(self._on_tcp_ready)

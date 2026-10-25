@@ -124,7 +124,7 @@ def test_duplicate_and_invalid_sites_are_rejected(win):
 
 def test_connect_wss_sets_endpoint_and_switches_tab(win, monkeypatch):
     calls = []
-    monkeypatch.setattr(win.session, "connect_to", lambda url: calls.append(url))
+    monkeypatch.setattr(win.session, "connect_to", lambda url, proxy=None: calls.append(url))
     win.session.client.state = __import__("src.net.client", fromlist=["State"]).State.DISCONNECTED
     win.site_list.setCurrentRow(0)
     win.btn_site_connect.click()
@@ -137,7 +137,7 @@ def test_connect_telnet_is_supported_with_plaintext_warning(win, monkeypatch):
     calls = []
     notices = []
     warnings = []
-    monkeypatch.setattr(win.session, "connect_to", lambda url: calls.append(url))
+    monkeypatch.setattr(win.session, "connect_to", lambda url, proxy=None: calls.append(url))
     monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
     monkeypatch.setattr(QMessageBox, "warning",
                         staticmethod(lambda *a, **k: warnings.append(a[2]) or QMessageBox.StandardButton.Yes))
@@ -151,7 +151,7 @@ def test_connect_telnet_is_supported_with_plaintext_warning(win, monkeypatch):
 def test_telnet_connection_can_be_cancelled_at_the_warning(win, monkeypatch):
     calls = []
     notices = []
-    monkeypatch.setattr(win.session, "connect_to", lambda url: calls.append(url))
+    monkeypatch.setattr(win.session, "connect_to", lambda url, proxy=None: calls.append(url))
     monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
     win.site_list.setCurrentRow(2)
@@ -163,7 +163,7 @@ def test_telnet_connection_can_be_cancelled_at_the_warning(win, monkeypatch):
 def test_connect_ssh_is_refused_but_bookmark_remains(win, monkeypatch):
     calls = []
     notices = []
-    monkeypatch.setattr(win.session, "connect_to", lambda url: calls.append(url))
+    monkeypatch.setattr(win.session, "connect_to", lambda url, proxy=None: calls.append(url))
     monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
     win.site_list.setCurrentRow(10)
     win.btn_site_connect.click()
@@ -178,3 +178,4 @@ def test_site_test_updates_status_without_blocking(win, monkeypatch):
     win.btn_site_test.click()
     from conftest import wait_until
     assert wait_until(lambda: "TCP" in win.lbl_site_test.text(), 3000)
+

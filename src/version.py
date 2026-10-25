@@ -1,14 +1,37 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.16"
+__version__ = "0.8.17"
 BUILD_DATE = "2026/10/25"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
 SPONSOR_URL = "https://www.buymeacoffee.com/wahaha232z"
 SPONSOR_TEXT = "☕ Buy me a coffee"
+SPONSOR_MESSAGE = (
+    "謝謝你請我喝咖啡！☕💛\n\n"
+    "非常感謝你的慷慨贊助。每一杯透過 Buy Me a Coffee 送來的咖啡，都是支持這個專案長久維護下去的重要力量。\n\n"
+    "接下來我也會用心改進各項功能與體驗，提供更順暢、穩定的環境，希望這款軟體能持續在日常中為你帶來幫助！"
+)
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.17", "2026/10/25", [
+        "Connection proxy (jump host / VPN-like): Settings now has an optional SOCKS5 or HTTP proxy for "
+        "BBS connections only. The configured endpoint is applied to both the WSS and Telnet socket before "
+        "the connection starts, so PTT sees the proxy's public IP. Article fetches, update checks, image "
+        "downloads and uploads remain direct connections and never use this proxy.",
+        "The proxy host and port are validated before any connection is attempted; an incomplete or unsafe "
+        "setting refuses to connect (no silent fallback to a direct connection). The proxy password is kept "
+        "in memory only and is never written to the database or logs; the status bar shows the proxy endpoint, "
+        "never the username or password.",
+        "The Settings note states that a proxy can see connection targets and timing, that using a jump host "
+        "may violate PTT rules or trigger PTT's security checks, and that the account risk is the user's. "
+        "Verified end to end through local SOCKS5 and HTTP CONNECT proxies (WSS handshake, login screen, "
+        "Origin header).",
+        "Sponsorship: the Settings block and Help menu now open a thank-you dialog first, using the provided "
+        "yellow Buy Me a Coffee button image (assets/buymeacoffee.png, bundled in the portable build). The sponsor "
+        "page is opened only when the user clicks that image button; the web widget script itself is still not "
+        "embedded because the desktop app has no browser surface.",
+    ]),
     ("0.8.16", "2026/10/25", [
         "Sponsorship: the Settings '贊助作者' block and Help → '贊助 PTT AutoPost' now open the Buy Me a Coffee "
         "page (https://www.buymeacoffee.com/wahaha232z) in the default browser. The web button script itself is "

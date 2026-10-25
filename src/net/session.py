@@ -18,6 +18,7 @@ from ..logging_setup import get_logger
 from ..terminal.detect import Kind, classify
 from ..terminal.screen import Screen
 from .client import PttClient, State, login_host_trusted
+from .proxy import ProxyConfig
 from .sendlock import SendLock
 
 log = get_logger("session")
@@ -75,10 +76,10 @@ class PttSession(QObject):
     def kind(self) -> Kind:
         return classify(self.screen)
 
-    def connect_to(self, url: str) -> None:
+    def connect_to(self, url: str, proxy: ProxyConfig | None = None) -> None:
         self.screen = Screen()
         self._reset_login()
-        self.client.connect_to(url)
+        self.client.connect_to(url, proxy)
 
     def disconnect_(self) -> None:
         self._reset_login()

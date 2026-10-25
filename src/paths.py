@@ -39,6 +39,12 @@ def _dir(name: str) -> Path:
     return fallback
 
 
+def resource_path(*parts: str) -> Path:
+    """Read-only bundled file (frozen: PyInstaller's _MEIPASS; source: the project root)."""
+    base = Path(getattr(sys, "_MEIPASS", runtime_base_dir())) if getattr(sys, "frozen", False) else runtime_base_dir()
+    return base.joinpath(*parts)
+
+
 def data_dir() -> Path:
     return _dir("data")
 
