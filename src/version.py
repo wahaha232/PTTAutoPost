@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.17"
-BUILD_DATE = "2026/10/25"
+__version__ = "0.8.18"
+BUILD_DATE = "2026/10/27"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,20 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.18", "2026/10/27", [
+        "Signatures: the '刪除' button now always asks before deleting. Qt's clicked(bool) argument used to "
+        "arrive as confirm=False, so one click deleted the signature permanently without a confirmation.",
+        "Paste safety: Chinese input-method (IME) commits are now paused while a clipboard paste is being "
+        "sent, like normal keys and the wheel already were, so typed characters can no longer be inserted "
+        "between paste chunks.",
+        "Paste sender: text that cannot be encoded as Big5 is refused before the paste lock is taken; it used "
+        "to raise after taking the lock and block both pasting and automatic typing until restart.",
+        "Article check: a URL typed on the same line as '5.完整新聞連結 (或短網址):' counts as filled; it used to "
+        "raise an error that silently broke the check and copy actions.",
+        "Tests: every top-level window is deleted after each test. Leaked windows made each theme change "
+        "re-polish all of them, so the full suite appeared to hang; it now finishes in about 2 minutes.",
+        "docs/CODE_REVIEW_2026-10-27.md records the full review; the remaining items are planned for later versions.",
+    ]),
     ("0.8.17", "2026/10/25", [
         "Connection proxy (jump host / VPN-like): Settings now has an optional SOCKS5 or HTTP proxy for "
         "BBS connections only. The configured endpoint is applied to both the WSS and Telnet socket before "

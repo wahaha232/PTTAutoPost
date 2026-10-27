@@ -88,10 +88,14 @@ class PasteSender(QObject):
             return why
         if not text:
             return "沒有可貼上的文字。"
+        try:
+            chunks = build_chunks(text, CHUNK_BYTES)       # before taking the lock: a bad character must not leave it held
+        except UnicodeEncodeError:
+            return "貼上內容含有無法以 Big5 編碼的字元，已取消貼上；不會只貼一部分。"
         lock = getattr(self.s, "send_lock", None)
         if lock is not None and not lock.acquire(PASTE):
             return f"{lock.label()}進行中，已暫停貼上；請等它結束後再試。"
-        self._chunks = build_chunks(text, CHUNK_BYTES)
+        self._chunks = chunks
         self._i = 0
         self.chars_sent = 0
         self.total_chars = len(text.replace("\n", ""))

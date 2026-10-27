@@ -158,6 +158,16 @@ def test_multiple_signatures_select_edit_delete_and_limit(win):
     assert win.sig_combo.count() == 9 and all(s["name"] != "名稱3" for s in win.db.signatures())
 
 
+def test_signature_delete_button_asks_first(win, monkeypatch):
+    win.sig_edit.setPlainText("留著")
+    win.save_signature()
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: asked.append(a) or QMessageBox.StandardButton.No))
+    win.btn_sig_del.click()                     # clicked(bool) used to arrive as confirm=False
+    assert len(asked) == 1 and [s["text"] for s in win.db.signatures()] == ["留著"]
+
+
 def test_signature_save_apply_and_snapshot_in_draft(win):
     fill_article(win)
     win.sig_edit.setPlainText("簽名一行\n簽名二行")

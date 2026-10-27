@@ -80,6 +80,15 @@ def test_check_flags_errors_and_warnings():
     assert any(i.level == "error" and "過長" in i.message for i in check(long_title * 2, "x"))
 
 
+def test_check_link_field_on_same_or_next_line():
+    def link_warn(body):
+        return any("完整新聞連結" in i.message for i in check("t", body))
+    assert not link_warn("5.完整新聞連結 (或短網址): https://example.com/a\n6.備註:")   # used to raise ValueError
+    assert not link_warn("5.完整新聞連結 (或短網址):\nhttps://example.com/a\n6.備註:")
+    assert link_warn("5.完整新聞連結 (或短網址):\n\n6.備註:")
+    assert link_warn("5.完整新聞連結 (或短網址):  \n\n6.備註:")
+
+
 def test_check_rejects_signature_with_separator_line():
     assert has_errors(check("t", "b", sig_text="a\n--\nb", used_signature=True))
 

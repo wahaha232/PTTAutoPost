@@ -212,10 +212,11 @@ def check(title: str, body: str, sig_text: str = "", used_signature: bool = Fals
         for line in lines:
             if line.startswith(prefix) and not line[len(prefix):].strip():
                 issues.append(Issue("warn", f"「{label}」尚未填寫（不會自動填入「未知」）。"))
-    if "5.完整新聞連結 (或短網址):" in body:
-        k = lines.index("5.完整新聞連結 (或短網址):")
-        if k + 1 < len(lines) and not lines[k + 1].strip():
-            issues.append(Issue("warn", "「完整新聞連結」尚未填寫。"))
+    link_prefix = "5.完整新聞連結 (或短網址):"
+    k = next((n for n, l in enumerate(lines) if l.startswith(link_prefix)), None)
+    # the URL normally sits on the next line, but a user may type it after the colon on the same line
+    if k is not None and not lines[k][len(link_prefix):].strip() and k + 1 < len(lines) and not lines[k + 1].strip():
+        issues.append(Issue("warn", "「完整新聞連結」尚未填寫。"))
     if used_signature and sig_text.strip() and "\n--\n" not in body:
         issues.append(Issue("warn", "已勾選套用簽名檔，但預覽中沒有簽名檔（預覽可能被手動改過）。"))
     if sig_text.strip() and any(l.strip() == "--" for l in sig_text.split("\n")):

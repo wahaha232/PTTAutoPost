@@ -606,6 +606,11 @@ class TerminalWidget(QWidget):
         e.accept()
 
     def inputMethodEvent(self, e):
+        if self.pasting:                                   # IME commits must not interleave with paste chunks
+            if e.commitString():
+                self.notice.emit("貼上進行中，鍵盤與捲動已暫停。")
+            e.accept()
+            return
         if self._blocked():
             e.accept()
             return

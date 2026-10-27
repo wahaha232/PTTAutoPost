@@ -1787,7 +1787,7 @@ class MainWindow(QMainWindow):
         self.board_combo.lineEdit().editingFinished.connect(self._board_changed)
         self.btn_sig_current.clicked.connect(self.use_current_signature)
         self.btn_sig_new.clicked.connect(self.new_signature)
-        self.btn_sig_del.clicked.connect(self.delete_signature)
+        self.btn_sig_del.clicked.connect(lambda: self.delete_signature())   # clicked(bool) must not reach `confirm`
         self.sig_combo.activated.connect(self._pick_signature)
         self.chk_sig.toggled.connect(lambda _c: self._schedule_preview())
         self.sig_edit.textChanged.connect(lambda: self._schedule_preview(False))
@@ -2469,7 +2469,7 @@ class MainWindow(QMainWindow):
         self.sig_combo.blockSignals(False)
         self._show_signature(-1)
 
-    def delete_signature(self, confirm: bool = True):
+    def delete_signature(self, *, confirm: bool = True):
         if self._sig_idx < 0:
             self._notice("目前是尚未儲存的新簽名檔，沒有可刪除的項目。")
             return

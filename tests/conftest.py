@@ -60,6 +60,24 @@ def bbs_factory(qapp):
 
 
 @pytest.fixture(autouse=True)
+def _dispose_windows():
+    """Delete every top-level window a test left behind.
+
+    Leaked MainWindows piled up across the suite and made each app.setStyleSheet() re-polish all of
+    them, so the theme tests ran for many minutes.  hide()+deleteLater() skips closeEvent (no
+    unsaved-changes dialog or tray hand-off during teardown).
+    """
+    yield
+    app = QApplication.instance()
+    if app is None:
+        return
+    for w in app.topLevelWidgets():
+        w.hide()
+        w.deleteLater()
+    pump(0)
+
+
+@pytest.fixture(autouse=True)
 def _allow_loopback_fetch(monkeypatch):
     """Tests serve pages from 127.0.0.1; the SSRF guard has its own tests that switch this off."""
     import src.parsers.fetch as fm

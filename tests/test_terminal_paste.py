@@ -1,5 +1,5 @@
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QGuiApplication, QKeyEvent
+from PySide6.QtGui import QGuiApplication, QInputMethodEvent, QKeyEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from conftest import pump, wait_until
@@ -112,6 +112,19 @@ def test_sender_refuses_when_disconnected(qapp, monkeypatch):
     why = paster.start("hello")
     assert why and "\u5c1a\u672a\u9023\u7dda" in why
     assert sent == []
+
+
+def test_sender_refuses_unencodable_text_without_holding_the_lock(qapp, monkeypatch):
+    session = PttSession()
+    session.client.state = State.CONNECTED
+    sent = []
+    monkeypatch.setattr(session.client, "send", lambda data: sent.append(bytes(data)) or True)
+    paster = PasteSender(session, lambda: None)
+    why = paster.start("ok\ud83d\ude00")                              # used to raise after taking the PASTE lock
+    assert why and "Big5" in why
+    assert sent == [] and not paster.running
+    assert session.send_lock.owner() is None
+    assert paster.start("ok") is None
 
 
 def test_paste_refused_when_not_connected(qapp):
@@ -233,6 +246,24 @@ def test_keys_are_paused_while_pasting(qapp, monkeypatch):
     term.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key_A, Qt.KeyboardModifier.NoModifier, "a"))
     assert sent == []
     assert notices and "\u8cbc\u4e0a\u9032\u884c\u4e2d" in notices[-1]
+
+
+def test_input_method_commit_is_paused_while_pasting(qapp, monkeypatch):
+    term = make_term()
+    sent = []
+    monkeypatch.setattr(term.s, "send_user_bytes", lambda data: sent.append(bytes(data)) or True)
+    notices = collect_notices(term)
+    ev = QInputMethodEvent()
+    ev.setCommitString("\u4e2d")
+    term.pasting = True
+    term.inputMethodEvent(ev)
+    assert sent == []
+    assert notices and "\u8cbc\u4e0a\u9032\u884c\u4e2d" in notices[-1]
+    term.pasting = False
+    ev = QInputMethodEvent()
+    ev.setCommitString("\u4e2d")
+    term.inputMethodEvent(ev)
+    assert sent == ["\u4e2d".encode("cp950")]
 
 
 def test_context_menu_has_paste_action(qapp, monkeypatch):
