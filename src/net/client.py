@@ -49,6 +49,22 @@ def endpoint_problem(url: str) -> str | None:
     return "端點必須使用 wss:// 或 telnet://（ws:// 僅限本機測試）。"
 
 
+def origin_for(url: str) -> str:
+    """Origin header a BBS web bridge expects: its web terminal page (ws.X -> https://term.X).
+
+    Verified 2026-10-22: ws.ptt.cc needs term.ptt.cc and ws.ptt2.cc needs term.ptt2.cc (403 otherwise).
+    """
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ORIGIN
+    if not host or host in _LOOPBACK:
+        return ORIGIN                                      # local fake BBS used by the tests
+    if host.startswith("ws."):
+        return f"https://term.{host[3:]}"
+    return f"https://{host}"
+
+
 def login_host_trusted(url: str) -> bool:
     """True only for the exact official endpoint (or a local test endpoint).
 
@@ -126,7 +142,7 @@ class PttClient(QObject):
         if parsed.scheme == "telnet":
             self._connect_telnet(parsed.hostname or "", parsed.port or 23)
             return
-        ws = QWebSocket(ORIGIN)
+        ws = QWebSocket(origin_for(url))
         qt_proxy = self.proxy.to_qt()
         if qt_proxy is not None:
             ws.setProxy(qt_proxy)                             # must be set before open()
@@ -203,7 +219,8 @@ class PttClient(QObject):
                 return False
             self._tcp.flush()
         elif self._ws is not None:
-            self._ws.sendBinaryMessage(data)
+            if self._ws.sendBinaryMessage(data) != len(data):    # Qt returns the bytes queued (0 when it refused)
+                return False
         else:
             return False
         self.bytes_sent += len(data)  # only counts; the content is never logged

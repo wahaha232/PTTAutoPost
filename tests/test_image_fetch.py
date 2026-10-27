@@ -176,3 +176,31 @@ def test_zip_download_removes_the_partial_file_when_nothing_works(monkeypatch, t
     with pytest.raises(FetchError, match="沒有任何圖片"):
         img.download_images_zip(["https://cdn.example.com/a.jpg"], target)
     assert not target.exists() and not target.with_name(target.name + ".part").exists()
+
+
+def test_referer_is_per_request_and_never_follows_a_redirect_to_another_host(monkeypatch):
+    seen = []
+
+    class Spy(Session):
+        def get(self, url, **kwargs):
+            seen.append((url, dict(kwargs.get("headers") or {})))
+            return super().get(url, **kwargs)
+    sess = Spy([Resp(status=302, ctype=None, loc="https://other.example/b.jpg"), Resp(body=b"jpeg", ctype="image/jpeg")])
+    monkeypatch.setattr(img.requests, "Session", lambda: sess)
+    monkeypatch.setattr(img, "_mount_pinning", lambda s: None)
+    monkeypatch.setattr(img, "_pin_session", lambda s, url: None)
+    img.fetch_image("https://cdn.news.example/a.jpg", strict_host=False, referer="https://news.example/story/1?x=2")
+    assert "Referer" not in sess.headers                               # never session-wide
+    assert seen[0] == ("https://cdn.news.example/a.jpg", {"Referer": "https://news.example/"})   # origin only
+    assert seen[1] == ("https://other.example/b.jpg", {})              # redirect to another host: dropped
+    seen.clear()
+    sess.responses = [Resp(body=b"png", ctype="image/png")]
+    img.fetch_image("https://news.example/img/a.png", strict_host=False, referer="https://news.example/story/1")
+    assert seen[0][1] == {"Referer": "https://news.example/story/1"}  # the article's own host: full URL
+
+
+@pytest.mark.parametrize("location", ["https://[bad/x.jpg", "https://i.imgur.com:99999/x.jpg"])
+def test_malformed_redirect_location_is_a_fetch_error(monkeypatch, location):
+    _fake(monkeypatch, Resp(status=302, ctype=None, loc=location))
+    with pytest.raises(FetchError, match="導向到不允許的網址"):
+        img.fetch_image("https://i.imgur.com/a.jpg")

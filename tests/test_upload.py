@@ -8,10 +8,17 @@ from src.net import upload as up
 
 
 class Resp:
+    """Streaming fake: the body is only available through iter_content (no .text)."""
     def __init__(self, status=200, text="https://files.catbox.moe/abc.png"):
         self.status_code = status
-        self.text = text
+        self.body = text.encode()
         self.closed = False
+        self.read = 0
+
+    def iter_content(self, size):
+        for i in range(0, len(self.body), size):
+            self.read += len(self.body[i:i + size])
+            yield self.body[i:i + size]
 
     def close(self):
         self.closed = True
@@ -141,3 +148,11 @@ def test_cancelled_batch_stops_without_reporting_an_error(monkeypatch, tmp_path)
     monkeypatch.setattr(up, "upload_image", fake)
     batch = up.upload_images([str(tmp_path / "a.png"), str(tmp_path / "b.png")], "catbox", cancel=cancel)
     assert batch.results == [] and batch.errors == []
+
+
+def test_upload_reads_the_response_streamed_and_capped(monkeypatch, tmp_path):
+    resp = Resp(text="https://files.catbox.moe/abc.png\n" + "x" * 10_000_000)
+    fake = _patch_session(monkeypatch, resp)
+    assert up.upload_image(_png(tmp_path), "catbox").url == "https://files.catbox.moe/abc.png"
+    assert fake.kwargs["stream"] is True
+    assert resp.read <= up.MAX_RESPONSE_BYTES + 4096 and resp.closed      # never the 10 MB body

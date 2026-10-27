@@ -614,3 +614,150 @@ def test_find_image_urls_reads_bare_image_links_from_post_text():
         "https://i.imgur.com/abc123.jpg", "https://imgur.com/xyz789"]
     assert parse(html, "https://www.ptt.cc/bbs/Test/M.1.A.html").images == [
         "https://i.imgur.com/abc123.jpg", "https://imgur.com/xyz789"]
+
+
+# ---------------------------------------------------------------- review fixes (hostile page data / fetch edge cases)
+def _ld_page(ld: str, head: str = "", body: str = "") -> str:
+    return (f'<html><head><script type="application/ld+json">{ld}</script>{head}</head><body><article>'
+            + "".join(f"<p>{PARA}第{i}段。</p>" for i in range(5)) + body + "</article></body></html>")
+
+
+def test_jsonld_fields_of_the_wrong_type_do_not_kill_the_parse():
+    ld = ('{"@type":"NewsArticle","headline":["清單標題","第二個"],"datePublished":["2026-10-01T08:30:00+08:00"],'
+          '"publisher":{"@type":"Organization","name":["某某新聞網"]},"author":[{"@type":"Person","name":["王小明"]},'
+          '{"@type":"Person","name":42}],"articleBody":{"x":1}}')
+    r = parse(_ld_page(ld), "https://news.example/a")
+    assert r.title.value == "清單標題" and r.site.value == "某某新聞網" and r.author.value == "王小明"
+    assert r.published.value.startswith("2026-10-01")
+    ld = '{"@type":"NewsArticle","headline":{"a":1},"datePublished":12345,"publisher":{"name":7},"author":{"name":null}}'
+    r = parse(_ld_page(ld, body="<h1>頁面標題</h1>"), "https://news.example/a")
+    assert r.status != "failed" and r.title.value == "頁面標題"
+
+
+def test_out_of_range_timezone_shift_does_not_raise():
+    from src.parsers.extract import _norm_time
+    assert _norm_time("0001-01-01T00:00:00+14:00").startswith("0001-01-01")
+    assert _norm_time("9999-12-31T23:59:59-14:00").startswith("9999-12-31")
+
+
+def test_malformed_page_urls_are_skipped_not_fatal():
+    body = ('<a href="http://[bad/x.jpg"><img src="http://[bad/y.jpg"></a>'
+            '<img srcset="http://[bad/z.jpg 2x, https://img.example/ok.jpg 1x" src="//[bad">'
+            '<picture><source srcset="https://[bad 800w"><img src="https://img.example/p.jpg"></picture>'
+            '<a href="https://img.example:99999/a.jpg">y</a>')
+    head = '<link rel="canonical" href="http://[bad/"><meta property="og:image" content="http://[bad/og.jpg">'
+    html = _ld_page('{"@type":"NewsArticle","headline":"標題"}', head=head, body=body)
+    r = parse(html, "https://news.example/a")
+    assert r.url.value == "https://news.example/a" and r.title.value == "標題"
+    assert "https://img.example/ok.jpg" in r.images and "https://img.example/p.jpg" in r.images
+    assert not any("99999" in u or "[bad" in u for u in r.images)
+    assert find_image_urls(html, "https://news.example/a")
+
+
+@pytest.mark.parametrize("page,canon,accepted", [
+    ("https://www.cna.com.tw/news/1?utm=x", "https://www.cna.com.tw/news/1", True),
+    ("https://www.cna.com.tw/news/1?utm=x", "https://cna.com.tw/news/1", True),       # parent domain
+    ("https://m.example.com/a", "https://example.com/a", True),
+    ("https://www.cna.com.tw/news/1", "/news/1", True),                               # relative, same host
+    ("https://attacker.com.tw/a", "https://www.cna.com.tw/news/1", False),            # only the public suffix matches
+    ("https://www.cna.com.tw/a", "https://com.tw/a", False),                          # bare public suffix
+    ("https://news.bbc.co.uk/a", "https://evil.co.uk/a", False),
+    ("https://www.cna.com.tw/a", "javascript://www.cna.com.tw/%0aalert(1)", False),   # not http(s)
+    ("https://www.cna.com.tw/a", "https://u:p@www.cna.com.tw/a", False),              # userinfo
+    ("https://example.com/a", "https://notexample.com/a", False),                     # no label boundary
+])
+def test_canonical_url_must_be_http_on_the_same_site(page, canon, accepted):
+    for head in (f'<link rel="canonical" href="{canon}">', f'<meta property="og:url" content="{canon}">'):
+        r = parse(_ld_page('{"@type":"NewsArticle","headline":"標題"}', head=head), page)
+        assert (r.url.source == "canonical") is accepted, (page, canon, head)
+        if not accepted:
+            assert r.url.value == page
+
+
+def test_dense_parents_uses_cached_link_density_with_the_same_result(monkeypatch):
+    from bs4 import BeautifulSoup
+    from src.parsers import extract as E
+    blocks = "".join(f'<div class="b{i}"><p>{PARA}{i} <!-- 註解 --> </p>'
+                     + ("<a href='/x'> " + "連結文字" * (i % 5) + "<a>巢狀</a></a>") * (i % 3)
+                     + "<script>var x = '很多很多字很多很多字';</script><span><a>內</a>文字</span></div>" for i in range(300))
+    doc = BeautifulSoup(f"<html><body><div id='w'>{blocks}</div><div>{PARA * 3}<![CDATA[cdata]]></div>"
+                        f"<template><p>{PARA}</p></template></body></html>", "lxml")
+    real = E._link_density
+    lengths = E._text_and_link_lengths(doc.body)
+    for t in doc.body.find_all(True):                       # cached lengths == the slow per-node computation
+        if t.interesting_string_types == E._MAIN_STRINGS:
+            text_len, link_len = lengths[id(t)]
+            assert link_len / (text_len or 1) == real(t), t.name
+    calls = []
+    monkeypatch.setattr(E, "_link_density", lambda el: calls.append(1) or real(el))
+    got = E._dense_parents(doc)
+    n_calls = len(calls)
+    scores = {}                                              # reference: the old exhaustive ranking
+    for t in doc.body.find_all(True):
+        n = E._own_text_len(t)
+        if n < 25 or t.name in E.INLINE:
+            continue
+        for anc in (t, t.parent, t.parent.parent):
+            if anc is not None and anc.name not in ("html", "body", "[document]"):
+                scores.setdefault(id(anc), [anc, 0])[1] += n
+    want = [v[0] for v in sorted(scores.values(), key=lambda v: -(v[1] * max(0.1, 1 - real(v[0]))))[:3]]
+    assert got == want
+    assert n_calls == 1 and len(scores) > 600             # only <template> takes the slow path; old code: every candidate
+
+
+def test_cgnat_and_other_non_global_addresses_are_refused(monkeypatch):
+    import socket
+    monkeypatch.setattr(F, "ALLOW_PRIVATE_HOSTS", False)
+    for ip in ("100.64.0.1", "198.18.0.1", "192.0.0.8", "::ffff:127.0.0.1", "fc00::1", "2001:db8::1"):
+        fam = socket.AF_INET6 if ":" in ip else socket.AF_INET
+        monkeypatch.setattr(socket, "getaddrinfo", lambda h, *a, fam=fam, ip=ip, **k: [(fam, 1, 6, "", (ip, 0))])
+        with pytest.raises(FetchError, match="本機或內網"):
+            F._resolve_public("http://x.example/a")
+    monkeypatch.setattr(socket, "getaddrinfo", lambda h, *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 0))])
+    assert F._resolve_public("http://x.example/a") == ("x.example", [(socket.AF_INET, "93.184.216.34")])
+    monkeypatch.setattr(F, "ALLOW_PRIVATE_HOSTS", True)                 # test override still works
+    assert F._resolve_public("http://127.0.0.1/a") is None
+
+
+def test_bad_port_is_an_input_error_and_a_bad_redirect_a_fetch_error(monkeypatch):
+    for bad in ("http://example.com:99999/a", "http://example.com:abc/a"):
+        with pytest.raises(InputError):
+            F.validate_url(bad)
+    route(monkeypatch, {"https://a.example/p": FakeResp(302, {"Location": "https://a.example:99999/x"}),
+                        "https://a.example/b": FakeResp(302, {"Location": "http://[bad/"})})
+    for path in ("p", "b"):
+        with pytest.raises(FetchError, match="導向"):
+            F.fetch(f"https://a.example/{path}", min_interval=0)
+
+
+def test_decode_big5_as_cp950_quoted_charset_and_mostly_valid_utf8():
+    text = "碁銹裏墻恒粧嫺"                                         # in cp950 but not in Python's strict big5 codec
+    raw = f"<html><body>{text}</body></html>".encode("cp950")
+    out, cs = F._decode(raw, "big5", [])
+    assert text in out and cs == "big5"
+    w = []
+    out, cs = F._decode("<p>中文內容</p>".encode(), '"utf-8"', w)
+    assert out == "<p>中文內容</p>" and cs == "utf-8" and not w
+    raw = ("<meta charset='utf-8'><p>" + "正常的中文內容。" * 200 + "</p>").encode() + b"\xff\xfe broken"
+    w = []
+    out, cs = F._decode(raw, None, w)
+    assert cs == "utf-8" and "正常的中文內容。" in out and "�" in out
+    assert any("UTF-8" in x for x in w) and not any("自動偵測" in x for x in w)
+
+
+def test_quoted_charset_in_the_content_type_header(monkeypatch):
+    body = "<html><body><p>大五碼內容</p></body></html>".encode("cp950")
+    route(monkeypatch, {"https://a.example/q": FakeResp(200, {"Content-Type": 'text/html; charset="big5"'}, body)})
+    f = F.fetch("https://a.example/q", min_interval=0)
+    assert "大五碼內容" in f.html and f.charset == "big5" and not any("自動偵測" in w for w in f.warnings)
+
+
+def test_sessions_ignore_proxy_environment_variables(monkeypatch):
+    import requests
+    from src.net import upload as up
+    sess = requests.Session()
+    F._mount_pinning(sess)
+    assert sess.trust_env is False
+    monkeypatch.setattr(up, "_pin_session", lambda s, url: None)
+    with up._session_for("https://catbox.moe/user/api.php") as s:
+        assert s.trust_env is False

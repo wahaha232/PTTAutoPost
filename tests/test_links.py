@@ -88,3 +88,10 @@ def test_article_image_urls_allow_any_public_https_host_but_not_svg():
     assert not is_article_image_url("https://cdn.example.com/x.svg")
     assert not is_article_image_url("https://127.0.0.1/x.jpg")
     assert not is_article_image_url("https://localhost/x.jpg")
+
+
+def test_balanced_parentheses_stay_in_the_url_and_unbalanced_one_is_trimmed():
+    links = find_links(make_screen("see https://en.wikipedia.org/wiki/Foo_(bar) ok"))
+    assert [l.url for l in links] == ["https://en.wikipedia.org/wiki/Foo_(bar)"]
+    links = find_links(make_screen("(https://example.com/a) and (https://en.wikipedia.org/wiki/Foo_(bar))."))
+    assert [l.url for l in links] == ["https://example.com/a", "https://en.wikipedia.org/wiki/Foo_(bar)"]

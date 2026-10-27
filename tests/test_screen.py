@@ -173,3 +173,32 @@ def test_huge_csi_counts_and_long_sequences_do_not_stall_or_grow():
     assert len(s._csi) <= 64
     s.feed(b"\x1b[0mhello")
     assert "hello" in s.row_text(s.cur.y)
+
+
+def _wide_ok(s, y=0):
+    """Every WIDE2 cell follows a non-WIDE2 lead with text; no orphan halves."""
+    row = s.grid[y]
+    for x, cell in enumerate(row):
+        if cell[3] & WIDE2:
+            assert x > 0 and not row[x - 1][3] & WIDE2 and row[x - 1][0].strip(), (x, row[x - 1:x + 1])
+    return True
+
+
+def test_delete_insert_erase_never_leave_orphan_wide_halves():
+    for seq, expect in ((b"\x1b[1;2H\x1b[P", "a d"),       # ESC[P deletes the lead of 中: its trail is blanked
+                        (b"\x1b[1;3H\x1b[P", "a d"),       # ESC[P deletes only the trail: the lead is blanked
+                        (b"\x1b[1;3H\x1b[@", "a   d"),     # insert between the halves: both blanked
+                        (b"\x1b[1;3H\x1b[X", "a  d"),     # erase the trail only
+                        (b"\x1b[1;3H\x1b[K", "a"),         # erase to end from the trail
+                        (b"\x1b[1;2H\x1b[1K", "   d")):   # erase to start through the lead
+        s = Screen()
+        feed_text(s, "a中d")
+        s.feed(seq)
+        assert _wide_ok(s) and s.row_text(0) == expect, seq
+
+
+def test_insert_pushing_a_lead_to_the_right_edge_blanks_it():
+    s = Screen(cols=6)
+    feed_text(s, "abcd中")
+    s.feed(b"\x1b[1;1H\x1b[@")
+    assert _wide_ok(s) and s.row_text(0) == " abcd"

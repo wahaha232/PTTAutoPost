@@ -140,21 +140,21 @@ def upload_image(path: str | Path, host_key: str, timeout: float = 180,
         with _session_for(host.endpoint) as sess, file.open("rb") as fh:
             resp = sess.post(host.endpoint, data=host.extra,
                              files={host.field: (file.name, _CancellableReader(fh, cancel), ctype)},
-                             headers=headers, timeout=timeout, allow_redirects=False)
+                             headers=headers, timeout=timeout, allow_redirects=False, stream=True)
+            try:                                       # read while the session (and its pool) is still open
+                if resp.status_code != 200:
+                    if resp.status_code == 413:
+                        raise FetchError(f"圖床拒絕：檔案超過 {host.max_bytes // MB} MB 上限。", "HTTP 413")
+                    if resp.status_code == 429:
+                        raise FetchError("圖床忙碌或請求過多，請稍後再試。", "HTTP 429")
+                    raise FetchError(f"圖床回應錯誤（HTTP {resp.status_code}）。", _body_hint(resp))
+                raw = read_capped(resp, MAX_RESPONSE_BYTES)[0].strip()
+            finally:
+                resp.close()
     except requests.exceptions.SSLError as e:
         raise FetchError("上傳時 SSL 憑證驗證失敗。", str(e)) from e
     except requests.RequestException as e:
         raise FetchError("無法連線到圖床。", str(e)) from e
-    try:
-        if resp.status_code != 200:
-            if resp.status_code == 413:
-                raise FetchError(f"圖床拒絕：檔案超過 {host.max_bytes // MB} MB 上限。", "HTTP 413")
-            if resp.status_code == 429:
-                raise FetchError("圖床忙碌或請求過多，請稍後再試。", "HTTP 429")
-            raise FetchError(f"圖床回應錯誤（HTTP {resp.status_code}）。", _body_hint(resp))
-        raw = resp.text[:MAX_RESPONSE_BYTES].strip()
-    finally:
-        resp.close()
     url = raw.splitlines()[0].strip() if raw else ""
     if not url:
         raise FetchError("圖床沒有回傳網址（可能被防火牆或圖床政策阻擋）。", host.endpoint)
@@ -163,9 +163,21 @@ def upload_image(path: str | Path, host_key: str, timeout: float = 180,
     return UploadResult(name=file.name, url=url, host=host.key, size=size)
 
 
+def read_capped(resp, cap: int) -> tuple[str, bool]:
+    """(text of at most `cap` bytes, whether the body was longer) without loading the whole body."""
+    chunks, total = [], 0
+    for chunk in resp.iter_content(4096):
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > cap:
+            break
+    data = b"".join(chunks)
+    return data[:cap].decode("utf-8", "replace"), len(data) > cap
+
+
 def _body_hint(resp) -> str:
     try:
-        return (resp.text or "")[:300].replace("\n", " ")
+        return read_capped(resp, 300)[0].replace("\n", " ")
     except Exception:  # noqa: BLE001
         return ""
 

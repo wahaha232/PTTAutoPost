@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.18"
+__version__ = "0.8.19"
 BUILD_DATE = "2026/10/27"
 APP_NAME = "PTT AutoPost"
 
@@ -14,6 +14,36 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.19", "2026/10/27", [
+        "Update signatures: every update asset must come with an Ed25519 <asset>.sig made by the release key "
+        "(src/signing.py, pure Python RFC 8032; tools/sign_release.py signs offline). Missing or wrong "
+        "signatures, and asset names whose version differs from the release (downgrades), are refused.",
+        "Update apply: a failed copy now rolls back from the backup (restores overwritten files, removes new "
+        "ones) instead of starting a mix of old and new files; the next start reports the failure. The "
+        "manifest version must be a plain x.y.z matching the release, and a delta may never delete "
+        "config/data/logs/updates.",
+        "Update apply waits for automatic typing or pasting to finish, then asks; unzipping and verification "
+        "moved off the UI thread. Private repositories download through the API asset URL with the token.",
+        "PTT2: the WebSocket Origin now follows the site (ws.X -> https://term.X), so ws.ptt2.cc no longer "
+        "gets HTTP 403. A WebSocket send that Qt refuses is reported as a failure.",
+        "Drafts: a fetch that finishes after the fields were edited asks before overwriting; drafts cannot be "
+        "switched while fetching; deleting the open draft resets to a clean new draft; shortened URLs and "
+        "uploaded image URLs are never written into a different draft (reply mode inserts into the reply "
+        "text); opening a draft forgets the previous article's images.",
+        "Article parsing: wrong-typed JSON-LD fields, malformed links and extreme time zones no longer break "
+        "a fetch; canonical/og:url must be http(s) on the same site; CGNAT and other non-global addresses, "
+        "bad ports and proxy environment variables are refused; Big5 pages decode as cp950; quoted charsets "
+        "work; a few invalid UTF-8 bytes no longer trigger auto-detection.",
+        "Title limit follows pttbbs TTLEN (64 bytes including the [category] prefix), with a warning above 46.",
+        "Images: animated GIF/WebP/APNG keep all frames and timings when metadata is stripped (with a size "
+        "cap); Referer is sent per request and never to a redirected third-party host; upload and shortener "
+        "responses are streamed with a byte cap.",
+        "Terminal: deleting/inserting/erasing through half of a wide character clears the other half; URLs "
+        "keep balanced trailing parentheses.",
+        "Smaller fixes: the tray icon no longer appears when both tray options are off; the login helper is "
+        "only started from an absolute path; stale site-test results are ignored; draft search is debounced; "
+        "deleting a signature keeps the selected one; the event trail is trimmed to the newest 5000 rows.",
+    ]),
     ("0.8.18", "2026/10/27", [
         "Signatures: the '刪除' button now always asks before deleting. Qt's clicked(bool) argument used to "
         "arrive as confirm=False, so one click deleted the signature permanently without a confirmation.",

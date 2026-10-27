@@ -14,9 +14,9 @@ from datetime import datetime, timedelta
 from pathlib import PurePosixPath
 from urllib.parse import urljoin, urlparse
 
-from bs4 import BeautifulSoup, Comment, NavigableString, Tag
+from bs4 import BeautifulSoup, CData, Comment, NavigableString, Tag
 
-from ..links import is_article_image_url, is_image_url
+from ..links import is_article_image_url, is_image_url, validate_http_url
 from ..logging_setup import get_logger
 
 log = get_logger("extract")
@@ -121,7 +121,7 @@ def _norm_time(raw: str | None, notes: list[str] | None = None) -> str | None:
             else:
                 dt = local
         return dt.strftime("%Y-%m-%d %H:%M")
-    except ValueError:
+    except (ValueError, OverflowError):                 # OverflowError: year 1 / 9999 shifted out of range
         pass
     m = re.search(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?[ T]*(\d{1,2})?[:：時]?(\d{2})?", raw)
     if m:
@@ -195,6 +195,13 @@ def _strip_title_suffix(title: str, site: str | None) -> str:
 
 
 # ---------------------------------------------------------------------- strategies
+def _ld_str(v) -> str | None:
+    """JSON-LD text value: a string, or the first string of a list; anything else is ignored."""
+    if isinstance(v, list):
+        v = next((x for x in v if isinstance(x, str) and x.strip()), None)
+    return v if isinstance(v, str) and v.strip() else None
+
+
 def _jsonld(doc, warnings):
     out = {}
     nodes = []
@@ -222,18 +229,21 @@ def _jsonld(doc, warnings):
     if not nodes:
         return out
     n = nodes[0]
-    out["title"] = n.get("headline") or n.get("name")
-    out["published"] = n.get("datePublished")
-    out["body_len"] = len(n.get("articleBody") or "")
+    out["title"] = _ld_str(n.get("headline")) or _ld_str(n.get("name"))
+    out["published"] = _ld_str(n.get("datePublished"))
+    body = n.get("articleBody")
+    out["body_len"] = len(body) if isinstance(body, str) else 0
     pub = n.get("publisher")
+    if isinstance(pub, list):
+        pub = next((p for p in pub if isinstance(p, dict)), None)
     if isinstance(pub, dict):
-        out["site"] = pub.get("name")
+        out["site"] = _ld_str(pub.get("name"))
     au = n.get("author")
     names = []
     for a in au if isinstance(au, list) else [au]:
-        if isinstance(a, dict) and a.get("name") and (a.get("@type") in (None, "Person") or "person" in str(a.get("@type")).lower()):
-            names.append(a["name"])
-        elif isinstance(a, str):
+        if isinstance(a, dict) and _ld_str(a.get("name")) and (a.get("@type") in (None, "Person") or "person" in str(a.get("@type")).lower()):
+            names.append(_ld_str(a.get("name")))
+        elif isinstance(a, str) and a.strip():
             names.append(a)
     out["authors"] = names
     return out
@@ -348,6 +358,34 @@ def _own_text_len(t: Tag) -> int:
     return n
 
 
+_MAIN_STRINGS = {NavigableString, CData}    # what get_text() counts for ordinary tags (no comments/scripts)
+
+
+def _text_and_link_lengths(root: Tag) -> dict[int, tuple[int, int]]:
+    """id(tag) -> (len(get_text(strip=True)), summed get_text length of its <a> descendants), bottom-up.
+
+    Matches _link_density() for tags whose interesting_string_types are the default ones.
+    """
+    out: dict[int, tuple[int, int]] = {}
+    stack: list[tuple[Tag, bool]] = [(root, False)]
+    while stack:
+        node, done = stack.pop()
+        if not done:
+            stack.append((node, True))
+            stack.extend((ch, False) for ch in node.children if isinstance(ch, Tag))
+            continue
+        text = links = 0
+        for ch in node.children:
+            if isinstance(ch, Tag):
+                t, a = out[id(ch)]
+                text += t
+                links += a + (t if ch.name == "a" else 0)
+            elif type(ch) in _MAIN_STRINGS:
+                text += len(ch.strip())
+        out[id(node)] = (text, links)
+    return out
+
+
 def _dense_parents(doc, top: int = 3):
     scores: dict[int, list] = {}
     body = doc.body
@@ -362,7 +400,15 @@ def _dense_parents(doc, top: int = 3):
         for anc in (t, t.parent, t.parent.parent if t.parent is not None else None):
             if anc is not None and anc.name not in ("html", "body", "[document]"):
                 scores.setdefault(id(anc), [anc, 0])[1] += n
-    ranked = sorted(scores.values(), key=lambda v: -(v[1] * max(0.1, 1 - _link_density(v[0]))))
+    lengths = _text_and_link_lengths(body)                     # one O(n) pass instead of a subtree walk per candidate
+
+    def density(el: Tag) -> float:
+        if el.interesting_string_types != _MAIN_STRINGS or id(el) not in lengths:
+            return _link_density(el)                           # script/style/template: exact slow path
+        text_len, link_len = lengths[id(el)]
+        return link_len / (text_len or 1)
+
+    ranked = sorted(scores.values(), key=lambda v: -(v[1] * max(0.1, 1 - density(v[0]))))
     return [v[0] for v in ranked[:top]]
 
 
@@ -532,12 +578,60 @@ def _ptt_web(doc, res: ParseResult):
     return True
 
 
+# Multi-label public suffixes common for this tool's pages: a host match on only these proves nothing.
+_PUBLIC_SUFFIXES = {
+    "com.tw", "org.tw", "gov.tw", "edu.tw", "net.tw", "idv.tw", "mil.tw", "game.tw", "ebiz.tw", "club.tw",
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "com.hk", "org.hk", "net.hk", "edu.hk", "gov.hk", "idv.hk",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "com.cn", "net.cn", "org.cn", "com.sg", "com.my",
+    "com.au", "net.au", "org.au", "co.kr", "or.kr", "co.nz", "com.mo",
+}
+
+
+def _safe_join(base: str, href: str | None) -> str:
+    """urljoin for page-supplied values; "" when the value cannot be parsed (e.g. "http://[bad/")."""
+    try:
+        joined = urljoin(base, (href or "").strip())
+        _ = urlparse(joined).port                   # also reject an out-of-range port
+        return joined
+    except ValueError:
+        return ""
+
+
+def _host(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _related_host(a: str, b: str) -> bool:
+    """Same host, or one is a subdomain of the other on a label boundary -- never via a bare public suffix."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    if "." not in short or short in _PUBLIC_SUFFIXES:
+        return False
+    return long_.endswith("." + short)
+
+
+def _canonical_url(raw: str | None, page_url: str) -> str | None:
+    """A canonical / og:url is only trusted as an http(s) URL on the page's own site."""
+    if not raw:
+        return None
+    curl = _safe_join(page_url, raw)
+    if not curl or not validate_http_url(curl):
+        return None
+    return curl if _related_host(_host(curl), _host(page_url)) else None
+
+
 # ---------------------------------------------------------------------- main entry
 def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> ParseResult:
     res = ParseResult()
     res.warnings.extend(extra_warnings or [])
     doc = BeautifulSoup(html, "lxml")
-    host = (urlparse(url).hostname or "").lower()
+    host = _host(url)
     res.url.set(url, FOUND, "request")
 
     visible = re.sub(r"\s+", "", doc.get_text())
@@ -557,8 +651,8 @@ def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> Parse
     if title_raw:
         res.title.set(_strip_title_suffix(_clean(title_raw), res.site.value), FOUND, "json-ld/og/h1")
     canon = doc.find("link", rel="canonical")
-    curl = (canon.get("href") if canon else None) or _meta(doc, "og:url")
-    if curl and urlparse(curl).hostname and urlparse(curl).hostname.split(".")[-2:] == urlparse(url).hostname.split(".")[-2:]:
+    curl = _canonical_url((canon.get("href") if canon else None) or _meta(doc, "og:url"), url)
+    if curl:
         res.url.value, res.url.source = curl, "canonical"
     t_el = doc.find("time", attrs={"datetime": True})
     res.published.set(_norm_time(ld.get("published") or _meta(doc, "article:published_time", "og:article:published_time", "pubdate",
@@ -679,7 +773,10 @@ def _tokens(*values: str) -> set[str]:
 
 
 def _is_generic_image_url(url: str) -> bool:
-    path = (urlparse(url).path or "").lower()
+    try:
+        path = (urlparse(url).path or "").lower()
+    except ValueError:
+        return True                                    # unparsable: never offer it
     if any(token in path for token in ("logo", "icon", "avatar", "pic_fb", "placeholder", "default")):
         return True
     name = PurePosixPath(path).name
@@ -715,7 +812,10 @@ def _safe_original(url: str) -> str:
 
 def _looks_like_image_file(url: str) -> bool:
     """A direct image file, not a wiki/media page that merely ends in .jpg."""
-    path = (urlparse(url).path or "").lower()
+    try:
+        path = (urlparse(url).path or "").lower()
+    except ValueError:
+        return False
     if PurePosixPath(path).suffix not in _IMAGE_SUFFIXES:
         return False
     return not ("/wiki/" in path or "/file:" in path or path.startswith("/wiki"))
@@ -738,8 +838,9 @@ def _best_srcset(raw: str | None, base_url: str) -> str:
                     score = int(float(desc[:-1]) * 1000)
             except ValueError:
                 score = 0
-        if score > best_score:
-            best, best_score = urljoin(base_url, bits[0]), score
+        joined = _safe_join(base_url, bits[0])
+        if joined and score > best_score:
+            best, best_score = joined, score
     return best
 
 
@@ -747,7 +848,7 @@ def _image_url(img: Tag, base_url: str) -> str:
     """Prefer the linked original, then the largest srcset, then the lazy/src URL."""
     anchor = img.find_parent("a", href=True)
     if anchor:
-        href = urljoin(base_url, anchor["href"].strip())
+        href = _safe_join(base_url, anchor["href"])
         if _looks_like_image_file(href) and is_article_image_url(href):
             return _safe_original(href)
     picture = img.find_parent("picture")
@@ -762,8 +863,8 @@ def _image_url(img: Tag, base_url: str) -> str:
     for attr in ("data-src", "data-original", "data-lazy-src", "src"):
         raw = img.get(attr)
         if raw:
-            url = urljoin(base_url, raw.strip())
-            if is_article_image_url(url) and not _is_generic_image_url(url):
+            url = _safe_join(base_url, raw)
+            if url and is_article_image_url(url) and not _is_generic_image_url(url):
                 return _safe_original(url)
     return ""
 
@@ -807,8 +908,8 @@ def _images_from(root: Tag, base_url: str, limit: int = 16, doc: Tag | None = No
     for a in root.find_all("a", href=True):
         if len(found) >= limit:
             break
-        url = urljoin(base_url, a["href"].strip())
-        if (_looks_like_image_file(url) and is_article_image_url(url)
+        url = _safe_join(base_url, a["href"])
+        if url and (_looks_like_image_file(url) and is_article_image_url(url)
                 and not _is_generic_image_url(url) and _node_allowed(a, root)):
             add(_safe_original(url))
     for node in root.find_all(string=True):           # PTT/news posts often paste image URLs as plain text
@@ -830,8 +931,8 @@ def _images_from(root: Tag, base_url: str, limit: int = 16, doc: Tag | None = No
         for name in ("og:image", "twitter:image"):
             raw = _meta(meta_doc, name)
             if raw:
-                url = urljoin(base_url, raw.strip())
-                if is_article_image_url(url) and not _is_generic_image_url(url):
+                url = _safe_join(base_url, raw)
+                if url and is_article_image_url(url) and not _is_generic_image_url(url):
                     add(_original_variant(url))
     return found
 

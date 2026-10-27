@@ -241,6 +241,7 @@ def test_reply_mode_is_saved_and_restored_with_the_draft(win):
     win.new_draft()
     assert not win.chk_reply.isChecked()
     win.search.setText("測試文章")
+    pump(300)                                    # search is debounced
     win.draft_list.setCurrentRow(0)
     win.open_selected()
     assert win.chk_reply.isChecked()
@@ -255,6 +256,7 @@ def test_draft_save_open_search_delete(win):
     win.new_draft()
     assert win.w["title"].text() == ""
     win.search.setText("測試文章")
+    pump(300)                                    # search is debounced
     assert win.draft_list.count() == 1
     win.draft_list.setCurrentRow(0)
     win.open_selected()
@@ -1436,13 +1438,12 @@ def test_update_download_applies_a_delta_and_restarts(win, monkeypatch, tmp_path
     staged = up.StagedUpdate(tmp_path / "staging", "9.9.9", ("PTTAutoPost.exe",), ())
     applied, closed = [], []
     monkeypatch.setattr(up, "is_delta_asset", lambda asset: True)
-    monkeypatch.setattr(up, "stage_delta", lambda result: staged)
     monkeypatch.setattr(up, "apply_staged_update", lambda s: applied.append(s) or tmp_path / "s.ps1")
     monkeypatch.setattr(win, "_confirm_unsaved", lambda what: True)
     monkeypatch.setattr(win, "close", lambda: closed.append(True))
     monkeypatch.setattr(QApplication, "quit", lambda self: None)
     win._update_asset = up.Asset(f"PTTAutoPost-9.9.9-delta-{up.__version__}.zip", "https://github.com/x", 10)
-    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 10))
+    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 10), staged)
     assert applied == [staged] and win._quitting and closed
 
 
@@ -1451,11 +1452,10 @@ def test_update_download_can_be_cancelled_at_the_unsaved_prompt(win, monkeypatch
     staged = up.StagedUpdate(tmp_path / "staging", "9.9.9", ("PTTAutoPost.exe",), ())
     applied = []
     monkeypatch.setattr(up, "is_delta_asset", lambda asset: True)
-    monkeypatch.setattr(up, "stage_delta", lambda result: staged)
     monkeypatch.setattr(up, "apply_staged_update", lambda s: applied.append(s))
     monkeypatch.setattr(win, "_confirm_unsaved", lambda what: False)
     win._update_asset = up.Asset(f"PTTAutoPost-9.9.9-delta-{up.__version__}.zip", "https://github.com/x", 10)
-    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 10))
+    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 10), staged)
     assert applied == [] and not win._quitting
 
 
@@ -1465,15 +1465,13 @@ def test_update_download_applies_a_full_portable_zip(win, monkeypatch, tmp_path)
     staged = up.StagedUpdate(tmp_path / "staging", "9.9.9", ("PTTAutoPost.exe", "_internal/x.dll"), ())
     applied, closed = [], []
     monkeypatch.setattr(up, "is_delta_asset", lambda asset: False)
-    monkeypatch.setattr(up, "can_apply_delta", lambda app_dir=None: True)
-    monkeypatch.setattr(up, "stage_full_zip", lambda result, version: staged)
     monkeypatch.setattr(up, "apply_staged_update", lambda s: applied.append(s))
     monkeypatch.setattr(win, "_confirm_unsaved", lambda what: True)
     monkeypatch.setattr(win, "close", lambda: closed.append(True))
     monkeypatch.setattr(QApplication, "quit", lambda self: None)
     win._update_asset = up.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/x", 100)
     win._update_version = "9.9.9"
-    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 100))
+    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 100), staged)
     assert applied == [staged] and win._quitting and closed
 
 
@@ -1671,3 +1669,133 @@ def test_backup_data_writes_a_restorable_database(win, monkeypatch, tmp_path):
         assert [d["title"] for d in b.list_drafts()] == ["UI備份"]
     finally:
         b.close()
+
+
+# ---------------------------------------------------------------- 2026-10-27 review fixes
+def test_fetch_result_does_not_silently_overwrite_edits_made_meanwhile(win, http_server, monkeypatch):
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: asked.append(a[2]) or QMessageBox.StandardButton.No))
+    win.url_in.setText(http_server + "/ok")
+    win.start_fetch()
+    win.body.setPlainText("擷取期間我自己打的內容")          # the done signal is queued until the loop runs
+    assert wait_until(lambda: not win._busy, 8000)
+    assert asked and "擷取期間" in asked[-1]
+    assert win.body.toPlainText() == "擷取期間我自己打的內容"
+
+
+def test_fetch_without_edits_still_fills_the_fields(win, http_server, monkeypatch):
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: asked.append(a[2]) or QMessageBox.StandardButton.No))
+    win.url_in.setText(http_server + "/ok")
+    win.start_fetch()
+    assert wait_until(lambda: not win._busy, 8000)
+    assert asked == [] and win.body.toPlainText()
+
+
+def test_drafts_cannot_be_switched_while_fetching(win):
+    fill_article(win)
+    did = win.save_draft()
+    win.new_draft()
+    win.reload_drafts()
+    win.draft_list.setCurrentRow(0)
+    win._busy = True
+    try:
+        win.open_selected()
+        assert win.draft_id is None
+        fill_article(win)
+        win.new_draft()
+        assert win.w["title"].text() == "測試文章"
+        assert "擷取進行中" in win.statusBar().currentMessage()
+    finally:
+        win._busy = False
+    assert did
+
+
+def test_deleting_the_open_draft_leaves_a_clean_new_draft(win):
+    fill_article(win)
+    did = win.save_draft()
+    win.body.setPlainText("改過但沒存")
+    win.reload_drafts()
+    win.draft_list.setCurrentRow(0)
+    win.delete_selected()
+    assert win.db.get_draft(did) is None and win.draft_id is None and not win._dirty
+    fill_article(win)
+    assert win.save_draft()                                  # used to fail: UPDATE of the deleted row
+
+
+def test_shortened_url_is_not_written_into_another_draft(win, monkeypatch):
+    fill_article(win)
+    win._shorten_origin = (win.draft_id, win.w["url"].text())
+    win.w["url"].setText("https://example.test/edited")
+    win._on_shortened("https://tinyurl.com/x")
+    assert win.w["url"].text() == "https://example.test/edited"
+    assert QApplication.clipboard().text() == "https://tinyurl.com/x"
+    win._shorten_origin = (win.draft_id, win.w["url"].text())
+    win._on_shortened("https://tinyurl.com/y")
+    assert win.w["url"].text() == "https://tinyurl.com/y"
+
+
+def test_uploaded_urls_go_to_the_reply_text_in_reply_mode_and_not_to_another_draft(win, monkeypatch):
+    from src.net.upload import UploadBatch, UploadResult
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    batch = UploadBatch(results=[UploadResult("a.png", "https://files.catbox.moe/a.png", "catbox", 3)])
+    win.chk_reply.setChecked(True)
+    win._upload_draft_id = win.draft_id
+    win._upload_done(batch)
+    assert "files.catbox.moe/a.png" in win.notes.toPlainText()
+    assert "files.catbox.moe/a.png" not in win.body.toPlainText()
+    win.chk_reply.setChecked(False)
+    win.notes.setPlainText("")
+    win._upload_draft_id = 12345                             # uploaded for a draft that is no longer open
+    win._upload_done(batch)
+    assert "catbox" not in win.body.toPlainText() + win.notes.toPlainText()
+
+
+def test_opening_a_draft_forgets_the_previous_article_images(win):
+    fill_article(win)
+    win.save_draft()
+    win._article_image_urls = ["https://cdn.example.com/old.jpg"]
+    win.btn_zip.setEnabled(True)
+    win._dirty = False
+    win.reload_drafts()
+    win.draft_list.setCurrentRow(0)
+    win.open_selected()
+    assert win._article_image_urls == [] and not win.btn_zip.isEnabled()
+    assert not win._loading
+
+
+def test_site_check_ignores_a_stale_result(win):
+    old, new = object(), object()
+    win._site_check_task = new
+    win._on_site_checked(True, "舊的結果", old)
+    assert win.lbl_site_test.text() != "舊的結果"
+    win._on_site_checked(False, "新的結果", new)
+    assert win.lbl_site_test.text() == "新的結果"
+
+
+def test_login_helper_requires_an_absolute_path(win, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("src.ui.main_window.subprocess.Popen", lambda *a, **k: calls.append(a))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "PttAutoLogin.exe").write_bytes(b"MZ")      # a same-named exe in the working directory
+    monkeypatch.setattr(MainWindow, "_find_pttlogin", staticmethod(lambda: ""))
+    win.pttlogin_path.setText("PttAutoLogin.exe")
+    assert not win.launch_pttlogin() and calls == []
+
+
+def test_update_waits_for_typing_to_finish(win, monkeypatch, tmp_path):
+    from src import update as up
+    staged = up.StagedUpdate(tmp_path / "staging", "9.9.9", ("PTTAutoPost.exe",), ())
+    applied = []
+    monkeypatch.setattr(win, "_apply_staged_update", lambda s: applied.append(s))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    win._update_asset = up.Asset(f"PTTAutoPost-9.9.9-delta-{up.__version__}.zip", "https://github.com/x", 10)
+    win.typer.running = True
+    win._on_update_downloaded(up.DownloadResult(tmp_path / "d.zip", "0" * 64, True, 10), staged)
+    assert applied == [] and win._pending_update is staged
+    win.typer.running = False
+    win._typing_finished(True, "done")
+    pump(20)
+    assert applied == [staged] and win._pending_update is None

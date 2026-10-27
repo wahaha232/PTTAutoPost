@@ -187,6 +187,19 @@ class Screen:
         else:
             self.cur.x = nx
 
+    @staticmethod
+    def _blank_half(row: list[tuple], i: int) -> None:
+        row[i] = (" ",) + row[i][1:3] + (0,)
+
+    def _split_wide(self, row: list[tuple], start: int, end: int) -> None:
+        """Before an edit of cells [start, end): blank the outside half of any wide char cut by a boundary."""
+        if 0 < start < self.cols and row[start][3] & WIDE2:
+            self._blank_half(row, start - 1)                 # leading half left behind on the left
+            if start == end:
+                self._blank_half(row, start)                 # insertion point: both halves separate
+        if start < end < self.cols and row[end][3] & WIDE2:
+            self._blank_half(row, end)                       # trailing half left behind on the right
+
     # ------------------------------------------------------------------ CSI
     def _csi_final(self, f: str, raw: str) -> None:
         if raw.startswith(("?", ">", "=", "!")):
@@ -234,16 +247,22 @@ class Screen:
         elif f == "P":
             row = self.grid[c.y]
             n = min(a(0, 1), self.cols - c.x)
+            self._split_wide(row, c.x, c.x + n)
             del row[c.x:c.x + n]
             row.extend([(" ", DEFAULT_FG, self.bg, 0)] * n)
         elif f == "@":
             row = self.grid[c.y]
             n = min(a(0, 1), self.cols - c.x)
+            self._split_wide(row, c.x, c.x)               # the inserted blanks would separate the two halves
             row[c.x:c.x] = [(" ", DEFAULT_FG, self.bg, 0)] * n
+            if row[self.cols][3] & WIDE2:                 # trailing half pushed off the right edge
+                self._blank_half(row, self.cols - 1)
             del row[self.cols:]
         elif f == "X":
             row = self.grid[c.y]
-            for i in range(c.x, min(self.cols, c.x + a(0, 1))):
+            end = min(self.cols, c.x + a(0, 1))
+            self._split_wide(row, c.x, end)
+            for i in range(c.x, end):
                 row[i] = (" ", DEFAULT_FG, self.bg, 0)
         elif f == "m":
             self._sgr(p or [0])
@@ -256,6 +275,7 @@ class Screen:
     def _erase_line(self, mode: int) -> None:
         row, x = self.grid[self.cur.y], self.cur.x
         rng = range(x, self.cols) if mode == 0 else range(0, x + 1) if mode == 1 else range(self.cols)
+        self._split_wide(row, rng.start, rng.stop)
         for i in rng:
             row[i] = (" ", DEFAULT_FG, self.bg, 0)
 

@@ -24,12 +24,11 @@ def win(qapp, tmp_path, monkeypatch):
 
 
 def make_release(version="9.9.9", assets=None):
-    assets = assets or (
-        update.Asset("PTTAutoPost-9.9.9-portable.zip",
-                     "https://github.com/wahaha232/PTTAutoPost/releases/download/v9.9.9/x.zip", 2048),
-        update.Asset("PTTAutoPost-9.9.9-setup.exe",
-                     "https://github.com/wahaha232/PTTAutoPost/releases/download/v9.9.9/x.exe", 4096),
-    )
+    base = f"https://github.com/wahaha232/PTTAutoPost/releases/download/v{version}/"
+    assets = assets or tuple(
+        update.Asset(name, base + name, size)
+        for name, size in ((f"PTTAutoPost-{version}-portable.zip", 2048), (f"PTTAutoPost-{version}-portable.zip.sig", 129),
+                           (f"PTTAutoPost-{version}-setup.exe", 4096), (f"PTTAutoPost-{version}-setup.exe.sig", 129)))
     return update.Release(version=version, tag=f"v{version}", name=f"Release {version}",
                           notes="修正內容", html_url="https://github.com/wahaha232/PTTAutoPost/releases",
                           assets=assets)
@@ -190,7 +189,7 @@ def test_download_verification_wording_is_explicit(win, monkeypatch, tmp_path):
     path.write_bytes(b"x")
     win._update_asset = update.Asset("x.zip", "https://github.com/x.zip", 1)
     win._on_update_downloaded(update.DownloadResult(path=path, sha256="a" * 64, verified=True, size=1))
-    assert "已核對" in infos[-1] and "不代表發布者身分" in infos[-1]
+    assert "已核對" in infos[-1] and "發布者簽章" in infos[-1]
     win._on_update_downloaded(update.DownloadResult(path=path, sha256="", verified=False, size=1))
     assert "未提供 digest" in infos[-1] and "未完成雜湊核對" in infos[-1]
 

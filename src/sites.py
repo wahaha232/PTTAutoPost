@@ -1,7 +1,7 @@
 """BBS site bookmarks: defaults verified on 2026-10-23, validation and a read-only TCP check.
 
-Only WSS is supported by the current client. Telnet/SSH entries are kept as bookmarks for
-the planned connection abstraction; the UI says so instead of pretending to connect.
+The client connects over WSS and Telnet. SSH entries are kept as bookmarks for the planned
+ssh.exe transport; the UI says so instead of pretending to connect.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ DEFAULT_SITES = (
     {"name": "臺大批踢踢實業坊（PTT）", "protocol": "wss", "host": "ws.ptt.cc", "port": 443,
      "path": "/bbs", "note": f"{VERIFIED} TCP/TLS 有回應；實際登入未驗證"},
     {"name": "臺大批踢踢兔（PTT2）", "protocol": "wss", "host": "ws.ptt2.cc", "port": 443,
-     "path": "/bbs", "note": f"{VERIFIED} TCP/TLS 有回應；WebSocket 握手 403，實際連線待驗證"},
+     "path": "/bbs", "note": f"{VERIFIED} TCP/TLS 有回應；以 Origin term.ptt2.cc 握手可收到登入畫面；實際登入未驗證"},
     {"name": "成大夢之大地", "protocol": "telnet", "host": "bbs.ccns.ncku.edu.tw", "port": 23,
      "path": "", "note": f"{VERIFIED} TCP 可連"},
     {"name": "清華資工楓橋驛站", "protocol": "telnet", "host": "bbs.cs.nthu.edu.tw", "port": 23,
@@ -46,6 +46,8 @@ _HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|[0-9A-Fa-f:]+"
 
 def site_address(site: dict) -> str:
     host, port = site.get("host", ""), int(site.get("port") or 0)
+    if ":" in host and not host.startswith("["):         # bare IPv6 literal
+        host = f"[{host}]"
     proto = site.get("protocol", "")
     if proto == "wss":
         path = site.get("path") or "/bbs"
@@ -61,7 +63,11 @@ def validate_site(name: str, protocol: str, host: str, port: int, path: str = ""
     h = host.strip()
     if not h or h != host or not _HOST_RE.fullmatch(h):
         return "主機名稱不正確（不可含空白、帳密或斜線）。"
-    if not 1 <= int(port) <= 65535:
+    try:
+        port_ok = 1 <= int(port) <= 65535
+    except (TypeError, ValueError):
+        port_ok = False
+    if not port_ok:
         return "連接埠需在 1～65535。"
     p = path.strip()
     if protocol == "wss":
@@ -76,17 +82,24 @@ def validate_site(name: str, protocol: str, host: str, port: int, path: str = ""
     return None
 
 
+def _port(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0                                          # validate_site() then rejects it
+
+
 def normalize_site(site: dict) -> dict:
     return {"name": str(site.get("name", "")).strip(), "protocol": str(site.get("protocol", "")),
-            "host": str(site.get("host", "")).strip(), "port": int(site.get("port") or 0),
+            "host": str(site.get("host", "")).strip(), "port": _port(site.get("port")),
             "path": str(site.get("path", "")).strip(), "note": str(site.get("note", "")).strip()}
 
 
 def check_site(site: dict, timeout: float = 5) -> tuple[bool, str]:
     """Read-only reachability check. Sends no login data and reads no BBS content."""
-    host, port = site.get("host", ""), int(site.get("port") or 0)
+    host, port = site.get("host", ""), _port(site.get("port"))
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True, f"TCP {host}:{port} 可連線（唯讀檢查，未送出任何資料）。"
-    except OSError as e:
+    except (OSError, UnicodeError, ValueError, OverflowError) as e:   # bad IDNA name / port also land here
         return False, f"無法連線 {host}:{port}：{type(e).__name__}: {e}"

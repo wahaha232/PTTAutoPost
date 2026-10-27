@@ -105,6 +105,7 @@ class _PinnedAdapter(requests.adapters.HTTPAdapter):
 
 
 def _mount_pinning(sess: requests.Session) -> None:
+    sess.trust_env = False                           # HTTP(S)_PROXY / .netrc must not bypass the pinned address
     adapter = _PinnedAdapter()
     sess.mount("http://", adapter)
     sess.mount("https://", adapter)
@@ -145,6 +146,7 @@ def validate_url(raw: str) -> str:
     try:
         p = urlparse(url)
         host = p.hostname
+        _ = p.port                                   # raises ValueError for ":99999" / ":abc"
     except ValueError as e:
         raise InputError("網址格式錯誤。", str(e)) from e
     if p.scheme not in ("http", "https"):
@@ -175,7 +177,9 @@ def _resolve_public(url: str) -> tuple[str, list[tuple[int, str]]] | None:
             addr = ipaddress.ip_address(info[4][0].split("%")[0])
         except ValueError:
             continue
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
+        if addr.version == 6 and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped                  # ::ffff:127.0.0.1 is loopback
+        if not addr.is_global or addr.is_multicast:  # also CGNAT 100.64/10, benchmarking, documentation ranges
             raise FetchError("網址指向本機或內網位址，為避免誤觸內部服務，已拒絕。", f"{host} -> {addr}")
         if info[0] in (socket.AF_INET, socket.AF_INET6) and (info[0], str(addr)) not in addresses:
             addresses.append((info[0], str(addr)))
@@ -283,19 +287,35 @@ def _polite(url: str, timeout: float, ignore_robots: bool, min_interval: float, 
     _wait(min(wait, 12), cancel)
 
 
+_CODEC_ALIASES = {"big5": "cp950", "big-5": "cp950", "x-big5": "cp950", "cn-big5": "cp950", "csbig5": "cp950"}
+_UTF8_LABELS = {"utf-8", "utf8"}
+
+
+def _charset_label(raw: str | None) -> str:
+    return (raw or "").strip().strip("\"'").strip().lower()
+
+
 def _decode(raw: bytes, header_charset: str | None, warnings: list[str]) -> tuple[str, str]:
     if raw.startswith(b"\xef\xbb\xbf"):
         return raw[3:].decode("utf-8", "replace"), "utf-8"
     cands = []
-    if header_charset:
-        cands.append(header_charset)
-    m = re.search(rb"<meta[^>]+charset=[\"']?\s*([A-Za-z0-9_\-]+)", raw[:8192], re.I)
+    if _charset_label(header_charset):
+        cands.append(_charset_label(header_charset))
+    m = re.search(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([A-Za-z0-9_\-]+)", raw[:8192], re.I)
     if m:
-        cands.append(m.group(1).decode("ascii", "ignore"))
+        cands.append(_charset_label(m.group(1).decode("ascii", "ignore")))
     for cs in cands:
+        codec = _CODEC_ALIASES.get(cs, cs)               # Big5 pages really use the cp950 superset
         try:
-            return raw.decode(cs), cs.lower()
-        except (LookupError, UnicodeDecodeError):
+            return raw.decode(codec), cs
+        except LookupError:
+            continue
+        except UnicodeDecodeError:
+            if cs in _UTF8_LABELS:
+                text = raw.decode("utf-8", "replace")
+                if text.count("\ufffd") <= max(8, len(raw) // 2000):   # a few broken bytes: trust the declaration
+                    warnings.append("網頁含有少數無效的 UTF-8 位元組，已以替代字元顯示。")
+                    return text, cs
             continue
     try:
         return raw.decode("utf-8"), "utf-8"
@@ -347,11 +367,13 @@ def fetch(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_BYTES,
             hops += 1
             if hops > MAX_REDIRECTS:
                 raise FetchError("重新導向次數過多。", url)
-            nxt = urljoin(cur, loc)
             try:
-                validate_url(nxt)                             # scheme / userinfo / whitespace checks on every hop
+                nxt = urljoin(cur, loc)
+                validate_url(nxt)                             # scheme / userinfo / port / whitespace checks on every hop
             except InputError as e:
                 raise FetchError("網站導向到不支援或不安全的網址。", e.message) from e
+            except ValueError as e:                           # malformed Location, e.g. "http://[bad/"
+                raise FetchError("網站導向到不支援或不安全的網址。", str(e)) from e
             if _host_of(nxt) != _host_of(cur):
                 warnings.append(f"已重新導向到另一個網站：{_host_of(nxt)}")
             cur = nxt
@@ -378,7 +400,7 @@ def fetch(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_BYTES,
             except requests.RequestException as e:             # connection dropped / bad chunked or compressed body mid-download
                 raise FetchError("讀取網頁內容時連線中斷或內容無法解碼。", f"{type(e).__name__}: {e}") from e
             raw = b"".join(chunks)
-            hc = re.search(r"charset=([\w\-]+)", ctype, re.I)
+            hc = re.search(r"charset\s*=\s*[\"']?([\w\-]+)", ctype, re.I)
             text, cs = _decode(raw, hc.group(1) if hc else None, warnings)
             log.info("fetched %s status=%s bytes=%d charset=%s", host, r.status_code, total, cs)
             return Fetched(url, final, r.status_code, ctype, cs, text, total, warnings)

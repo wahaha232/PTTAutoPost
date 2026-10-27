@@ -14,6 +14,7 @@ from ..paths import data_dir
 log = get_logger("db")
 SCHEMA_VERSION = 3
 MAX_SIGNATURES = 10
+MAX_EVENTS = 5000                  # debug trail rows kept (older ones are trimmed)
 
 DRAFT_FIELDS = ("title", "post_title", "site", "author", "published", "url", "body", "notes", "board",
                 "use_signature", "signature_text", "preview_override", "parse_status", "body_status", "field_states",
@@ -244,9 +245,15 @@ class Database:
     def delete_signature_entry(self, index: int) -> None:
         items = self.signatures()
         if 0 <= index < len(items):
+            active = self.active_signature_index
             del items[index]
             self._store_signatures(items)
-            self.set_active_signature(0)
+            # keep the user's choice: entries after the deleted one shift down by one
+            if active > index:
+                active -= 1
+            elif active == index:
+                active = min(index, len(items) - 1)
+            self.set_active_signature(max(active, 0))
 
     def favorite_boards(self) -> list[str]:
         items = self._json_setting("boards.favorites")
@@ -304,7 +311,10 @@ class Database:
     def event(self, kind: str, draft_id: int | None, detail: str = "") -> None:
         try:
             with self.conn:
-                self.conn.execute("INSERT INTO events(ts,kind,draft_id,detail) VALUES(?,?,?,?)", (now(), kind, draft_id, detail[:500]))
+                cur = self.conn.execute("INSERT INTO events(ts,kind,draft_id,detail) VALUES(?,?,?,?)",
+                                        (now(), kind, draft_id, detail[:500]))
+                if cur.lastrowid and cur.lastrowid % 100 == 0:   # cheap periodic trim: keep the newest rows only
+                    self.conn.execute("DELETE FROM events WHERE id <= ?", (cur.lastrowid - MAX_EVENTS,))
         except sqlite3.Error:  # pragma: no cover - the trail must never break the app
             log.warning("could not write event %s", kind)
 

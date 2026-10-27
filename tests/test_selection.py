@@ -73,3 +73,9 @@ def test_screen_text_strips_rows_and_trailing_blank_rows():
 def test_clamp_keeps_points_on_the_grid():
     assert clamp((-3, 999), 80, 24) == (0, 79)
     assert clamp((99, -1), 80, 24) == (23, 0)
+
+
+def test_word_span_does_not_wrap_to_the_last_column_on_an_orphan_trail():
+    from src.terminal.screen import WIDE2
+    grid = [[("", 7, 0, WIDE2), ("a", 7, 0, 0), ("b", 7, 0, 0), (" ", 7, 0, 0), ("z", 7, 0, 0)]]
+    assert word_span(grid, 0, 1) == (1, 2)

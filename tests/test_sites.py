@@ -172,6 +172,23 @@ def test_connect_ssh_is_refused_but_bookmark_remains(win, monkeypatch):
     assert len(win.db.site_bookmarks()) == 13
 
 
+def test_ipv6_hosts_are_bracketed_and_bad_ports_are_reported():
+    site = {"name": "v6", "protocol": "telnet", "host": "2001:db8::1", "port": 23}
+    assert sites.site_address(site) == "telnet://[2001:db8::1]:23"
+    assert "連接埠" in sites.validate_site("x", "telnet", "bbs.example", "abc")
+    assert sites.normalize_site({"name": "x", "protocol": "telnet", "host": "h", "port": "abc"})["port"] == 0
+    ok, msg = sites.check_site({"host": "bad..host", "port": 23}, timeout=0.1)
+    assert not ok and msg
+
+
+def test_bbs_origin_follows_the_web_terminal_host():
+    from src.net.client import origin_for
+    assert origin_for("wss://ws.ptt.cc/bbs") == "https://term.ptt.cc"
+    assert origin_for("wss://ws.ptt2.cc/bbs") == "https://term.ptt2.cc"          # 403 with term.ptt.cc
+    assert origin_for("ws://127.0.0.1:1234/bbs") == "https://term.ptt.cc"
+    assert origin_for("wss://bbs.example.org/ws") == "https://bbs.example.org"
+
+
 def test_site_test_updates_status_without_blocking(win, monkeypatch):
     monkeypatch.setattr(sites, "check_site", lambda _site: (True, "TCP 可連線"))
     win.site_list.setCurrentRow(0)

@@ -90,7 +90,7 @@ def word_span(grid, row: int, col: int) -> tuple[int, int] | None:
     while left > 0:
         prev = left - 1
         if _trail(grid, row, prev):
-            prev -= 1
+            prev = max(0, prev - 1)                   # an orphan trail in column 0 must not wrap to -1
         prev_char = grid[row][prev][0]
         if not prev_char or prev_char.isspace():
             break

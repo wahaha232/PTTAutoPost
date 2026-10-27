@@ -375,3 +375,44 @@ def test_upgrade_makes_a_backup_first_and_invisible_regex_is_escaped(tmp_path):
     import pathlib
     src = pathlib.Path(__file__).resolve().parent.parent.joinpath("src/compose.py").read_text(encoding="utf-8")
     assert all(ord(c) < 128 or c in "，。" for c in src.split("INVISIBLE = re.compile(")[1].split("\n")[0])
+
+
+def test_title_limit_matches_pttbbs_ttlen():
+    # pttbbs TTLEN = 64 bytes for the whole stored title, "[分類] " prefix included
+    ok = "[新聞] " + "測" * 29                     # 7 + 58 = 65 bytes
+    assert compose.byte_len(ok) == 65 and has_errors(check(ok, "內文"))
+    exact = "[新聞] " + "測" * 28 + "a"             # 64 bytes: allowed, but longer than the list shows
+    issues = check(exact, "內文")
+    assert compose.byte_len(exact) == 64 and not has_errors(issues)
+    assert any(i.level == "warn" and "46" in i.message for i in issues)
+    assert not any("尚未實測" in str(i) for i in issues)
+    assert not check("[新聞] " + "測" * 19, "內文")    # 45 bytes: no title issue
+
+
+def test_deleting_a_signature_keeps_the_users_active_choice(tmp_path):
+    db = Database(tmp_path / "sig.db")
+    try:
+        for i in range(4):
+            db.save_signature_entry(-1, f"名稱{i}", f"內容{i}")
+        db.set_active_signature(2)
+        db.delete_signature_entry(0)                          # an earlier entry: the choice shifts down
+        assert db.signature == "內容2"
+        db.delete_signature_entry(2)                          # a later entry: unchanged
+        assert db.signature == "內容2"
+        db.delete_signature_entry(db.active_signature_index)  # the active one: its neighbour, not always #1
+        assert db.signatures() == [{"name": "名稱1", "text": "內容1"}] and db.signature == "內容1"
+    finally:
+        db.close()
+
+
+def test_event_trail_is_trimmed(tmp_path, monkeypatch):
+    from src.storage import db as dbmod
+    monkeypatch.setattr(dbmod, "MAX_EVENTS", 50)
+    db = Database(tmp_path / "ev.db")
+    try:
+        for i in range(250):
+            db.event("t", None, str(i))
+        count = db.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        assert count <= 150 and db.events(1)[0]["detail"] == "249"
+    finally:
+        db.close()

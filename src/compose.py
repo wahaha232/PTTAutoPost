@@ -16,8 +16,10 @@ INVISIBLE = re.compile(r"[\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\uf
 CLOSING = set("、。，．,.;:!?！？；：）)】〕」』》〉”’…%")
 LINE_WIDTH = 76          # wrap target (display cells); PTT terminal is 80 columns wide
 MAX_LINE = 78            # warn above this
-TITLE_WARN_BYTES = 40    # UNVERIFIED limit (real PTT limit not observed yet) -> warning only
-TITLE_ERROR_BYTES = 78
+# pttbbs include/pttstruct.h: TTLEN 64 (fileheader_t.title[TTLEN + 1]); DISP_TTLEN 46 is what the
+# article list shows.  The stored title includes the "[分類] " prefix, so the whole title is compared.
+TITLE_WARN_BYTES = 46    # DISP_TTLEN: longer titles are cut in the article list
+TITLE_ERROR_BYTES = 64   # TTLEN: PTT keeps at most this many bytes
 
 
 @dataclass
@@ -183,9 +185,9 @@ def check(title: str, body: str, sig_text: str = "", used_signature: bool = Fals
     else:
         b = byte_len(title)
         if b > TITLE_ERROR_BYTES:
-            issues.append(Issue("error", f"標題過長（{b} bytes），超過一行可輸入的範圍。"))
+            issues.append(Issue("error", f"標題過長（{b} bytes），超過 PTT 標題上限 {TITLE_ERROR_BYTES} bytes（含分類），會被截斷。"))
         elif b > TITLE_WARN_BYTES:
-            issues.append(Issue("warn", f"標題 {b} bytes：PTT 標題長度上限尚未實測，過長可能被截斷（目前以 {TITLE_WARN_BYTES} bytes 提醒）。"))
+            issues.append(Issue("warn", f"標題 {b} bytes：超過 {TITLE_WARN_BYTES} bytes 時文章列表只會顯示前段（上限 {TITLE_ERROR_BYTES} bytes）。"))
     if not body.strip():
         issues.append(Issue("error", "內文是空的。"))
     for label, text in (("標題", title), ("內文", body)):

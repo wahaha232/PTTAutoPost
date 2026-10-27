@@ -83,16 +83,21 @@ class UpdateCheckTask(QRunnable):
 
 class _DownloadSignals(QObject):
     progress = Signal(int, int)
-    done = Signal(object)             # update.DownloadResult
+    done = Signal(object, object)     # update.DownloadResult, update.StagedUpdate | None
     failed = Signal(str)
 
 
 class UpdateDownloadTask(QRunnable):
-    """Download one verified update asset; the UI never executes it automatically."""
+    """Download, verify (digest + signature) and unpack one update asset off the GUI thread.
 
-    def __init__(self, asset: update.Asset, token: str | None):
+    Unzipping a full portable build takes seconds, so staging happens here too; the UI never
+    executes the result automatically.
+    """
+
+    def __init__(self, asset: update.Asset, token: str | None, signature: update.Asset | None = None,
+                 version: str = ""):
         super().__init__()
-        self.asset, self.token = asset, token
+        self.asset, self.token, self.signature, self.version = asset, token, signature, version
         self.signals = _DownloadSignals()
         self._cancel = threading.Event()
 
@@ -101,11 +106,14 @@ class UpdateDownloadTask(QRunnable):
 
     def run(self):
         try:
-            result = update.download_asset(self.asset, token=self.token,
-                                           cancel=self._cancel,
-                                           progress=lambda done, total: self.signals.progress.emit(done, total))
+            result = update.download_verified(
+                self.asset, self.signature, self.version, token=self.token, cancel=self._cancel,
+                progress=lambda done, total: self.signals.progress.emit(done, total))
+            if self._cancel.is_set():
+                return
+            staged = update.stage_for(self.asset, result, self.version)
             if not self._cancel.is_set():
-                self.signals.done.emit(result)
+                self.signals.done.emit(result, staged)
         except update.UpdateError as e:
             if not self._cancel.is_set():
                 self.signals.failed.emit(str(e))
@@ -128,7 +136,11 @@ class SiteCheckTask(QRunnable):
         self.signals = _SiteCheckSignals()
 
     def run(self):
-        ok, msg = sites.check_site(self.site)
+        try:
+            ok, msg = sites.check_site(self.site)
+        except Exception as e:  # noqa: BLE001  (the UI waits for exactly one answer)
+            log.exception("unexpected error while checking a site")
+            ok, msg = False, f"測試連線時發生未預期的錯誤（{type(e).__name__}）。"
         self.signals.done.emit(ok, msg)
 
 

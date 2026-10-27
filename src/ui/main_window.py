@@ -83,6 +83,8 @@ class MainWindow(QMainWindow):
         self._update_download_task = None
         self._shorten_task = None
         self._update_asset: update.Asset | None = None
+        self._update_signature: update.Asset | None = None
+        self._pending_update: update.StagedUpdate | None = None   # verified, waiting for typing/paste to end
         self._update_version = ""
         self._update_token: str | None = None
         self._update_auto = False
@@ -168,8 +170,10 @@ class MainWindow(QMainWindow):
         self.new_draft()
         self.db.recover_interrupted_inputs()               # before the first list load, so aborted runs show correctly
         self.reload_drafts()
-        if self.chk_auto_update.isChecked() and getattr(sys, "frozen", False):
-            QTimer.singleShot(5000, lambda: self.check_updates(auto=True))
+        if getattr(sys, "frozen", False):
+            QTimer.singleShot(1000, self._report_failed_update)      # a rolled-back update leaves a note
+            if self.chk_auto_update.isChecked():
+                QTimer.singleShot(5000, lambda: self.check_updates(auto=True))
         self._on_conn_state(self.session.client.state)
 
     # ================================================================== terminal tab
@@ -1175,6 +1179,18 @@ class MainWindow(QMainWindow):
             if not auto:
                 QMessageBox.information(self, "缺少更新檔", msg)
             return
+        signature = update.signature_asset(release.assets, asset)
+        if signature is None or update.asset_version(asset.name) != release.version:
+            msg = (f"發現新版本 {release.version}，但更新檔 {asset.name} 沒有附上發布者簽章（.sig）"
+                   "或版本不符，程式不會自動下載。\n\n"
+                   f"請到 Release 頁面確認後手動下載：\n{release.html_url or '(沒有頁面網址)'}")
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(f"發現 {release.version}，但更新檔沒有簽章。")
+            self._notice("找到新版本，但更新檔沒有發布者簽章，已停止自動更新。")
+            if not auto:
+                QMessageBox.information(self, "更新檔沒有簽章", msg)
+            return
+        self._update_signature = signature
         notes = release.notes.strip()
         if len(notes) > 1200:
             notes = notes[:1200] + "…"
@@ -1218,7 +1234,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "lbl_update_status"):
             self.lbl_update_status.setText(f"下載更新檔中… {asset.name}")
         self._notice(f"下載更新檔中… {asset.name}")
-        task = UpdateDownloadTask(asset, self._update_token)
+        task = UpdateDownloadTask(asset, self._update_token, self._update_signature, self._update_version)
         task.signals.progress.connect(self._on_update_progress)
         task.signals.done.connect(self._on_update_downloaded)
         task.signals.failed.connect(self._on_update_error)
@@ -1238,52 +1254,26 @@ class MainWindow(QMainWindow):
         text = f"{mb:.1f} / {total / 1024 / 1024:.1f} MB" if total else f"{mb:.1f} MB"
         self.lbl_update_status.setText(f"下載更新檔中… {text}")
 
-    def _on_update_downloaded(self, result: update.DownloadResult) -> None:
+    def _on_update_downloaded(self, result: update.DownloadResult,
+                              staged: update.StagedUpdate | None = None) -> None:
+        """Download, signature check and unpacking already happened in UpdateDownloadTask."""
         self._set_update_busy(False)
         self._update_phase = ""
         if hasattr(self, "update_progress"):
             self.update_progress.setVisible(False)
-        verified = ("已核對 GitHub 提供的 SHA-256（僅確認檔案與該 digest 相符，不代表發布者身分）"
+        verified = ("已核對 GitHub 提供的 SHA-256 與發布者簽章"
                     if result.verified else "GitHub 未提供 digest，未完成雜湊核對（僅完成下載）")
         asset = self._update_asset
-        staged = None
-        if update.is_delta_asset(asset):
-            try:
-                staged = update.stage_delta(result)
-            except update.UpdateError as e:
-                if hasattr(self, "lbl_update_status"):
-                    self.lbl_update_status.setText("增量更新檔驗證失敗。")
-                QMessageBox.warning(self, "套用更新失敗", str(e))
-                return
-        elif (asset is not None and asset.name.lower().endswith("-portable.zip")
-              and update.can_apply_delta()):
-            try:
-                staged = update.stage_full_zip(result, self._update_version or "update")
-            except update.UpdateError as e:
-                if hasattr(self, "lbl_update_status"):
-                    self.lbl_update_status.setText("完整更新檔驗證失敗。")
-                QMessageBox.warning(self, "套用更新失敗", str(e))
-                return
         if staged is not None:
             kind = "增量" if update.is_delta_asset(asset) else "完整"
             if hasattr(self, "lbl_update_status"):
-                self.lbl_update_status.setText(
-                    f"{kind}更新已下載並驗證（{len(staged.files)} 個檔案），正在關閉程式套用…")
+                self.lbl_update_status.setText(f"{kind}更新已下載並驗證（{len(staged.files)} 個檔案）。")
+            if self._input_busy():
+                self._pending_update = staged
+                self._notice(f"{kind}更新已驗證；自動輸入或貼上結束後會詢問是否套用（不會中斷目前的輸入）。")
+                return
             self._notice(f"{kind}更新已驗證，正在關閉程式、覆蓋舊版並自動重新啟動…")
-            if not self._confirm_unsaved("套用更新並重新啟動"):
-                self._notice("已取消套用更新；暫存檔保留在 updates 資料夾。")
-                return
-            try:
-                update.apply_staged_update(staged)
-            except update.UpdateError as e:
-                QMessageBox.warning(self, "套用更新失敗", str(e))
-                return
-            self._dirty = False
-            self._quitting = True
-            self.close()
-            app = QApplication.instance()
-            if app is not None:
-                app.quit()                                # exit even if a tray/hidden window remains
+            self._apply_staged_update(staged)
             return
         if asset is not None and asset.name.lower().endswith("-setup.exe"):
             how = "請關閉本程式，執行下載的 setup.exe。安裝程式會保留 config／logs／data。"
@@ -1296,6 +1286,44 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "更新檔已下載",
                                 f"更新檔已下載：\n{result.path}\n\n{verified}。\n\n{how}\n\n"
                                 "程式不會自動執行下載檔。")
+
+    def _input_busy(self) -> bool:
+        """Typing or pasting into PTT: quitting now would leave the article half typed."""
+        return bool(self.typer.running or getattr(self.term, "pasting", False))
+
+    def _apply_staged_update(self, staged: update.StagedUpdate) -> None:
+        if not self._confirm_unsaved("套用更新並重新啟動"):
+            self._notice("已取消套用更新；暫存檔保留在 updates 資料夾。")
+            return
+        try:
+            update.apply_staged_update(staged)
+        except update.UpdateError as e:
+            QMessageBox.warning(self, "套用更新失敗", str(e))
+            return
+        self._dirty = False
+        self._quitting = True
+        self.close()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()                                # exit even if a tray/hidden window remains
+
+    def _maybe_apply_pending_update(self) -> None:
+        staged = self._pending_update
+        if staged is None or self._input_busy():
+            return
+        self._pending_update = None
+        if QMessageBox.question(self, "套用更新", f"{staged.version} 更新已下載並驗證，現在關閉程式套用並重新啟動嗎？",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
+            self._notice("已延後套用更新；下次檢查更新時會重新下載。")
+            return
+        self._apply_staged_update(staged)
+
+    def _report_failed_update(self) -> None:
+        msg = update.take_apply_error()
+        if msg:
+            log.warning("previous update failed: %s", msg)
+            QMessageBox.warning(self, "上次更新失敗", "上次的更新沒有完成，已還原為原本的版本。\n\n" + msg[-800:])
 
     def _on_update_error(self, msg: str) -> None:
         phase, auto = self._update_phase, self._update_auto
@@ -1370,6 +1398,8 @@ class MainWindow(QMainWindow):
         self._sync_board_fav_button()
         if on:
             self._notice("貼上進行中：已暫停輸入標題／內文、登入與前往看板。")
+        elif self._pending_update is not None:
+            QTimer.singleShot(0, self._maybe_apply_pending_update)
 
     def _update_input_lock(self) -> None:
         """The terminal keyboard is paused while automatic typing or the assisted login owns the connection."""
@@ -1926,6 +1956,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         self._upload_busy = True
+        self._upload_draft_id = self.draft_id              # URLs go back only into the draft they were uploaded for
         self.btn_upload_image.setEnabled(False)
         self._notice(f"上傳 {len(paths)} 張圖片到 {host.label}…")
         task = ImageUploadTask(paths, host_key, strip_exif=self.chk_strip_exif.isChecked())
@@ -1943,9 +1974,14 @@ class MainWindow(QMainWindow):
         self._upload_task = None
         self.btn_upload_image.setEnabled(True)
         urls = [r.url for r in batch.results]
-        if urls:
-            self._insert_uploaded_urls(urls)
-        msg = f"已上傳 {len(urls)} 張圖片，網址已插入內文游標處。"
+        if urls and getattr(self, "_upload_draft_id", self.draft_id) != self.draft_id:
+            QApplication.clipboard().setText("\n".join(urls))
+            msg = f"已上傳 {len(urls)} 張圖片；上傳期間切換了草稿，網址未插入，已複製到剪貼簿。"
+        else:
+            if urls:
+                self._insert_uploaded_urls(urls)
+            where = "回覆內容" if self._reply_mode() else "內文"
+            msg = f"已上傳 {len(urls)} 張圖片，網址已插入{where}游標處。"
         if batch.errors:
             msg += "\n\n失敗：\n" + "\n".join(f"{name}：{why}" for name, why in batch.errors[:10])
             if len(batch.errors) > 10:
@@ -1963,12 +1999,13 @@ class MainWindow(QMainWindow):
     def _insert_uploaded_urls(self, urls: list[str]) -> None:
         if not urls:
             return
-        cursor = self.body.textCursor()
-        before = self.body.toPlainText()[:cursor.position()]
+        edit = self.notes if self._reply_mode() else self.body   # reply mode types the notes field, not the article body
+        cursor = edit.textCursor()
+        before = edit.toPlainText()[:cursor.position()]
         prefix = "" if not before or before.endswith("\n") else "\n"
         cursor.insertText(prefix + "\n".join(urls) + "\n")
-        self.body.setTextCursor(cursor)
-        self.body.ensureCursorVisible()
+        edit.setTextCursor(cursor)
+        edit.ensureCursorVisible()
 
     def start_fetch(self):
         if self._busy:
@@ -1980,6 +2017,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_unsaved("擷取（會覆蓋目前欄位）"):
             return
         self._busy = True
+        self._fetch_snapshot = self._form_snapshot()
         self.btn_fetch.setEnabled(False)
         self.btn_reload.setEnabled(False)
         self.btn_zip.setEnabled(False)
@@ -2004,11 +2042,29 @@ class MainWindow(QMainWindow):
         self.parse_warn.setPlainText("程式不會嘗試繞過登入、付費牆或存取限制。您可以改在瀏覽器取得內容後，手動貼到下方欄位。")
         log.info("fetch failed: %s | %s", msg, detail)
 
+    def _form_snapshot(self) -> tuple:
+        """What the user can edit while a fetch runs in the background."""
+        return (self.draft_id, tuple(self.w[f].text() for f in FIELDS),
+                self.body.toPlainText(), self.notes.toPlainText(), self.preview.toPlainText())
+
     def _fetch_done(self, fetched, res: ParseResult):
         self._task = None
         self._busy = False
         self.btn_fetch.setEnabled(True)
         self.btn_reload.setEnabled(True)
+        if (getattr(self, "_fetch_snapshot", None) is not None and self._form_snapshot() != self._fetch_snapshot
+                and QMessageBox.question(
+                    self, "擷取完成",
+                    "擷取期間欄位有修改。要用擷取結果覆蓋目前的欄位嗎？\n選「否」會保留您的修改並捨棄這次擷取結果。",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes):
+            self._fetch_snapshot = None
+            self.btn_zip.setEnabled(bool(self._article_image_urls))
+            self.parse_status.setText("已捨棄擷取結果（擷取期間欄位有修改，已保留您的內容）。")
+            self._parse_kind = "info"
+            self._paint_parse_status()
+            return
+        self._fetch_snapshot = None
         self._refresh_timer.stop()
         self.draft_id = None
         if not self._article_typer().running:
@@ -2345,6 +2401,7 @@ class MainWindow(QMainWindow):
                 "確定要縮短並覆蓋原文網址欄位嗎？") != QMessageBox.StandardButton.Yes:
             return
         task = ShortenTask(key, url)
+        self._shorten_origin = (self.draft_id, self.w["url"].text())   # where the result may be written back
         task.signals.done.connect(self._on_shortened)
         task.signals.failed.connect(self._on_shorten_failed)
         self._shorten_task = task
@@ -2355,6 +2412,12 @@ class MainWindow(QMainWindow):
     def _on_shortened(self, short: str) -> None:
         self._shorten_task = None
         self.btn_shorten.setEnabled(True)
+        if getattr(self, "_shorten_origin", None) != (self.draft_id, self.w["url"].text()):
+            # another draft was opened or the URL was edited meanwhile: never overwrite it
+            self.parse_status.setText("縮網址完成，但原文網址欄位已變更，未自動填入。")
+            self._notice(f"短網址（未自動填入，已複製到剪貼簿）：{short}")
+            QApplication.clipboard().setText(short)
+            return
         self.w["url"].setText(short)
         self.url_in.setText(short)
         self._field_edited("url")
@@ -2660,11 +2723,14 @@ class MainWindow(QMainWindow):
             return
         self.lbl_site_test.setText("測試連線中…")
         task = SiteCheckTask(site)
-        task.signals.done.connect(self._on_site_checked)
+        task.signals.done.connect(lambda ok, msg, t=task: self._on_site_checked(ok, msg, t))
         self._site_check_task = task
         QThreadPool.globalInstance().start(task)
 
-    def _on_site_checked(self, ok: bool, msg: str) -> None:
+    def _on_site_checked(self, ok: bool, msg: str, task=None) -> None:
+        if task is not None and task is not self._site_check_task:
+            return                                          # an older test finished after a newer one started
+        self._site_check_task = None
         self.lbl_site_test.setText(msg)
         self._notice(msg)
 
@@ -2716,7 +2782,12 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
         self.draft_list = QListWidget()
         lay.addWidget(self.draft_list, 1)
-        self.search.textChanged.connect(lambda _t: self.reload_drafts())
+        self._search_timer = QTimer(self)                  # one LIKE query after typing pauses, not one per key
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self.reload_drafts)
+        self.search.textChanged.connect(lambda _t: self._search_timer.start())
+        self.search.returnPressed.connect(self.reload_drafts)
         self.btn_open.clicked.connect(self.open_selected)
         self.draft_list.itemDoubleClicked.connect(lambda _i: self.open_selected())
         self.btn_delete.clicked.connect(self.delete_selected)
@@ -2733,6 +2804,9 @@ class MainWindow(QMainWindow):
     def new_draft(self):
         if self._article_typer().running:
             self._notice("輸入進行中，請先取消輸入再切換草稿。")
+            return
+        if self._busy:
+            self._notice("擷取進行中，請等擷取結束再切換草稿。")
             return
         if not self._confirm_unsaved("新增草稿"):
             return
@@ -2823,6 +2897,9 @@ class MainWindow(QMainWindow):
         if self._article_typer().running:
             self._notice("輸入進行中，請先取消輸入再切換草稿。")
             return
+        if self._busy:
+            self._notice("擷取進行中，請等擷取結束再切換草稿。")
+            return
         if not self._confirm_unsaved("開啟其他草稿"):
             return
         self.chk_nonempty.setChecked(False)
@@ -2831,26 +2908,32 @@ class MainWindow(QMainWindow):
             self._notice("找不到該草稿。")
             return
         self.draft_id = d["id"]
+        self._article_image_urls = []                      # images belong to the previously fetched article
+        self._article_referer = ""
+        self.btn_zip.setEnabled(False)
         self._loading = True
-        self.chk_reply.blockSignals(True)
-        self.chk_reply.setChecked(bool(d.get("reply_mode", 0)))
-        self.chk_reply.blockSignals(False)
-        for f in FIELDS:
-            self.w[f].setText(d[f])
-        self.body.setPlainText(d["body"])
-        self.notes.setPlainText(d["notes"])
-        self.url_in.setText(d["url"])
-        self.chk_sig.setChecked(bool(d["use_signature"]))
-        snap = d.get("signature_text", "")
-        cur = compose.normalize(self.sig_edit.toPlainText())[0]
-        self._draft_sig = snap if (d["use_signature"] and snap.strip() and snap != cur) else None
-        self._sync_sig_snapshot_ui()
-        if d["board"]:
-            self._reload_boards(d["board"])
-        states = dict(kv.split("=", 1) for kv in d["field_states"].split(",") if "=" in kv)
-        for f in FIELDS:
-            self.states[f] = states.get(f, "edited" if d[f] else "missing")
-        self._loading = False
+        try:
+            self.chk_reply.blockSignals(True)
+            self.chk_reply.setChecked(bool(d.get("reply_mode", 0)))
+            self.chk_reply.blockSignals(False)
+            for f in FIELDS:
+                self.w[f].setText(d[f])
+            self.body.setPlainText(d["body"])
+            self.notes.setPlainText(d["notes"])
+            self.url_in.setText(d["url"])
+            self.chk_sig.setChecked(bool(d["use_signature"]))
+            snap = d.get("signature_text", "")
+            cur = compose.normalize(self.sig_edit.toPlainText())[0]
+            self._draft_sig = snap if (d["use_signature"] and snap.strip() and snap != cur) else None
+            self._sync_sig_snapshot_ui()
+            if d["board"]:
+                self._reload_boards(d["board"])
+            states = dict(kv.split("=", 1) for kv in d["field_states"].split(",") if "=" in kv)
+            for f in FIELDS:
+                self.states[f] = states.get(f, "edited" if d[f] else "missing")
+        finally:
+            self.chk_reply.blockSignals(False)
+            self._loading = False
         self._update_reply_mode_ui()
         self._last_result = None
         for f in FIELDS:
@@ -2888,7 +2971,10 @@ class MainWindow(QMainWindow):
             return
         self.db.delete_draft(did)
         if self.draft_id == did:
-            self.new_draft()
+            # the row is gone: never offer to "save" (UPDATE) it again; the user chose to delete it
+            self.draft_id = None
+            self._dirty = False
+            self._reset_article_fields()
         self.reload_drafts()
 
     # ================================================================== typing into PTT
@@ -3030,6 +3116,8 @@ class MainWindow(QMainWindow):
         self._notice(msg)                                 # keep the typing result in front of an auto-open notice
         self.chk_retype.setChecked(False)
         self._update_type_buttons()
+        if self._pending_update is not None:
+            QTimer.singleShot(0, self._maybe_apply_pending_update)
 
     # ================================================================== laptop / desktop adaptation
     @staticmethod
@@ -3068,10 +3156,13 @@ class MainWindow(QMainWindow):
     # ================================================================== external PTT login helper
     @staticmethod
     def _find_pttlogin() -> str:
-        """PttAutoLogin.exe next to this program or in a sibling/parent folder; '' when not found (never a fixed path)."""
+        """PttAutoLogin.exe next to this program or in a sibling folder; '' when not found (never a fixed path).
+
+        Searching higher (e.g. a drive root) could pick up an unrelated exe of the same name.
+        """
         from ..paths import runtime_base_dir
         base = Path(runtime_base_dir())
-        for d in (base, base.parent, base.parent.parent):
+        for d in (base, base.parent):
             for rel in ("PttAutoLogin.exe", "PTTLOGIN/release/PttAutoLogin.exe", "PttAutoLogin/PttAutoLogin.exe"):
                 if (d / rel).is_file():
                     return str(d / rel)
@@ -3085,8 +3176,10 @@ class MainWindow(QMainWindow):
 
     def launch_pttlogin(self) -> bool:
         """Start the separate PTT login helper (its own process, working dir = its folder so its Data/Logs stay there)."""
-        path = Path(self.pttlogin_path.text().strip() or self._find_pttlogin() or "PttAutoLogin.exe")
-        if path.suffix.lower() != ".exe" or not path.is_file():
+        raw = self.pttlogin_path.text().strip() or self._find_pttlogin()
+        path = Path(raw or "PttAutoLogin.exe")
+        # only an absolute path: a bare name would resolve against the working directory
+        if not raw or not path.is_absolute() or path.suffix.lower() != ".exe" or not path.is_file():
             self._notice(f"找不到登入小幫手：{path}。請在「設定」分頁指定 PttAutoLogin.exe 的位置。")
             return False
         try:
@@ -3136,6 +3229,8 @@ class MainWindow(QMainWindow):
         if wh is not None and not getattr(self, "_screen_hooked", False):
             self._screen_hooked = True
             wh.screenChanged.connect(lambda _s: QTimer.singleShot(0, self.term._relayout))   # other monitor / DPI
+        if self._tray is not None and not self.chk_tray_min.isChecked() and not self.chk_tray_close.isChecked():
+            self._tray.setVisible(False)       # built before show(): it was visible only because the window was not yet
 
     def _build_tray(self) -> None:
         self._tray_ok = QSystemTrayIcon.isSystemTrayAvailable()

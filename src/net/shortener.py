@@ -17,7 +17,9 @@ from ..errors import FetchError, InputError
 from ..links import validate_http_url
 from ..logging_setup import get_logger
 from ..version import __version__
-from .upload import _session_for
+from .upload import _session_for, read_capped
+
+MAX_RESPONSE_BYTES = 4096
 
 log = get_logger("shortener")
 
@@ -76,27 +78,32 @@ def shorten_url(service_key: str, url: str, timeout: float = 10,
         with _session_for(svc.endpoint) as sess:
             if svc.method == "POST":
                 resp = sess.post(svc.endpoint, json={svc.param: url}, headers=headers,
-                                 timeout=timeout, allow_redirects=False)
+                                 timeout=timeout, allow_redirects=False, stream=True)
             else:
                 resp = sess.get(svc.endpoint, params={svc.param: url}, headers=headers,
-                                timeout=timeout, allow_redirects=False)
+                                timeout=timeout, allow_redirects=False, stream=True)
+            try:                                      # bounded read while the session is still open
+                status = resp.status_code
+                text, too_long = read_capped(resp, MAX_RESPONSE_BYTES) if status == 200 else ("", False)
+            finally:
+                resp.close()
     except requests.exceptions.SSLError as e:
         raise FetchError("縮網址服務 SSL 憑證驗證失敗。", str(e)) from e
     except requests.RequestException as e:
         raise FetchError("無法連線到縮網址服務。", str(e)) from e
     if cancel is not None and cancel.is_set():
         raise FetchError("已取消縮網址。", "cancelled")
-    if resp.status_code != 200:
-        raise FetchError(f"縮網址服務回傳 HTTP {resp.status_code}。")
-    if len(resp.text) > 4096:
+    if status != 200:
+        raise FetchError(f"縮網址服務回傳 HTTP {status}。")
+    if too_long:
         raise FetchError("縮網址服務回傳的內容過長，已拒絕。")
     if svc.method == "POST":
         try:
-            short = str(json.loads(resp.text).get("result_url", "")).strip()
+            short = str(json.loads(text).get("result_url", "")).strip()
         except (ValueError, AttributeError):
             raise FetchError("縮網址服務回傳的格式不正確。") from None
     else:
-        short = resp.text.strip()
+        short = text.strip()
     if not _allowed_response(short, svc.host):
         raise FetchError("縮網址服務回傳了非預期的網址，已拒絕。")
     log.info("shortened URL via %s", svc.key)          # never log the URL itself

@@ -50,7 +50,12 @@ def validate_http_url(url: str) -> bool:
 
 
 def _trim(url: str) -> str:
-    return url.rstrip(_TRAILING)
+    """Drop trailing punctuation; a ")" only when it has no matching "(" in the URL (keeps Foo_(bar))."""
+    while url and url[-1] in _TRAILING:
+        if url[-1] == ")" and url.count("(") >= url.count(")"):
+            break
+        url = url[:-1]
+    return url
 
 
 def _known_image_host(host: str) -> bool:

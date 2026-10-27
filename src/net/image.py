@@ -15,7 +15,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
-from ..errors import FetchError, ToolError
+from ..errors import FetchError, InputError, ToolError
 from ..links import is_article_image_url, is_auto_open_image_url
 from ..logging_setup import get_logger
 from ..parsers.fetch import (MAX_REDIRECTS, USER_AGENT, _mount_pinning, _pin_session,  # shared SSRF/DNS-pinning rules
@@ -45,6 +45,18 @@ def check_hop(url: str, strict_host: bool = True) -> str:
     return validate_url(url)
 
 
+def _hostname(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _origin(url: str) -> str:
+    p = urlparse(url)
+    return f"{p.scheme}://{p.netloc.rpartition('@')[2]}/"
+
+
 def _content_type(headers) -> str:
     return (headers.get("Content-Type") or "").split(";")[0].strip().lower()
 
@@ -61,12 +73,23 @@ def fetch_image(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_IMA
     with requests.Session() as sess:                          # releases the urllib3 pool even on errors
         _mount_pinning(sess)
         sess.headers.update({"User-Agent": USER_AGENT, "Accept": "image/jpeg,image/png,image/gif,image/webp,image/bmp"})
-        if referer and referer.startswith(("http://", "https://")) and not any(c in referer for c in " \r\n\t"):
-            sess.headers["Referer"] = referer
+        if not (referer and referer.startswith(("http://", "https://")) and not any(c in referer for c in " \r\n\t")):
+            referer = None
+        # Per request, never session-wide.  Full article URL only to the article's own host; the image
+        # host the article linked gets the origin only (browser strict-origin-when-cross-origin, enough
+        # for hot-link checks); any other host reached by a redirect gets nothing.
+        article_host = _hostname(referer) if referer else ""
+        referer = referer if article_host else None           # unparsable referer: send none
+        image_host = _hostname(url)
         while True:
             _pin_session(sess, cur)                            # resolve + pin every hop, fail closed on DNS errors
+            headers = {}
+            if referer and _hostname(cur) == article_host:
+                headers["Referer"] = referer
+            elif referer and _hostname(cur) == image_host:
+                headers["Referer"] = _origin(referer)
             try:
-                r = sess.get(cur, timeout=timeout, stream=True, allow_redirects=False)
+                r = sess.get(cur, timeout=timeout, stream=True, allow_redirects=False, headers=headers)
             except requests.exceptions.Timeout as e:
                 raise FetchError(f"圖片連線逾時（{int(timeout)} 秒）。", str(e)) from e
             except requests.exceptions.SSLError as e:
@@ -84,6 +107,8 @@ def fetch_image(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_IMA
                 cur = check_hop(urljoin(cur, loc), strict_host)   # same policy for every hop
             except FetchError as e:
                 raise FetchError("圖片導向到不允許的網址，已停止。", e.detail or e.message) from e
+            except (InputError, ValueError) as e:               # malformed Location / bad port
+                raise FetchError("圖片導向到不允許的網址，已停止。", str(e)) from e
         try:
             if r.status_code in (401, 402, 403, 451):
                 raise FetchError(f"圖床拒絕存取（HTTP {r.status_code}）。", "restricted")

@@ -1,8 +1,9 @@
 """Check GitHub Releases and download an update asset.
 
 This module never installs or runs a downloaded file. The UI asks the user, downloads to
-an updates folder, verifies the SHA-256 digest GitHub provides, and then tells the user how
-to finish the update (portable ZIP or installed setup.exe). An asset without a digest is
+an updates folder, verifies the SHA-256 digest GitHub provides and the release's Ed25519
+signature (<asset>.sig, see src/signing.py), and then tells the user how to finish the update
+(portable ZIP or installed setup.exe). An asset without a digest or a valid signature is
 refused: update bytes are never accepted on trust alone.
 """
 from __future__ import annotations
@@ -23,6 +24,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from . import signing
 from .logging_setup import get_logger
 from .version import __version__
 
@@ -34,7 +36,10 @@ USER_AGENT = f"PTTAutoPost/{__version__}"
 MAX_RELEASE_BYTES = 2 * 1024 * 1024
 MAX_ASSET_BYTES = 300 * 1024 * 1024
 MAX_DELTA_FILE_BYTES = 100 * 1024 * 1024
-DELTA_RE = re.compile(r"^PTTAutoPost-(\d+\.\d+\.\d+)-delta-(\d+\.\d+\.\d+)\.zip$", re.I)
+MAX_SIGNATURE_BYTES = 1024
+DELTA_RE = re.compile(r"^PTTAutoPost-(\d+\.\d+\.\d+)-delta-(\d+\.\d+\.\d+)\.zip$", re.I)   # new version, base version
+FULL_RE = re.compile(r"^PTTAutoPost-(\d+\.\d+\.\d+)-(?:portable\.zip|portable\.7z|setup\.exe)$", re.I)
+USER_DATA_DIRS = ("config", "data", "logs", "updates")
 ALLOWED_HOSTS = {"api.github.com", "github.com", "objects.githubusercontent.com",
                  "release-assets.githubusercontent.com", "github-releases.githubusercontent.com"}
 TOKEN_ENV = "PTTAUTOPOST_GITHUB_TOKEN"
@@ -50,6 +55,7 @@ class Asset:
     url: str
     size: int
     digest: str = ""
+    api_url: str = ""                 # REST asset URL: the only download URL that works for a private repo
 
 
 @dataclass(frozen=True)
@@ -159,7 +165,9 @@ def fetch_latest_release(token: str | None = None, timeout: float = 15) -> Relea
                 size = max(0, int(item.get("size") or 0))
             except (TypeError, ValueError):
                 size = 0
-            assets.append(Asset(name=name, url=url, size=size, digest=str(item.get("digest") or "")))
+            api_url = str(item.get("url") or "")
+            assets.append(Asset(name=name, url=url, size=size, digest=str(item.get("digest") or ""),
+                                api_url=api_url if _allowed_url(api_url) else ""))
     return Release(version=".".join(str(n) for n in version), tag=tag, name=str(data.get("name") or tag),
                    notes=str(data.get("body") or ""), html_url=str(data.get("html_url") or ""),
                    assets=tuple(assets))
@@ -182,6 +190,17 @@ def choose_asset(assets: tuple[Asset, ...] | list[Asset], installed: bool,
 
 def is_delta_asset(asset: Asset | None) -> bool:
     return bool(asset is not None and DELTA_RE.match(asset.name))
+
+
+def asset_version(name: str) -> str | None:
+    """Version a release asset delivers, read from its (signed) file name."""
+    m = DELTA_RE.match(name) or FULL_RE.match(name)
+    return m.group(1) if m else None
+
+
+def signature_asset(assets, asset: Asset) -> Asset | None:
+    want = asset.name + ".sig"
+    return next((a for a in assets if a.name == want and _allowed_url(a.url)), None)
 
 
 def can_apply_delta(app_dir: Path | None = None) -> bool:
@@ -209,9 +228,19 @@ def _safe_rel(raw: str) -> PurePosixPath:
     return rel
 
 
-def stage_delta(result: DownloadResult) -> "StagedUpdate":
+def _checked_version(version: str, expected: str | None) -> str:
+    """The version goes into folder and script names, so it must be a plain x.y.z (never a path)."""
+    parsed = parse_version(version)
+    if parsed is None:
+        raise UpdateError(f"更新檔的版本號無法辨識：{version or '(空白)'}，已停止。")
+    clean = ".".join(str(n) for n in parsed)
+    if expected is not None and parse_version(expected) != parsed:
+        raise UpdateError(f"更新檔的版本 {clean} 與 Release 版本 {expected} 不符，已停止。")
+    return clean
+
+
+def stage_delta(result: DownloadResult, expected_version: str | None = None) -> "StagedUpdate":
     """Validate the delta ZIP and unpack only its manifest files into a staging folder."""
-    digest = (result.sha256 or "").lower()
     if not result.verified:
         raise UpdateError("更新檔沒有可核對的 SHA-256，已停止套用。")
     try:
@@ -228,6 +257,7 @@ def stage_delta(result: DownloadResult) -> "StagedUpdate":
             version, base = str(manifest.get("version") or ""), str(manifest.get("base") or "")
             if base != __version__:
                 raise UpdateError(f"這個更新檔是給 {base or '未知版本'} 用的，目前版本是 {__version__}。")
+            version = _checked_version(version, expected_version)
             files = manifest.get("files")
             if not isinstance(files, list) or not files:
                 raise UpdateError("更新檔沒有要套用的檔案。")
@@ -251,7 +281,8 @@ def stage_delta(result: DownloadResult) -> "StagedUpdate":
                     data = zf.read(rel.as_posix())
                 except KeyError:
                     raise UpdateError(f"更新檔缺少 {rel}，已停止。") from None
-                if len(data) != size or hashlib.sha256(data).hexdigest() != expected:                    raise UpdateError(f"更新檔中的 {rel} 驗證失敗，已停止。")
+                if len(data) != size or hashlib.sha256(data).hexdigest() != expected:
+                    raise UpdateError(f"更新檔中的 {rel} 驗證失敗，已停止。")
                 total += len(data)
                 if total > MAX_ASSET_BYTES:
                     raise UpdateError("更新檔內容超過大小上限，已停止。")
@@ -261,7 +292,10 @@ def stage_delta(result: DownloadResult) -> "StagedUpdate":
                 staged.append(rel.as_posix())
             deletes = []
             for raw in manifest.get("delete") or []:
-                deletes.append(_safe_rel(raw).as_posix())
+                rel = _safe_rel(raw)
+                if rel.parts[0].lower() in USER_DATA_DIRS:
+                    raise UpdateError(f"更新檔要求刪除使用者資料 {rel}，已停止。")
+                deletes.append(rel.as_posix())
             if not staged:
                 raise UpdateError("更新檔沒有可套用的檔案。")
             return StagedUpdate(staging, version, tuple(staged), tuple(deletes))
@@ -279,6 +313,7 @@ def stage_full_zip(result: DownloadResult, version: str) -> "StagedUpdate":
     """Validate a full portable ZIP and unpack the program files (never config/data/logs/updates)."""
     if not result.verified:
         raise UpdateError("更新檔沒有可核對的 SHA-256，已停止套用。")
+    version = _checked_version(version, None)
     staging = updates_dir() / f"staging-{version}"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True, exist_ok=True)
@@ -301,7 +336,7 @@ def stage_full_zip(result: DownloadResult, version: str) -> "StagedUpdate":
                 if prefix and name.startswith(prefix):
                     name = name[len(prefix):]
                 rel = _safe_rel(name)
-                if rel.parts[0].lower() in ("config", "data", "logs", "updates"):
+                if rel.parts[0].lower() in USER_DATA_DIRS:
                     continue                                  # user data is never replaced
                 if info.file_size > 250 * 1024 * 1024:
                     raise UpdateError(f"更新檔中的 {rel} 過大，已停止。")
@@ -327,6 +362,7 @@ def stage_full_zip(result: DownloadResult, version: str) -> "StagedUpdate":
 def apply_staged_update(staged: "StagedUpdate", app_dir: Path | None = None) -> Path:
     """Write a helper script that waits for this process, applies the staged files, and restarts the app."""
     app = (app_dir or application_dir()).resolve()
+    _checked_version(staged.version, None)
     if not (app / "PTTAutoPost.exe").is_file():
         raise UpdateError("找不到 PTTAutoPost.exe，無法套用更新。")
     if is_installed(app):
@@ -342,6 +378,9 @@ while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep 
 $base = {_ps_quote(str(app))}
 $staging = {_ps_quote(str(staged.folder))}
 $backup = {_ps_quote(str(backup))}
+$errLog = Join-Path -Path $base -ChildPath 'updates\\apply-error.log'
+$backedUp = @()                       # files we overwrote (restore from backup on failure)
+$created = @()                        # files that did not exist before (remove on failure)
 try {{
   foreach ($f in @({files_ps})) {{
     $src = Join-Path -Path $staging -ChildPath $f
@@ -350,6 +389,9 @@ try {{
       $bak = Join-Path -Path $backup -ChildPath $f
       New-Item -ItemType Directory -Force -Path (Split-Path -Parent $bak) | Out-Null
       Copy-Item -LiteralPath $dst -Destination $bak -Force
+      $backedUp += $f
+    }} else {{
+      $created += $f
     }}
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
     Copy-Item -LiteralPath $src -Destination $dst -Force
@@ -358,8 +400,17 @@ try {{
     Remove-Item -LiteralPath (Join-Path -Path $base -ChildPath $f) -Force -ErrorAction SilentlyContinue
   }}
 }} catch {{
-  New-Item -ItemType Directory -Force -Path (Join-Path -Path $base -ChildPath 'updates') | Out-Null
-  "update failed: $($_.Exception.Message)" | Out-File -LiteralPath (Join-Path -Path $base -ChildPath 'updates\\apply-error.log') -Append -Encoding utf8
+  $why = $_.Exception.Message
+  # roll back so the old version starts intact instead of a mix of old and new files
+  foreach ($f in $backedUp) {{
+    try {{ Copy-Item -LiteralPath (Join-Path -Path $backup -ChildPath $f) -Destination (Join-Path -Path $base -ChildPath $f) -Force }}
+    catch {{ $why += "; restore failed: $f" }}
+  }}
+  foreach ($f in $created) {{
+    Remove-Item -LiteralPath (Join-Path -Path $base -ChildPath $f) -Force -ErrorAction SilentlyContinue
+  }}
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $errLog) | Out-Null
+  "update to {staged.version} failed and was rolled back: $why" | Out-File -LiteralPath $errLog -Append -Encoding utf8
 }}
 Start-Process -FilePath (Join-Path -Path $base -ChildPath 'PTTAutoPost.exe') -WorkingDirectory $base
 Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
@@ -423,8 +474,9 @@ def download_asset(asset: Asset, dest: Path | None = None, token: str | None = N
         raise UpdateError("更新檔沒有 GitHub 提供的可信 SHA-256，已拒絕下載。")
     h = hashlib.sha256()
     total = 0
+    url, headers = _download_request(asset, token)
     try:
-        resp = requests.get(asset.url, headers=_headers(token), timeout=timeout, stream=True)
+        resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
         try:
             if resp.status_code != 200:
                 raise UpdateError(f"下載更新檔失敗（HTTP {resp.status_code}）。")
@@ -464,3 +516,85 @@ def download_asset(asset: Asset, dest: Path | None = None, token: str | None = N
     except Exception:
         part.unlink(missing_ok=True)
         raise
+
+
+def _download_request(asset: Asset, token: str | None) -> tuple[str, dict[str, str]]:
+    """browser_download_url 404s for a private repo even with a token; the REST asset URL works.
+
+    requests drops the Authorization header when GitHub redirects to its asset CDN host.
+    """
+    if token and asset.api_url and _allowed_url(asset.api_url):
+        headers = _headers(token)
+        headers["Accept"] = "application/octet-stream"
+        return asset.api_url, headers
+    return asset.url, _headers(token)
+
+
+def fetch_signature(sig: Asset, token: str | None = None, timeout: float = 15) -> bytes:
+    """Download a small <asset>.sig (hex text) and return the 64 signature bytes."""
+    if not _allowed_url(sig.url):
+        raise UpdateError("簽章檔網址不是允許的 GitHub HTTPS 網址，已拒絕下載。")
+    url, headers = _download_request(sig, token)
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
+    except requests.RequestException:
+        raise UpdateError("下載更新簽章時網路中斷。") from None
+    try:
+        if resp.status_code != 200:
+            raise UpdateError(f"下載更新簽章失敗（HTTP {resp.status_code}）。")
+        final_url = getattr(resp, "url", "") or ""
+        if final_url and not _allowed_url(final_url):
+            raise UpdateError("簽章下載被重新導向到不允許的網址，已停止。")
+        raw = _read_limited(resp, MAX_SIGNATURE_BYTES)
+    finally:
+        resp.close()
+    try:
+        signature = bytes.fromhex(raw.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError):
+        raise UpdateError("更新簽章格式不正確，已停止。") from None
+    if len(signature) != 64:
+        raise UpdateError("更新簽章格式不正確，已停止。")
+    return signature
+
+
+def download_verified(asset: Asset, sig: Asset | None, release_version: str, token: str | None = None,
+                      progress=None, cancel: threading.Event | None = None) -> DownloadResult:
+    """Download an asset only if the release carries a valid signature for exactly these bytes.
+
+    The asset name carries the version and is covered by the signature, so an old signed build
+    re-published under a newer tag (a downgrade) is refused as well.
+    """
+    if asset_version(asset.name) != release_version:
+        raise UpdateError(f"更新檔 {asset.name} 不是 {release_version} 版，已拒絕下載。")
+    if sig is None:
+        raise UpdateError("這個 Release 沒有附上更新簽章（.sig），無法確認發布者，已拒絕下載。"
+                          "請到 Release 頁面手動下載。")
+    signature = fetch_signature(sig, token)
+    result = download_asset(asset, token=token, progress=progress, cancel=cancel)
+    if not signing.verify_asset(asset.name, result.sha256, signature):
+        result.path.unlink(missing_ok=True)
+        raise UpdateError("更新簽章驗證失敗，這個檔案不是由 PTT AutoPost 發布者簽署，已刪除。")
+    return result
+
+
+def stage_for(asset: Asset, result: DownloadResult, release_version: str) -> StagedUpdate | None:
+    """Unpack an asset the app can apply itself; None when the user finishes the update by hand."""
+    if is_delta_asset(asset):
+        return stage_delta(result, release_version)
+    if asset.name.lower().endswith("-portable.zip") and can_apply_delta():
+        return stage_full_zip(result, release_version)
+    return None
+
+
+def take_apply_error(app_dir: Path | None = None) -> str | None:
+    """Message left by a failed (rolled back) update helper; reported once on the next start."""
+    path = (app_dir or application_dir()) / "updates" / "apply-error.log"
+    try:
+        text = path.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    try:
+        path.replace(path.with_name("apply-error.seen.log"))
+    except OSError:
+        pass
+    return text or None

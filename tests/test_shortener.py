@@ -5,8 +5,17 @@ from src.net import shortener as sh
 
 
 class Resp:
+    """Streaming fake: the body is only available through iter_content (no .text)."""
     def __init__(self, status=200, text="https://is.gd/abc"):
-        self.status_code, self.text = status, text
+        self.status_code, self.body, self.read, self.closed = status, text.encode(), 0, False
+
+    def iter_content(self, size):
+        for i in range(0, len(self.body), size):
+            self.read += len(self.body[i:i + size])
+            yield self.body[i:i + size]
+
+    def close(self):
+        self.closed = True
 
 
 class Sess:
@@ -65,3 +74,12 @@ def test_reports_http_error(monkeypatch):
     _patch(monkeypatch, Resp(status=429, text="slow down"))
     with pytest.raises(FetchError, match="429"):
         sh.shorten_url("tinyurl", "https://example.com/a")
+
+
+def test_response_is_streamed_and_an_oversized_body_is_refused_early(monkeypatch):
+    resp = Resp(text="https://is.gd/abc" + "x" * 10_000_000)
+    fake = _patch(monkeypatch, resp)
+    with pytest.raises(FetchError, match="過長"):
+        sh.shorten_url("isgd", "https://example.com/a")
+    assert fake.kwargs["stream"] is True
+    assert resp.read <= sh.MAX_RESPONSE_BYTES + 4096 and resp.closed

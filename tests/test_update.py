@@ -276,3 +276,138 @@ def test_apply_staged_update_writes_a_helper_and_launches_it(monkeypatch, tmp_pa
     flags = calls[0][1]["creationflags"]
     assert flags & sp.CREATE_NO_WINDOW
     assert not flags & getattr(sp, "DETACHED_PROCESS", 0)
+
+
+def test_stage_delta_rejects_a_path_like_or_mismatched_version(monkeypatch, tmp_path):
+    monkeypatch.setattr(update, "updates_dir", lambda: tmp_path / "updates")
+    with pytest.raises(update.UpdateError, match="版本號無法辨識"):
+        update.stage_delta(_make_delta(tmp_path, version="../../x"))
+    assert not (tmp_path / "x").exists()
+    with pytest.raises(update.UpdateError, match="不符"):
+        update.stage_delta(_make_delta(tmp_path, version="9.9.9"), expected_version="9.9.8")
+    with pytest.raises(update.UpdateError, match="版本號無法辨識"):
+        update.stage_full_zip(_make_delta(tmp_path), "../9.9.9")
+
+
+def test_stage_delta_never_deletes_user_data(monkeypatch, tmp_path):
+    monkeypatch.setattr(update, "updates_dir", lambda: tmp_path / "updates")
+    with pytest.raises(update.UpdateError, match="使用者資料"):
+        update.stage_delta(_make_delta(tmp_path, delete=["data/pttpost.db"]))
+    staged = update.stage_delta(_make_delta(tmp_path, delete=["_internal/old.dll"]))
+    assert staged.deletes == ("_internal/old.dll",)
+
+
+def test_asset_version_and_signature_lookup():
+    full = update.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/a.zip", 1)
+    sig = update.Asset("PTTAutoPost-9.9.9-portable.zip.sig", "https://github.com/a.zip.sig", 1)
+    assert update.asset_version(full.name) == "9.9.9"
+    assert update.asset_version("PTTAutoPost-9.9.9-delta-9.9.8.zip") == "9.9.9"
+    assert update.asset_version("notes.txt") is None
+    assert update.signature_asset([full, sig], full) is sig
+    assert update.signature_asset([full], full) is None
+
+
+def _signed(monkeypatch, name: str, data: bytes) -> bytes:
+    """Sign with a throwaway key and make the app trust it for this test."""
+    from src import signing
+    secret = bytes(range(32))
+    monkeypatch.setattr(signing, "UPDATE_PUBLIC_KEY_HEX", signing.public_key(secret).hex())
+    return signing.sign(secret, signing.asset_message(name, hashlib.sha256(data).hexdigest()))
+
+
+def _serve(monkeypatch, files: dict):
+    def get(url, **_k):
+        for key, body in files.items():
+            if url.endswith(key):
+                return FakeResp(chunks=[body], headers={"Content-Length": str(len(body))},
+                                url="https://objects.githubusercontent.com/" + key)
+        return FakeResp(status=404)
+    monkeypatch.setattr(update.requests, "get", get)
+
+
+def test_download_verified_accepts_only_a_valid_signature(monkeypatch, tmp_path):
+    monkeypatch.setattr(update, "updates_dir", lambda: tmp_path)
+    name, data = "PTTAutoPost-9.9.9-portable.zip", b"payload"
+    asset = update.Asset(name, "https://github.com/" + name, len(data), "sha256:" + hashlib.sha256(data).hexdigest())
+    sig_asset = update.Asset(name + ".sig", "https://github.com/" + name + ".sig", 129)
+    signature = _signed(monkeypatch, name, data)
+    _serve(monkeypatch, {name + ".sig": signature.hex().encode(), name: data})
+    result = update.download_verified(asset, sig_asset, "9.9.9")
+    assert result.path.read_bytes() == data
+    bad = bytes([signature[0] ^ 1]) + signature[1:]
+    _serve(monkeypatch, {name + ".sig": bad.hex().encode(), name: data})
+    with pytest.raises(update.UpdateError, match="簽章驗證失敗"):
+        update.download_verified(asset, sig_asset, "9.9.9")
+    assert not (tmp_path / name).exists()
+
+
+def test_download_verified_refuses_missing_signature_and_downgrades(monkeypatch):
+    calls = []
+    monkeypatch.setattr(update.requests, "get", lambda *a, **k: calls.append(a) or FakeResp(status=500))
+    asset = update.Asset("PTTAutoPost-9.9.8-portable.zip", "https://github.com/a.zip", 1, "a" * 64)
+    with pytest.raises(update.UpdateError, match="不是 9.9.9 版"):          # old signed build under a newer tag
+        update.download_verified(asset, None, "9.9.9")
+    asset = update.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/a.zip", 1, "a" * 64)
+    with pytest.raises(update.UpdateError, match="沒有附上更新簽章"):
+        update.download_verified(asset, None, "9.9.9")
+    assert calls == []
+
+
+def test_private_repo_downloads_use_the_api_asset_url(monkeypatch, tmp_path):
+    data = b"private"
+    seen = []
+    monkeypatch.setattr(update.requests, "get", lambda url, headers=None, **k: seen.append((url, headers)) or FakeResp(
+        chunks=[data], url="https://objects.githubusercontent.com/x"))
+    asset = update.Asset("PTTAutoPost-9.9.9-portable.zip", "https://github.com/a.zip", len(data),
+                         "sha256:" + hashlib.sha256(data).hexdigest(),
+                         api_url="https://api.github.com/repos/wahaha232/PTTAutoPost/releases/assets/1")
+    update.download_asset(asset, dest=tmp_path, token="t0ken")
+    assert seen[-1][0] == asset.api_url and seen[-1][1]["Accept"] == "application/octet-stream"
+    update.download_asset(asset, dest=tmp_path)                       # no token: the public URL
+    assert seen[-1][0] == asset.url and "Authorization" not in seen[-1][1]
+
+
+def test_fetch_release_keeps_only_an_allowed_api_asset_url(monkeypatch):
+    payload = release_payload()
+    payload["assets"][0]["url"] = "https://api.github.com/repos/wahaha232/PTTAutoPost/releases/assets/7"
+    payload["assets"][1]["url"] = "https://evil.example/assets/8"
+    monkeypatch.setattr(update.requests, "get", lambda *a, **k: FakeResp(chunks=[json.dumps(payload).encode()]))
+    rel = update.fetch_latest_release()
+    assert rel.assets[0].api_url.endswith("/assets/7") and rel.assets[1].api_url == ""
+
+
+def test_take_apply_error_reports_once(tmp_path):
+    (tmp_path / "updates").mkdir()
+    (tmp_path / "updates" / "apply-error.log").write_text(
+        "﻿update to 9.9.9 failed and was rolled back: x", encoding="utf-8")
+    assert "rolled back" in update.take_apply_error(tmp_path)
+    assert update.take_apply_error(tmp_path) is None
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="the helper is a Windows PowerShell script")
+def test_apply_script_rolls_back_when_a_copy_fails(monkeypatch, tmp_path):
+    import subprocess as sp
+    app = tmp_path / "app"
+    (app / "_internal").mkdir(parents=True)
+    (app / "PTTAutoPost.exe").write_bytes(b"old-exe")
+    (app / "_internal" / "a.dll").write_bytes(b"old-a")
+    staging = tmp_path / "staging"
+    (staging / "_internal").mkdir(parents=True)
+    (staging / "_internal" / "a.dll").write_bytes(b"new-a")
+    (staging / "_internal" / "new.dll").write_bytes(b"new-file")
+    # "_internal/missing.dll" is in the list but was never staged: copying it throws mid-update
+    staged = update.StagedUpdate(staging, "9.9.9",
+                                 ("_internal/a.dll", "_internal/new.dll", "_internal/missing.dll"), ())
+    monkeypatch.setattr(update, "application_dir", lambda: app)
+    monkeypatch.setattr(update, "updates_dir", lambda: tmp_path / "updates")
+    monkeypatch.setattr(update, "is_installed", lambda app_dir=None: False)
+    monkeypatch.setattr(update.os, "getpid", lambda: 999999)          # no process to wait for
+    real_popen = sp.Popen
+    monkeypatch.setattr(update.subprocess, "Popen", lambda *a, **k: None)
+    script = update.apply_staged_update(staged)
+    # run it for real; Start-Process of the fake exe then fails, which does not matter here
+    real_popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+               stdout=sp.DEVNULL, stderr=sp.DEVNULL).wait(timeout=60)
+    assert (app / "_internal" / "a.dll").read_bytes() == b"old-a"      # restored from backup
+    assert not (app / "_internal" / "new.dll").exists()                # newly added file removed
+    assert "rolled back" in (app / "updates" / "apply-error.log").read_text(encoding="utf-8-sig")
