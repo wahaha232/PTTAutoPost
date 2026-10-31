@@ -33,8 +33,12 @@ class Target(enum.Enum):
     REPLY_BODY = "reply_body"
 
 
-def encode_big5(text: str) -> tuple[bytes | None, list[tuple[int, str]]]:
-    """Strict cp950 encode. Returns (bytes, []) or (None, [(index, char), ...unencodable])."""
+def encode_big5(text: str) -> tuple[bytes, list[tuple[int, str]]]:
+    """cp950 encode; unencodable characters become '?'.
+
+    Returns (bytes, []), or (bytes with '?' replacements, [(index, char), ...]) so the caller can warn
+    without refusing the whole paste/typing run.
+    """
     try:
         return text.encode("cp950"), []                  # the normal case: one C-level call
     except UnicodeEncodeError:
@@ -45,19 +49,17 @@ def encode_big5(text: str) -> tuple[bytes | None, list[tuple[int, str]]]:
             ch.encode("cp950")
         except UnicodeEncodeError:
             bad.append((i, ch))
-    if bad:
-        return None, bad
-    return text.encode("cp950"), []
+    return text.encode("cp950", "replace"), bad
 
 
 def build_chunks(text: str, limit: int = CHUNK_BYTES) -> list[bytes]:
-    """Split into <=limit byte chunks at character boundaries; line breaks become CR."""
+    """Split into <=limit byte chunks at character boundaries; line breaks become CR; unencodable chars become '?'."""
     chunks: list[bytes] = []
     lines = text.split("\n")
     for li, line in enumerate(lines):
         cur = b""
         for ch in line:
-            b = ch.encode("cp950")
+            b = ch.encode("cp950", "replace")
             if len(cur) + len(b) > limit:
                 chunks.append(cur)
                 cur = b""
@@ -91,10 +93,7 @@ def preflight(session: PttSession, target: Target, text: str, allow_nonempty: bo
             return f"內容含有控制字元 U+{ord(ch):04X}，可能觸發 PTT 快捷鍵，已拒絕輸入。"
     if target is Target.TITLE and "\n" in text:
         return "標題不可含換行。"
-    data, bad = encode_big5(text)
-    if data is None:
-        shown = "、".join(f"「{c}」(第 {i + 1} 字)" for i, c in bad[:5])
-        return f"含有無法以 Big5 編碼的字元 {shown}，PTT 會顯示成亂碼，已拒絕輸入。請改寫後再試。"
+    # Unencodable characters are replaced with '?' by build_chunks; they must not lock posting.
     k = session.kind
     if target is Target.TITLE:
         if k is not Kind.TITLE_PROMPT:

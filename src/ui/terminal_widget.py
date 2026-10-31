@@ -33,16 +33,16 @@ _SPECIAL = {
 
 
 def key_to_bytes(key: int, mods, text: str) -> tuple[bytes | None, str | None]:
-    """Translate one key press. Returns (bytes, None) | (None, reason-if-refused) | (None, None) when ignored."""
+    """Translate one key press. Returns (bytes, None) | (bytes, warning) | (None, None) when ignored."""
     if key in _SPECIAL:
         return _SPECIAL[key], None
     if mods & Qt.KeyboardModifier.ControlModifier and _K.Key_A <= key <= _K.Key_Z:
         return bytes([key - _K.Key_A + 1]), None
     if text and text.isprintable():
-        try:
-            return text.encode("cp950"), None
-        except UnicodeEncodeError:
-            return None, f"字元「{text}」無法以 Big5 輸入到 PTT，已忽略。"
+        data, bad = encode_big5(text)
+        if bad:
+            return data, f"字元「{text}」無法以 Big5 輸入到 PTT，已以「?」代替。"
+        return data, None
     return None, None
 
 
@@ -341,12 +341,9 @@ class TerminalWidget(QWidget):
             self.notice.emit("剪貼簿沒有可貼上的文字（控制字元已忽略）。")
             return False
         data, bad = encode_big5(text)
-        if data is None:
+        if bad:
             shown = "、".join(f"「{c}」" for _i, c in bad[:5])
-            msg = f"貼上內容含有 {len(bad)} 個無法以 Big5 編碼的字元（{shown}），已取消貼上；不會只貼一部分。"
-            QMessageBox.warning(self, "無法貼上", msg)
-            self.notice.emit("貼上已取消：內容含有無法以 Big5 編碼的字元。")
-            return False
+            self.notice.emit(f"貼上內容有 {len(bad)} 個無法以 Big5 編碼的字元（{shown}），將以「?」代替。")
         chars, lines = paste_stats(text)
         if chars > MAX_PASTE_CHARS:
             msg = f"貼上內容共 {chars} 字，超過上限 {MAX_PASTE_CHARS} 字，已拒絕貼上。請分成較小的段落。"
@@ -619,15 +616,13 @@ class TerminalWidget(QWidget):
             self.notice.emit("輸入含有控制字元，已忽略。")
             text = ""
         if text:
-            try:
-                data = text.encode("cp950")
-            except UnicodeEncodeError:
-                self.notice.emit("輸入含有無法以 Big5 編碼的字元，已忽略。")
+            data, bad = encode_big5(text)
+            if bad:
+                self.notice.emit("輸入含有無法以 Big5 編碼的字元，已以「?」代替。")
+            if not self.s.send_user_bytes(data):
+                self.notice.emit("尚未連線，輸入未送出。")
             else:
-                if not self.s.send_user_bytes(data):
-                    self.notice.emit("尚未連線，輸入未送出。")
-                else:
-                    self.clear_selection()
+                self.clear_selection()
         e.accept()
 
     def focusInEvent(self, e):

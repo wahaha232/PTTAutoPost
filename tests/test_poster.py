@@ -135,14 +135,24 @@ def test_refuses_when_not_logged_in(qapp, bbs_factory):
     pump(50)
 
 
-@pytest.mark.parametrize("bad", ["含emoji😀", "含\x18控制字元", "含\x1b[31m跳脫", "簡体字：这个"])
-def test_refuses_unsafe_or_unencodable_text(rig, bad):
+@pytest.mark.parametrize("bad", ["含\x18控制字元", "含\x1b[31m跳脫"])
+def test_refuses_control_characters(rig, bad):
     bbs, sess, typer, done = rig
     goto(bbs, sess, "editor", Kind.EDITOR)
     why = typer.start(Target.BODY, bad)
     assert why is not None
     pump(200)
     assert bytes(bbs.after_login) == b""
+
+
+@pytest.mark.parametrize("text", ["含emoji😀", "簡体字：这个"])
+def test_unencodable_text_is_replaced_and_sent(rig, text):
+    bbs, sess, typer, done = rig
+    goto(bbs, sess, "editor", Kind.EDITOR)
+    assert typer.start(Target.BODY, text) is None
+    assert wait_until(lambda: bool(done))
+    assert done[0][0] is True
+    assert bytes(bbs.after_login) == text.replace("\n", "\r").encode("cp950", "replace")
 
 
 def test_title_with_newline_refused(rig):
@@ -232,9 +242,9 @@ def test_started_signal_fires_before_first_byte(rig):
     assert seen == [0]
 
 
-def test_encode_big5_reports_positions():
+def test_encode_big5_replaces_and_reports_positions():
     data, bad = encode_big5("ab😀c")
-    assert data is None and bad == [(2, "😀")]
+    assert data == b"ab?c" and bad == [(2, "😀")]
 
 
 def test_title_typing_stops_when_screen_leaves_title_prompt_mid_way(rig, monkeypatch):

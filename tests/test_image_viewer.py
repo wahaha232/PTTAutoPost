@@ -107,3 +107,37 @@ def test_closing_the_viewer_cancels_the_download(qapp, monkeypatch):
     viewer._task = SlowTask("https://i.imgur.com/a.jpg")
     viewer.close()
     assert tasks[0].cancelled and viewer._task is None
+
+
+
+def test_inline_strip_loads_thumbnails_without_opening_a_window(qapp, monkeypatch):
+    from PySide6.QtCore import QObject, QRunnable, Signal
+
+    class FakeSignals(QObject):
+        done = Signal(object)
+        failed = Signal(str, str)
+
+    class FakeTask(QRunnable):
+        def __init__(self, url, strict_host=True, referer=None):
+            super().__init__()
+            self.url = url
+            self.signals = FakeSignals()
+
+        def cancel(self):
+            pass
+
+        def run(self):
+            image = QImage(32, 24, QImage.Format.Format_RGB32)
+            image.fill(QColor("#3366cc"))
+            self.signals.done.emit(image_viewer.LoadedImage(
+                ImageData(self.url, "image/png", b""), image, ""))
+
+    monkeypatch.setattr(image_viewer, "ImageFetchTask", FakeTask)
+    strip = image_viewer.InlineImageStrip()
+    strip.set_images(["https://example.com/a.png"], "https://example.com/article")
+    assert strip.urls == ["https://example.com/a.png"]
+    assert wait_until(lambda: strip._thumbs and strip._thumbs[0].pixmap() is not None)
+    assert not strip.isHidden()
+    strip.clear()
+    assert strip.urls == [] and strip.isHidden()
+    strip.close()

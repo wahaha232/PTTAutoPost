@@ -198,7 +198,7 @@ def check(title: str, body: str, sig_text: str = "", used_signature: bool = Fals
                 try:
                     ch.encode("cp950")
                 except UnicodeEncodeError:
-                    issues.append(Issue("error", f"{label}含有無法以 Big5 編碼的字元「{ch}」(U+{ord(ch):04X})，PTT 會顯示成亂碼；請改寫。", i))
+                    issues.append(Issue("warn", f"{label}含有無法以 Big5 編碼的字元「{ch}」(U+{ord(ch):04X})，輸入時會以「?」代替。", i))
                     break
     lines = body.split("\n")
     # the system-generated separator is the last exact "--" line (render() appends the signature after it)

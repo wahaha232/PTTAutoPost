@@ -35,7 +35,7 @@ from ..storage.db import MAX_SIGNATURES, Database
 from ..version import APP_NAME, BUILD_DATE, SPONSOR_MESSAGE, SPONSOR_TEXT, SPONSOR_URL, __version__
 from . import browser, theme
 from .icon import app_icon, tray_icon
-from .image_viewer import ImageHoverPreview, ImageViewer
+from .image_viewer import ImageHoverPreview, ImageViewer, InlineImageStrip
 from .terminal_widget import TerminalWidget
 from .tasks import (ArticleImagesZipTask, FetchTask, ImageUploadTask, ShortenTask, SiteCheckTask,
                     UpdateCheckTask, UpdateDownloadTask)
@@ -653,14 +653,25 @@ class MainWindow(QMainWindow):
         return True
 
     def _open_article_images(self, urls: list[str], referer: str = "") -> bool:
-        """Show images found in the fetched article in the in-app gallery."""
+        """Show images found in the fetched article below the article body (no browser window)."""
         if not urls:
+            self._clear_article_images()
             return False
+        self.article_images.set_images(urls, referer or self._article_referer)
+        self.article_images_box.setVisible(True)
+        self._notice(f"文章內找到 {len(urls)} 張圖片，已顯示在文章下方；點縮圖可在程式內看大圖。")
+        return True
+
+    def _open_article_image_full(self, url: str) -> None:
+        """Open one inline thumbnail larger inside the program (never a browser)."""
         if self._image_viewer is None:
             self._image_viewer = ImageViewer(self)
-        self._image_viewer.show_images(urls, strict=False, referer=referer or self._article_referer)
-        self._notice(f"已開啟文章內的 {len(urls)} 張圖片（可在視窗中切換）。")
-        return True
+        self._image_viewer.show_images([url], strict=False, referer=self._article_referer)
+
+    def _clear_article_images(self) -> None:
+        if hasattr(self, "article_images"):
+            self.article_images.clear()
+            self.article_images_box.setVisible(False)
 
     def _hover_enabled(self) -> bool:
         return bool(hasattr(self, "chk_hover_image") and self.chk_hover_image.isChecked())
@@ -697,6 +708,8 @@ class MainWindow(QMainWindow):
         self._notice("已開啟文章內圖片自動顯示。" if on else "已關閉文章內圖片自動顯示。")
         if on and self._article_image_urls:
             self._open_article_images(self._article_image_urls)
+        elif not on:
+            self._clear_article_images()
 
     def _close_image_viewer(self) -> None:
         self._hide_hover_preview()
@@ -812,7 +825,7 @@ class MainWindow(QMainWindow):
         self.lbl_hover_image_note.setWordWrap(True)
         self.chk_article_image = QCheckBox("文章內有圖片連結時直接顯示")
         self.chk_article_image.setChecked(self.db.get_setting("links.article_images_open", "0") == "1")
-        self.lbl_article_image_note = QLabel("預設關閉。擷取文章後，把文章內的圖片（優先原始尺寸，已排除導覽列／廣告）放進同一個檢視視窗，可切換上一張／下一張；也可用「打包下載圖片」一次下載原圖。")
+        self.lbl_article_image_note = QLabel("預設關閉。擷取文章後，把文章內的圖片（優先原始尺寸，已排除導覽列／廣告）直接顯示在文章下方；點縮圖可在程式內看大圖，不會另開瀏覽器。也可用「打包下載圖片」一次下載原圖。")
         self.lbl_article_image_note.setWordWrap(True)
         bf.addRow("瀏覽器", self.browser_combo)
         bf.addRow("自訂路徑", row_b)
@@ -1626,6 +1639,13 @@ class MainWindow(QMainWindow):
         self.body = QPlainTextEdit()
         self.body.textChanged.connect(self._body_changed)
         ll.addWidget(self.body, 3)
+        self.article_images_box = QGroupBox("文章圖片（顯示在文章下方；點縮圖可在程式內看大圖）")
+        ail = QVBoxLayout(self.article_images_box)
+        self.article_images = InlineImageStrip()
+        self.article_images.clicked.connect(self._open_article_image_full)
+        ail.addWidget(self.article_images)
+        self.article_images_box.setVisible(False)
+        ll.addWidget(self.article_images_box)
         self.article_tabs.addTab(left, "擷取與欄位")
 
         right = QWidget()
@@ -2833,6 +2853,7 @@ class MainWindow(QMainWindow):
         self._typing_target = None
         self._typing_draft_id = None
         self._article_image_urls = []
+        self._clear_article_images()
         self._article_referer = ""
         if hasattr(self, "btn_zip"):
             self.btn_zip.setEnabled(False)
@@ -2909,6 +2930,7 @@ class MainWindow(QMainWindow):
             return
         self.draft_id = d["id"]
         self._article_image_urls = []                      # images belong to the previously fetched article
+        self._clear_article_images()
         self._article_referer = ""
         self.btn_zip.setEnabled(False)
         self._loading = True

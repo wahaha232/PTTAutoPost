@@ -114,17 +114,23 @@ def test_sender_refuses_when_disconnected(qapp, monkeypatch):
     assert sent == []
 
 
-def test_sender_refuses_unencodable_text_without_holding_the_lock(qapp, monkeypatch):
+def test_sender_replaces_unencodable_text_without_holding_the_lock(qapp, monkeypatch):
     session = PttSession()
     session.client.state = State.CONNECTED
     sent = []
     monkeypatch.setattr(session.client, "send", lambda data: sent.append(bytes(data)) or True)
+    done = []
     paster = PasteSender(session, lambda: None)
-    why = paster.start("ok\ud83d\ude00")                              # used to raise after taking the PASTE lock
-    assert why and "Big5" in why
-    assert sent == [] and not paster.running
+    paster.finished.connect(lambda ok, msg: done.append((ok, msg)))
+    assert paster.start("ok😀") is None
+    assert wait_until(lambda: not paster.running)
+    assert b"".join(sent) == b"ok?"
+    assert done and done[-1][0] is True
     assert session.send_lock.owner() is None
+    sent.clear()
     assert paster.start("ok") is None
+    assert wait_until(lambda: not paster.running)
+    assert b"".join(sent) == b"ok"
 
 
 def test_paste_refused_when_not_connected(qapp):
@@ -146,16 +152,15 @@ def test_paste_refused_while_terminal_is_locked(qapp, monkeypatch):
     assert notices and "\u81ea\u52d5\u8f38\u5165" in notices[-1]
 
 
-def test_paste_refuses_unencodable_characters_without_partial_send(qapp, monkeypatch):
+def test_paste_replaces_unencodable_characters(qapp, monkeypatch):
     term = make_term()
     sent = record_sends(monkeypatch, term)
-    warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warnings.append(a[2]) or QMessageBox.StandardButton.Ok))
+    notices = collect_notices(term)
     QGuiApplication.clipboard().setText("ok\U0001F600")
-    assert not term.paste_from_clipboard()
-    assert sent == []
-    assert warnings and "Big5" in warnings[-1]
-    assert "\U0001F600" in warnings[-1]
+    assert term.paste_from_clipboard()
+    assert wait_until(lambda: not term._paster.running)
+    assert b"".join(sent) == b"ok?"
+    assert any("?" in n or "Big5" in n for n in notices)
 
 
 def test_paste_refuses_more_than_limit(qapp, monkeypatch):

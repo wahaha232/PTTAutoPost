@@ -72,6 +72,12 @@ def test_check_flags_errors_and_warnings():
     issues = check("標題😀", "內容\x18")
     msgs = " ".join(str(i) for i in issues)
     assert "Big5" in msgs and "控制字元" in msgs
+
+
+def test_unencodable_characters_are_warnings_not_errors():
+    issues = check("標題😀", "內文😀", require_title=True)
+    assert not has_errors(issues)
+    assert any(i.level == "warn" and "Big5" in i.message and "?" in i.message for i in issues)
     issues = check("[新聞] ok", "1.媒體來源: \n2.記者署名: \n3.完整新聞標題: x\n4.完整新聞內文:\n內容\n--\n")
     assert not has_errors(issues)
     assert any("--" in i.message for i in issues) and any("媒體來源" in i.message for i in issues)

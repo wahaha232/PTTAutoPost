@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.19"
-BUILD_DATE = "2026/10/27"
+__version__ = "0.8.20"
+BUILD_DATE = "2026/10/31"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,15 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.20", "2026/10/31", [
+        "Input: characters that cannot be encoded as Big5 are no longer refused. They are replaced with '?' "
+        "and posting, clipboard paste and IME input continue; a warning names the affected characters. "
+        "Control characters (Ctrl-X, ESC, etc.) are still refused.",
+        "Article images: after a fetch, images are shown inline below the article body in the article tab "
+        "(click a thumbnail for the in-app viewer) instead of opening a separate gallery window/browser.",
+        "Tests: cover the replaced-character path for posting, clipboard paste, IME input and the format-check "
+        "warning; article image tests now assert the inline strip.",
+    ]),
     ("0.8.19", "2026/10/27", [
         "Update signatures: every update asset must come with an Ed25519 <asset>.sig made by the release key "
         "(src/signing.py, pure Python RFC 8032; tools/sign_release.py signs offline). Missing or wrong "

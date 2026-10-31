@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPoint, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QPixmap
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from ..errors import ToolError
 from ..logging_setup import get_logger
@@ -136,6 +136,101 @@ def decode_image(data: bytes) -> tuple[QPixmap | None, str]:
     """GUI-thread convenience wrapper used by tests."""
     image, error = load_image(data)
     return (QPixmap.fromImage(image) if image is not None else None), error
+
+
+class _Thumb(QLabel):
+    """One clickable thumbnail in the inline article image strip."""
+
+    clicked = Signal(str)
+
+    def __init__(self, url: str):
+        super().__init__("載入中…")
+        self.url = url
+        self.setFixedSize(200, 140)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("background:#202020;color:#dddddd;border:1px solid #444;")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(url)
+
+    def mousePressEvent(self, event):  # noqa: N802 (Qt API)
+        self.clicked.emit(self.url)
+        super().mousePressEvent(event)
+
+
+class InlineImageStrip(QScrollArea):
+    """Article images shown inside the article tab (thumbnails, not a browser window)."""
+
+    clicked = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFixedHeight(178)
+        self._host = QWidget()
+        self._lay = QHBoxLayout(self._host)
+        self._lay.setContentsMargins(4, 4, 4, 4)
+        self._lay.setSpacing(8)
+        self._lay.addStretch(1)
+        self.setWidget(self._host)
+        self._tasks: list[ImageFetchTask] = []
+        self._thumbs: list[_Thumb] = []
+        self._urls: list[str] = []
+        self._referer = ""
+        self._generation = 0
+        self.setVisible(False)
+
+    @property
+    def urls(self) -> list[str]:
+        return list(self._urls)
+
+    def set_images(self, urls: list[str], referer: str = "") -> None:
+        """Replace the strip contents and start loading the thumbnails off the GUI thread."""
+        self.clear()
+        self._urls = [u for u in urls if u]
+        self._referer = referer
+        if not self._urls:
+            return
+        self._generation += 1
+        generation = self._generation
+        for url in self._urls:
+            thumb = _Thumb(url)
+            thumb.clicked.connect(self.clicked.emit)
+            self._lay.insertWidget(self._lay.count() - 1, thumb)
+            self._thumbs.append(thumb)
+            task = ImageFetchTask(url, strict_host=False, referer=referer or None)
+            task.signals.done.connect(lambda loaded, gen=generation, t=thumb: self._show(gen, t, loaded))
+            task.signals.failed.connect(lambda _m, _d, gen=generation, t=thumb: self._fail(gen, t))
+            self._tasks.append(task)
+            QThreadPool.globalInstance().start(task)
+        self.setVisible(True)
+
+    def clear(self) -> None:
+        self._generation += 1
+        for task in self._tasks:
+            task.cancel()
+        self._tasks.clear()
+        for thumb in self._thumbs:
+            self._lay.removeWidget(thumb)
+            thumb.deleteLater()
+        self._thumbs.clear()
+        self._urls.clear()
+        self.setVisible(False)
+
+    def _show(self, generation: int, thumb: _Thumb, loaded: LoadedImage) -> None:
+        if generation != self._generation or thumb not in self._thumbs:
+            return
+        if loaded.image is None:
+            thumb.setText(loaded.error or "無法顯示")
+            return
+        pixmap = QPixmap.fromImage(loaded.image)
+        thumb.setPixmap(pixmap.scaled(thumb.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation))
+
+    def _fail(self, generation: int, thumb: _Thumb) -> None:
+        if generation == self._generation and thumb in self._thumbs:
+            thumb.setText("無法載入")
 
 
 class ImageViewer(QDialog):

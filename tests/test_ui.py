@@ -116,16 +116,16 @@ def test_fetch_failure_is_shown_not_faked(win, http_server):
     assert win.w["title"].text() == ""                 # nothing invented
 
 
-def test_copy_matches_preview_and_blocks_on_errors(win):
+def test_copy_matches_preview_and_allows_unencodable_text(win):
     fill_article(win)
     win.copy("all")
     cb = QApplication.clipboard().text()
     title, body = win.current_texts()
     assert cb == f"{title}\n\n{body}"
     QApplication.clipboard().setText("SENTINEL")
-    win.preview.setPlainText("含 emoji 😀 的內容")        # manual edit -> blocking error
+    win.preview.setPlainText("含 emoji 😀 的內容")        # warning only: copying must not be locked
     win.copy("body")
-    assert QApplication.clipboard().text() == "SENTINEL"  # refused, clipboard untouched
+    assert QApplication.clipboard().text() == "含 emoji 😀 的內容"
 
 
 def test_manual_preview_edit_is_not_overwritten_by_field_changes(win):
@@ -325,7 +325,7 @@ def test_key_mapping_for_terminal():
     assert key_to_bytes(K.Key_A, M.NoModifier, "a")[0] == b"a"
     assert key_to_bytes(K.Key_unknown, M.NoModifier, "中")[0] == "中".encode("cp950")
     data, why = key_to_bytes(K.Key_unknown, M.NoModifier, "😀")
-    assert data is None and why
+    assert data == b"?" and why
 
 
 def resize_term(term, w, h):
@@ -1155,14 +1155,14 @@ def test_hover_preview_only_for_image_links_when_enabled(win, monkeypatch):
     assert hidden
 
 
-def test_article_images_setting_opens_the_gallery(win, monkeypatch):
-    from src.ui import main_window as mw
+def test_article_images_setting_shows_inline_strip(win, monkeypatch):
     calls = []
-    monkeypatch.setattr(mw.ImageViewer, "show_images",
-                        lambda self, urls, strict=True, referer=None: calls.append((urls, strict)))
+    monkeypatch.setattr(win.article_images, "set_images",
+                        lambda urls, referer="": calls.append((urls, referer)))
     win._article_image_urls = ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"]
     win.chk_article_image.setChecked(True)
-    assert calls == [(["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"], False)]
+    assert calls and calls[-1][0] == ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"]
+    assert not win.article_images_box.isHidden()
 
 
 def test_ptt_reload_sends_ctrl_l_and_disambiguates_the_web_reload(win, monkeypatch):
@@ -1487,18 +1487,18 @@ def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, mon
         return res
 
     monkeypatch.setattr(ui_tasks, "parse", fake_parse)
-    monkeypatch.setattr(mw.ImageViewer, "show_images",
-                        lambda self, urls, strict=True, referer=None: calls.append((urls, strict)))
+    monkeypatch.setattr(win.article_images, "set_images",
+                        lambda urls, referer="": calls.append(urls))
     win.chk_article_image.setChecked(True)
     win.url_in.setText(http_server + "/ok")
     win.start_fetch()
     assert wait_until(lambda: not win._busy, 8000)
-    assert calls == [(["https://cdn.example.com/photo.jpg"], False)]
+    assert calls == [["https://cdn.example.com/photo.jpg"]]
+    assert not win.article_images_box.isHidden()
     assert win.btn_zip.isEnabled()
 
 
-def test_fetch_with_images_checks_the_setting_and_opens_the_gallery(win, http_server, monkeypatch):
-    from src.ui import main_window as mw
+def test_fetch_with_images_checks_the_setting_and_shows_inline(win, http_server, monkeypatch):
     from src.ui import tasks as ui_tasks
     calls = []
     real_parse = ui_tasks.parse
@@ -1509,8 +1509,8 @@ def test_fetch_with_images_checks_the_setting_and_opens_the_gallery(win, http_se
         return res
 
     monkeypatch.setattr(ui_tasks, "parse", fake_parse)
-    monkeypatch.setattr(mw.ImageViewer, "show_images",
-                        lambda self, urls, strict=True, referer=None: calls.append(urls))
+    monkeypatch.setattr(win.article_images, "set_images",
+                        lambda urls, referer="": calls.append(urls))
     assert not win.chk_article_image.isChecked()
     win.url_in.setText(http_server + "/ok")
     win.start_fetch()
@@ -1518,6 +1518,7 @@ def test_fetch_with_images_checks_the_setting_and_opens_the_gallery(win, http_se
     assert win.chk_article_image.isChecked()
     assert win.db.get_setting("links.article_images_open") == "1"
     assert calls == [["https://cdn.example.com/photo.jpg"]]
+    assert not win.article_images_box.isHidden()
 
 
 
@@ -1763,6 +1764,7 @@ def test_opening_a_draft_forgets_the_previous_article_images(win):
     win.draft_list.setCurrentRow(0)
     win.open_selected()
     assert win._article_image_urls == [] and not win.btn_zip.isEnabled()
+    assert win.article_images.urls == [] and win.article_images_box.isHidden()
     assert not win._loading
 
 
