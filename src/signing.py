@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 
 # Public half of the release signing key (private half is kept outside the repository).
-UPDATE_PUBLIC_KEY_HEX = "1075ef5a58105abc2efb4ddd8f1332f3b59076640c34b3286ef742c439256d46"
+# Rotated 2026-10-31 for 0.8.20 after the old private key was lost. 0.8.19 cannot verify this
+# key, so 0.8.20 must be installed manually once; 0.8.21+ can auto-update with the new key.
+UPDATE_PUBLIC_KEY_HEX = "03de7808a744259b060038ce91d599a3c60bb50c7f113b5e89338e30aab72ee0"
 
 _P = 2 ** 255 - 19
 _Q = 2 ** 252 + 27742317777372353535851937790883648493

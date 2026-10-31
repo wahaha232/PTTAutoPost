@@ -22,6 +22,9 @@ CHANGELOG = [
         "(click a thumbnail for the in-app viewer) instead of opening a separate gallery window/browser.",
         "Tests: cover the replaced-character path for posting, clipboard paste, IME input and the format-check "
         "warning; article image tests now assert the inline strip.",
+        "Update signing key rotated on 2026-10-31 because the old private key was lost. 0.8.19 cannot verify "
+        "the new key, so 0.8.20 must be downloaded and installed manually once; 0.8.21 and later can "
+        "auto-update with the new key. Keep the new private key outside the repository and back it up.",
     ]),
     ("0.8.19", "2026/10/27", [
         "Update signatures: every update asset must come with an Ed25519 <asset>.sig made by the release key "
