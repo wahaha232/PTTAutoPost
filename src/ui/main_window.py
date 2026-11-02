@@ -663,10 +663,13 @@ class MainWindow(QMainWindow):
         return True
 
     def _open_article_image_full(self, url: str) -> None:
-        """Open one inline thumbnail larger inside the program (never a browser)."""
+        """Open the clicked thumbnail larger inside the program (never a browser); the other article images stay one click away."""
         if self._image_viewer is None:
             self._image_viewer = ImageViewer(self)
-        self._image_viewer.show_images([url], strict=False, referer=self._article_referer)
+        urls = self.article_images.urls or [url]
+        start = urls.index(url) if url in urls else 0
+        self._image_viewer.show_images(urls, strict=False, referer=self.article_images.referer or self._article_referer,
+                                       start=start)
 
     def _clear_article_images(self) -> None:
         if hasattr(self, "article_images"):
@@ -824,8 +827,8 @@ class MainWindow(QMainWindow):
         self.lbl_hover_image_note = QLabel("預設關閉。停在終端機的圖片連結約 0.5 秒後，在游標旁顯示小 preview；移開即消失，同一張圖只下載一次。")
         self.lbl_hover_image_note.setWordWrap(True)
         self.chk_article_image = QCheckBox("文章內有圖片連結時直接顯示")
-        self.chk_article_image.setChecked(self.db.get_setting("links.article_images_open", "0") == "1")
-        self.lbl_article_image_note = QLabel("預設關閉。擷取文章後，把文章內的圖片（優先原始尺寸，已排除導覽列／廣告）直接顯示在文章下方；點縮圖可在程式內看大圖，不會另開瀏覽器。也可用「打包下載圖片」一次下載原圖。")
+        self.chk_article_image.setChecked(self.db.get_setting("links.article_images_open", "1") == "1")
+        self.lbl_article_image_note = QLabel("預設開啟；擷取時不會自動改動這個設定。圖床會看到您的 IP，不想自動載入請取消勾選。擷取文章後，把文章內的圖片（優先原始尺寸，已排除導覽列／廣告）直接顯示在文章下方；點縮圖可在程式內看大圖，不會另開瀏覽器。也可用「打包下載圖片」一次下載原圖。")
         self.lbl_article_image_note.setWordWrap(True)
         bf.addRow("瀏覽器", self.browser_combo)
         bf.addRow("自訂路徑", row_b)
@@ -2127,11 +2130,13 @@ class MainWindow(QMainWindow):
         self._article_image_urls = res.images
         self._article_referer = fetched.final_url
         self.btn_zip.setEnabled(bool(self._article_image_urls))
+        self._clear_article_images()                       # never leave the previous article's thumbnails
         if self._article_image_urls and hasattr(self, "chk_article_image"):
-            if not self.chk_article_image.isChecked():
-                self.chk_article_image.setChecked(True)        # detect images -> show checked + open the gallery
-            else:
+            if self.chk_article_image.isChecked():         # the setting is only read here, never changed
                 self._open_article_images(self._article_image_urls, fetched.final_url)
+            else:
+                self._notice(f"文章內找到 {len(self._article_image_urls)} 張圖片；自動顯示已關閉，"
+                             "可在設定勾選「文章內有圖片連結時直接顯示」或用「打包下載圖片」。")
         elif hasattr(self, "chk_article_image") and self.chk_article_image.isChecked():
             self._notice("這篇文章沒有抓到可顯示的圖片。")
         self.db.event("fetch", self.draft_id, f"{res.status}/{res.body_status}")

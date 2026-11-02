@@ -9,7 +9,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPoint, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPoint, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
@@ -23,9 +23,20 @@ MAX_PIXELS = 40_000_000                    # refuse decompression bombs
 MAX_SIDE = 16_384
 MAX_CACHE_BYTES = 64 * 1024 * 1024
 MAX_CACHE_ITEMS = 16
+THUMB_THREADS = 2                          # article thumbnails download two at a time
 _cache: OrderedDict[str, ImageData] = OrderedDict()
 _cache_lock = threading.Lock()
 _cache_bytes = 0
+_thumb_pool: QThreadPool | None = None
+
+
+def thumbnail_pool() -> QThreadPool:
+    """Process-wide pool for article thumbnails (not owned by a widget, like QThreadPool.globalInstance())."""
+    global _thumb_pool
+    if _thumb_pool is None:
+        _thumb_pool = QThreadPool()
+        _thumb_pool.setMaxThreadCount(THUMB_THREADS)
+    return _thumb_pool
 
 
 def cache_get(url: str) -> ImageData | None:
@@ -72,11 +83,12 @@ class LoadedImage:
 class ImageFetchTask(QRunnable):
     """Download and decode one image off the GUI thread."""
 
-    def __init__(self, url: str, strict_host: bool = True, referer: str | None = None):
+    def __init__(self, url: str, strict_host: bool = True, referer: str | None = None, fit: QSize | None = None):
         super().__init__()
         self.url = url
         self.strict_host = strict_host
         self.referer = referer
+        self.fit = fit                     # decode straight to this box (thumbnails) instead of full size
         self.signals = _Signals()
         self._cancel = threading.Event()
 
@@ -86,11 +98,13 @@ class ImageFetchTask(QRunnable):
     def _emit(self, data: ImageData) -> None:
         if self._cancel.is_set():
             return
-        image, error = load_image(data.data)
+        image, error = load_image(data.data, self.fit)
         if not self._cancel.is_set():
             self.signals.done.emit(LoadedImage(data, image, error))
 
     def run(self):
+        if self._cancel.is_set():
+            return                                         # cancelled while still queued: never connect
         try:
             key = f"{self.url}\n{self.referer or ''}"
             cached = cache_get(key)
@@ -110,8 +124,12 @@ class ImageFetchTask(QRunnable):
                 self.signals.failed.emit("讀取圖片時發生未預期的錯誤。", f"{type(e).__name__}: {e}")
 
 
-def load_image(data: bytes) -> tuple[QImage | None, str]:
-    """Decode bytes with Qt's image plugins (safe off the GUI thread)."""
+def load_image(data: bytes, fit: QSize | None = None) -> tuple[QImage | None, str]:
+    """Decode bytes with Qt's image plugins (safe off the GUI thread).
+
+    With fit, the image is decoded/scaled down to fit inside that box here, so a thumbnail never
+    hands a full-size photo to the GUI thread.
+    """
     buf = QBuffer()
     buf.setData(QByteArray(data))
     buf.open(QIODevice.OpenModeFlag.ReadOnly)
@@ -122,11 +140,15 @@ def load_image(data: bytes) -> tuple[QImage | None, str]:
         if size.isValid() and (size.width() > MAX_SIDE or size.height() > MAX_SIDE
                                or size.width() * size.height() > MAX_PIXELS):
             return None, "圖片尺寸過大，已停止顯示。"
+        if fit is not None and size.isValid() and (size.width() > fit.width() or size.height() > fit.height()):
+            reader.setScaledSize(size.scaled(fit, Qt.AspectRatioMode.KeepAspectRatio))   # JPEG decodes at the small size
         img = reader.read()
         if img.isNull():
             return None, f"無法顯示此圖片（{reader.errorString() or '不支援的格式'}）。"
         if img.width() > MAX_SIDE or img.height() > MAX_SIDE or img.width() * img.height() > MAX_PIXELS:
             return None, "圖片尺寸過大，已停止顯示。"
+        if fit is not None and (img.width() > fit.width() or img.height() > fit.height()):
+            img = img.scaled(fit, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         return img, ""
     finally:
         buf.close()
@@ -151,10 +173,19 @@ class _Thumb(QLabel):
         self.setStyleSheet("background:#202020;color:#dddddd;border:1px solid #444;")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(url)
+        self._pressed = False
 
+    # same rule as terminal links: a left press released inside the thumbnail opens it; a drag-off does not
     def mousePressEvent(self, event):  # noqa: N802 (Qt API)
-        self.clicked.emit(self.url)
+        self._pressed = event.button() == Qt.MouseButton.LeftButton
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 (Qt API)
+        pressed, self._pressed = self._pressed, False
+        if (pressed and event.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(event.position().toPoint())):
+            self.clicked.emit(self.url)
+        super().mouseReleaseEvent(event)
 
 
 class InlineImageStrip(QScrollArea):
@@ -174,6 +205,7 @@ class InlineImageStrip(QScrollArea):
         self._lay.setSpacing(8)
         self._lay.addStretch(1)
         self.setWidget(self._host)
+        self._pool = thumbnail_pool()              # small shared pool: thumbnails must not starve article fetches / updates
         self._tasks: list[ImageFetchTask] = []
         self._thumbs: list[_Thumb] = []
         self._urls: list[str] = []
@@ -184,6 +216,10 @@ class InlineImageStrip(QScrollArea):
     @property
     def urls(self) -> list[str]:
         return list(self._urls)
+
+    @property
+    def referer(self) -> str:
+        return self._referer
 
     def set_images(self, urls: list[str], referer: str = "") -> None:
         """Replace the strip contents and start loading the thumbnails off the GUI thread."""
@@ -199,16 +235,16 @@ class InlineImageStrip(QScrollArea):
             thumb.clicked.connect(self.clicked.emit)
             self._lay.insertWidget(self._lay.count() - 1, thumb)
             self._thumbs.append(thumb)
-            task = ImageFetchTask(url, strict_host=False, referer=referer or None)
+            task = ImageFetchTask(url, strict_host=False, referer=referer or None, fit=thumb.size())
             task.signals.done.connect(lambda loaded, gen=generation, t=thumb: self._show(gen, t, loaded))
             task.signals.failed.connect(lambda _m, _d, gen=generation, t=thumb: self._fail(gen, t))
             self._tasks.append(task)
-            QThreadPool.globalInstance().start(task)
+            self._pool.start(task)
         self.setVisible(True)
 
     def clear(self) -> None:
         self._generation += 1
-        for task in self._tasks:
+        for task in self._tasks:                   # queued tasks see the flag and return without connecting
             task.cancel()
         self._tasks.clear()
         for thumb in self._thumbs:
@@ -224,9 +260,7 @@ class InlineImageStrip(QScrollArea):
         if loaded.image is None:
             thumb.setText(loaded.error or "無法顯示")
             return
-        pixmap = QPixmap.fromImage(loaded.image)
-        thumb.setPixmap(pixmap.scaled(thumb.size(), Qt.AspectRatioMode.KeepAspectRatio,
-                                      Qt.TransformationMode.SmoothTransformation))
+        thumb.setPixmap(QPixmap.fromImage(loaded.image))  # already scaled to the thumbnail box off the GUI thread
 
     def _fail(self, generation: int, thumb: _Thumb) -> None:
         if generation == self._generation and thumb in self._thumbs:
@@ -280,12 +314,14 @@ class ImageViewer(QDialog):
     def show_url(self, url: str) -> None:
         self.show_images([url])
 
-    def show_images(self, urls: list[str], strict: bool = True, referer: str | None = None) -> None:
-        """Show one image or a gallery; duplicates are removed and the first image is loaded."""
+    def show_images(self, urls: list[str], strict: bool = True, referer: str | None = None, start: int = 0) -> None:
+        """Show one image or a gallery; duplicates are removed and urls[start] is loaded first."""
+        wanted = urls[start] if 0 <= start < len(urls) else ""
         unique = list(dict.fromkeys(u for u in urls if u))
         if not unique:
             return
-        self._urls, self._index, self._strict, self._referer = unique, 0, strict, referer
+        index = unique.index(wanted) if wanted in unique else 0
+        self._urls, self._index, self._strict, self._referer = unique, index, strict, referer
         self._update_nav()
         self.show()
         self.raise_()

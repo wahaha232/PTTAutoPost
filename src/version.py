@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.20"
-BUILD_DATE = "2026/10/31"
+__version__ = "0.8.21"
+BUILD_DATE = "2026/11/02"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,22 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.21", "2026/11/02", [
+        "Article images: fetching an article without images now removes the previous article's thumbnails "
+        "(they used to stay under the new article and open the old images).",
+        "Article images: a fetch no longer turns '文章內有圖片連結時直接顯示' on by itself. The setting now "
+        "defaults to on for users who never changed it; a user who turned it off gets a notice instead of "
+        "downloads from the image hosts. The settings note mentions that image hosts see your IP.",
+        "Thumbnails are decoded straight to thumbnail size in the background (no full-size photo reaches the "
+        "GUI thread) and download two at a time in their own pool, so they cannot starve article fetches or "
+        "update checks; cancelled queued downloads never connect.",
+        "A thumbnail opens only when the left button is released inside it (drag-off and right click do "
+        "nothing), and the in-app viewer opens the whole article gallery at that image with previous/next.",
+        "Input: invisible emoji glue (zero-width joiners, variation selectors, skin-tone modifiers) is dropped "
+        "before Big5 encoding, so one emoji becomes one '?'. The format-check warning now says copying to the "
+        "clipboard keeps the original characters. Module docs no longer claim only cp950-encodable text is sent.",
+        "Repository: *.key is ignored so signing keys cannot be committed by accident.",
+    ]),
     ("0.8.20", "2026/10/31", [
         "Input: characters that cannot be encoded as Big5 are no longer refused. They are replaced with '?' "
         "and posting, clipboard paste and IME input continue; a warning names the affected characters. "

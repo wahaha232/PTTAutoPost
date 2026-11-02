@@ -247,6 +247,15 @@ def test_encode_big5_replaces_and_reports_positions():
     assert data == b"ab?c" and bad == [(2, "😀")]
 
 
+def test_emoji_glue_is_dropped_so_one_emoji_is_one_question_mark():
+    family = "👨" + chr(0x200D) + "👩" + chr(0x200D) + "👧"
+    thumbs = "👍" + chr(0x1F3FD) + "😀" + chr(0xFE0F)
+    assert encode_big5("a" + family + "b")[0] == b"a???b"
+    assert encode_big5(thumbs)[0] == b"??"
+    assert b"".join(build_chunks("x" + thumbs + "\ny")) == b"x??\ry"
+    assert encode_big5(chr(0xFE0F)) == (b"", [])
+
+
 def test_title_typing_stops_when_screen_leaves_title_prompt_mid_way(rig, monkeypatch):
     import src.net.poster as P
     bbs, sess, typer, done = rig

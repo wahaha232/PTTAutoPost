@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()#%][0-9A-Za-z]|\x1b.?")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]")
-INVISIBLE = re.compile(r"[\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\ufeff\u00ad]")
+INVISIBLE = re.compile(r"[\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\ufe00-\ufe0f\ufeff\u00ad]")
 CLOSING = set("、。，．,.;:!?！？；：）)】〕」』》〉”’…%")
 LINE_WIDTH = 76          # wrap target (display cells); PTT terminal is 80 columns wide
 MAX_LINE = 78            # warn above this
@@ -198,7 +198,7 @@ def check(title: str, body: str, sig_text: str = "", used_signature: bool = Fals
                 try:
                     ch.encode("cp950")
                 except UnicodeEncodeError:
-                    issues.append(Issue("warn", f"{label}含有無法以 Big5 編碼的字元「{ch}」(U+{ord(ch):04X})，輸入時會以「?」代替。", i))
+                    issues.append(Issue("warn", f"{label}含有無法以 Big5 編碼的字元「{ch}」(U+{ord(ch):04X})，輸入到 PTT 時會以「?」代替（複製到剪貼簿則保留原字）。", i))
                     break
     lines = body.split("\n")
     # the system-generated separator is the last exact "--" line (render() appends the signature after it)

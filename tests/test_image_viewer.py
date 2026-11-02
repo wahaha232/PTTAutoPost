@@ -1,5 +1,6 @@
-from PySide6.QtCore import QBuffer, QIODevice, QPoint
+from PySide6.QtCore import QBuffer, QIODevice, QPoint, QSize, Qt, QThreadPool
 from PySide6.QtGui import QColor, QImage
+from PySide6.QtTest import QTest
 
 from conftest import wait_until
 from src.errors import FetchError
@@ -118,10 +119,11 @@ def test_inline_strip_loads_thumbnails_without_opening_a_window(qapp, monkeypatc
         failed = Signal(str, str)
 
     class FakeTask(QRunnable):
-        def __init__(self, url, strict_host=True, referer=None):
+        def __init__(self, url, strict_host=True, referer=None, fit=None):
             super().__init__()
             self.url = url
             self.signals = FakeSignals()
+            fits.append(fit)
 
         def cancel(self):
             pass
@@ -132,12 +134,48 @@ def test_inline_strip_loads_thumbnails_without_opening_a_window(qapp, monkeypatc
             self.signals.done.emit(image_viewer.LoadedImage(
                 ImageData(self.url, "image/png", b""), image, ""))
 
+    fits = []
     monkeypatch.setattr(image_viewer, "ImageFetchTask", FakeTask)
     strip = image_viewer.InlineImageStrip()
     strip.set_images(["https://example.com/a.png"], "https://example.com/article")
-    assert strip.urls == ["https://example.com/a.png"]
+    assert strip.urls == ["https://example.com/a.png"] and strip.referer == "https://example.com/article"
+    assert fits and fits[0] == strip._thumbs[0].size()        # decoded at thumbnail size off the GUI thread
+    assert strip._pool is not QThreadPool.globalInstance() and strip._pool.maxThreadCount() == image_viewer.THUMB_THREADS
     assert wait_until(lambda: strip._thumbs and strip._thumbs[0].pixmap() is not None)
     assert not strip.isHidden()
     strip.clear()
     assert strip.urls == [] and strip.isHidden()
     strip.close()
+
+
+def test_load_image_fit_scales_down_inside_the_box(qapp):
+    image, error = image_viewer.load_image(_png(800, 400), QSize(200, 140))
+    assert error == "" and (image.width(), image.height()) == (200, 100)
+    image, _ = image_viewer.load_image(_png(32, 24), QSize(200, 140))
+    assert (image.width(), image.height()) == (32, 24)                 # small images are never enlarged
+
+
+def test_thumbnail_opens_only_on_left_release_inside(qapp):
+    thumb = image_viewer._Thumb("https://example.com/a.png")
+    thumb.show()
+    clicked = []
+    thumb.clicked.connect(clicked.append)
+    QTest.mousePress(thumb, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
+    assert clicked == []                                              # pressing alone opens nothing
+    QTest.mouseRelease(thumb, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
+    assert clicked == ["https://example.com/a.png"]
+    QTest.mousePress(thumb, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
+    QTest.mouseRelease(thumb, Qt.MouseButton.LeftButton, pos=QPoint(500, 500))   # dragged off: no open
+    QTest.mouseClick(thumb, Qt.MouseButton.RightButton, pos=QPoint(10, 10))
+    assert clicked == ["https://example.com/a.png"]
+    thumb.close()
+
+
+def test_viewer_gallery_starts_at_the_requested_image(qapp, monkeypatch):
+    monkeypatch.setattr(ImageViewer, "_load_current", lambda self: None)
+    viewer = ImageViewer()
+    viewer.show_images(["https://e.com/a.png", "https://e.com/b.png", "https://e.com/c.png"], strict=False, start=1)
+    assert viewer.current_url() == "https://e.com/b.png" and viewer.count_label.text() == "2 / 3"
+    viewer.show_next()
+    assert viewer.current_url() == "https://e.com/c.png"
+    viewer.close()

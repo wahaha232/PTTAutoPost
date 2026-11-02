@@ -1,6 +1,6 @@
 """Paste text into the BBS in small chunks, using the same rhythm as the article typer.
 
-Only sanitised, cp950-encodable text is sent. Every chunk is re-checked against the
+Only sanitised cp950 text is sent (characters Big5 cannot encode become '?'). Every chunk is re-checked against the
 caller's guard (automatic typing / assisted login) and the connection state; a drop or a
 lock stops the run for good with no retry.
 """

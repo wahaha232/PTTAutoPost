@@ -10,3 +10,5 @@ build/
 # generated source-listing snapshot (stale by definition)
 PTTAutoPost_全部程式碼.txt
 PTTAutoPost-*-source.txt
+# signing private keys live in D:\Claude\keystore, never in the repository
+*.key

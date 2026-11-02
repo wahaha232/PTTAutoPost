@@ -1,7 +1,8 @@
 """Type a title / article body into the logged-in PTT terminal -- and STOP before any final submit.
 
 Hard guarantees (covered by tests/test_poster.py against a fake BBS that records every byte):
-* Only printable text (cp950-encodable) and CR line breaks are ever sent. Never Ctrl-X / Ctrl-Q /
+* Only printable cp950 text and CR line breaks are ever sent (characters Big5 cannot encode are sent
+  as '?', invisible emoji joiners/selectors are dropped). Never Ctrl-X / Ctrl-Q /
   ESC / save / confirm keys. No trailing Enter after the title, no Ctrl-X after the body.
 * Preflight must positively recognise the screen (title prompt / empty editor). Anything else: 0 bytes.
 * The screen is re-checked before every chunk; a mismatch, a dropped connection, a stall or a
@@ -10,6 +11,7 @@ Hard guarantees (covered by tests/test_poster.py against a fake BBS that records
 from __future__ import annotations
 
 import enum
+import re
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -25,6 +27,9 @@ IDLE_MS = 120
 MAX_WAIT_MS = 3000
 MONEY_CHUNK_BYTES = 2          # one cp950 character (or one ASCII byte)
 MONEY_CHAR_MS = 500            # PTT: at most 1 P per 2 seconds = 4 chars per 2 s
+# zero-width (non-)joiners, variation selectors and skin-tone modifiers: invisible glue inside one
+# emoji; dropped so a single emoji becomes one '?' instead of "???"
+EMOJI_GLUE = re.compile(r"[\u200c\u200d\ufe00-\ufe0f\U0001f3fb-\U0001f3ff]")
 
 
 class Target(enum.Enum):
@@ -34,11 +39,12 @@ class Target(enum.Enum):
 
 
 def encode_big5(text: str) -> tuple[bytes, list[tuple[int, str]]]:
-    """cp950 encode; unencodable characters become '?'.
+    """cp950 encode; unencodable characters become '?' and emoji glue (EMOJI_GLUE) is dropped.
 
     Returns (bytes, []), or (bytes with '?' replacements, [(index, char), ...]) so the caller can warn
     without refusing the whole paste/typing run.
     """
+    text = EMOJI_GLUE.sub("", text)
     try:
         return text.encode("cp950"), []                  # the normal case: one C-level call
     except UnicodeEncodeError:
@@ -55,7 +61,7 @@ def encode_big5(text: str) -> tuple[bytes, list[tuple[int, str]]]:
 def build_chunks(text: str, limit: int = CHUNK_BYTES) -> list[bytes]:
     """Split into <=limit byte chunks at character boundaries; line breaks become CR; unencodable chars become '?'."""
     chunks: list[bytes] = []
-    lines = text.split("\n")
+    lines = EMOJI_GLUE.sub("", text).split("\n")
     for li, line in enumerate(lines):
         cur = b""
         for ch in line:

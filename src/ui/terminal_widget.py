@@ -619,7 +619,9 @@ class TerminalWidget(QWidget):
             data, bad = encode_big5(text)
             if bad:
                 self.notice.emit("輸入含有無法以 Big5 編碼的字元，已以「?」代替。")
-            if not self.s.send_user_bytes(data):
+            if not data:
+                pass                                   # only invisible emoji glue: nothing to send
+            elif not self.s.send_user_bytes(data):
                 self.notice.emit("尚未連線，輸入未送出。")
             else:
                 self.clear_selection()

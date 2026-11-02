@@ -1067,7 +1067,8 @@ def test_browser_settings_defaults_and_persist(win):
     assert win.browser_combo.currentData() == "system"
     assert not win.chk_auto_image.isChecked()
     assert not win.chk_hover_image.isChecked()
-    assert not win.chk_article_image.isChecked()
+    assert win.chk_article_image.isChecked()                     # article images: on by default (0.8.21)
+    assert win.db.get_setting("links.article_images_open", "") == ""
     assert win.db.get_setting("browser.mode", "") == ""
     win.browser_combo.setCurrentIndex(win.browser_combo.findData("custom"))
     win.browser_path.setText("C:/Tools/browser.exe")
@@ -1079,6 +1080,8 @@ def test_browser_settings_defaults_and_persist(win):
     assert win.db.get_setting("links.image_auto_open") == "1"
     win.chk_hover_image.setChecked(True)
     assert win.db.get_setting("links.image_hover_preview") == "1"
+    win.chk_article_image.setChecked(False)
+    assert win.db.get_setting("links.article_images_open") == "0"
     win.chk_article_image.setChecked(True)
     assert win.db.get_setting("links.article_images_open") == "1"
 
@@ -1160,9 +1163,21 @@ def test_article_images_setting_shows_inline_strip(win, monkeypatch):
     monkeypatch.setattr(win.article_images, "set_images",
                         lambda urls, referer="": calls.append((urls, referer)))
     win._article_image_urls = ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"]
+    win.chk_article_image.setChecked(False)
     win.chk_article_image.setChecked(True)
     assert calls and calls[-1][0] == ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"]
     assert not win.article_images_box.isHidden()
+
+
+def test_clicking_a_thumbnail_opens_the_whole_article_gallery_at_that_image(win, monkeypatch):
+    from src.ui import image_viewer
+    shown = []
+    monkeypatch.setattr(image_viewer.InlineImageStrip, "urls",
+                        property(lambda self: ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"]))
+    monkeypatch.setattr(image_viewer.ImageViewer, "show_images",
+                        lambda self, urls, strict=True, referer=None, start=0: shown.append((urls, start)))
+    win._open_article_image_full("https://cdn.example.com/b.png")
+    assert shown == [(["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.png"], 1)]
 
 
 def test_ptt_reload_sends_ctrl_l_and_disambiguates_the_web_reload(win, monkeypatch):
@@ -1498,7 +1513,7 @@ def test_fetch_opens_article_images_when_the_setting_is_on(win, http_server, mon
     assert win.btn_zip.isEnabled()
 
 
-def test_fetch_with_images_checks_the_setting_and_shows_inline(win, http_server, monkeypatch):
+def test_fetch_with_images_respects_the_setting_and_never_changes_it(win, http_server, monkeypatch):
     from src.ui import tasks as ui_tasks
     calls = []
     real_parse = ui_tasks.parse
@@ -1511,14 +1526,39 @@ def test_fetch_with_images_checks_the_setting_and_shows_inline(win, http_server,
     monkeypatch.setattr(ui_tasks, "parse", fake_parse)
     monkeypatch.setattr(win.article_images, "set_images",
                         lambda urls, referer="": calls.append(urls))
-    assert not win.chk_article_image.isChecked()
+    win.chk_article_image.setChecked(False)                      # the user turned automatic display off
     win.url_in.setText(http_server + "/ok")
     win.start_fetch()
     assert wait_until(lambda: not win._busy, 8000)
-    assert win.chk_article_image.isChecked()
-    assert win.db.get_setting("links.article_images_open") == "1"
-    assert calls == [["https://cdn.example.com/photo.jpg"]]
+    assert not win.chk_article_image.isChecked()
+    assert win.db.get_setting("links.article_images_open") == "0"
+    assert calls == []                                           # nothing is downloaded from the image hosts
+    assert win.article_images_box.isHidden()
+    assert win.btn_zip.isEnabled()                               # the ZIP download stays available
+
+
+def test_fetching_an_article_without_images_removes_the_previous_thumbnails(win, http_server, monkeypatch):
+    from src.ui import tasks as ui_tasks
+    images = [["https://cdn.example.com/old.jpg"]]
+    real_parse = ui_tasks.parse
+
+    def fake_parse(html, url, warnings=None):
+        res = real_parse(html, url, warnings)
+        res.images = images[0]
+        return res
+
+    monkeypatch.setattr(ui_tasks, "parse", fake_parse)
+    monkeypatch.setattr(win.article_images._pool, "start", lambda task: None)   # no network in tests
+    win.url_in.setText(http_server + "/ok")
+    win.start_fetch()
+    assert wait_until(lambda: not win._busy, 8000)
+    assert win.article_images.urls == ["https://cdn.example.com/old.jpg"]
     assert not win.article_images_box.isHidden()
+    images[0] = []
+    win._dirty = False
+    win.start_fetch()
+    assert wait_until(lambda: not win._busy, 8000)
+    assert win.article_images.urls == [] and win.article_images_box.isHidden()
 
 
 
