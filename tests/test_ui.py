@@ -17,6 +17,7 @@ from src.ui.main_window import FIELDS, MainWindow
 from src.ui.terminal_widget import key_to_bytes
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QResizeEvent
+from PySide6.QtTest import QTest
 from test_extract_fetch import H
 
 
@@ -295,6 +296,58 @@ def test_end_to_end_type_body_then_refuse_duplicate(win, bbs_factory):
     win.type_into_ptt(Target.BODY)                                         # second attempt on the same draft
     pump(400)
     assert len(bbs.after_login) == n and "重複" in win.statusBar().currentMessage()
+
+
+def test_refused_typing_names_the_error_and_title_errors_do_not_block_the_body(win, bbs_factory, monkeypatch):
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda _p, title, text, *a, **k: warned.append((title, text))))
+    bbs = bbs_factory()
+    fill_article(win)
+    win.w["post_title"].setText("")                                  # empty title: an error for the title only
+    connect_and_login(win, bbs)
+    win.chk_confirm.setChecked(True)
+    bbs.goto("title")
+    assert wait_until(lambda: win.session.kind is Kind.TITLE_PROMPT)
+    QTest.mouseClick(win.btn_type_title, Qt.MouseButton.LeftButton)
+    pump(300)
+    assert bytes(bbs.after_login) == b""
+    assert warned and "發文標題是空的" in warned[-1][1]               # the dialog lists the actual item
+    assert "發文標題是空的" in win.statusBar().currentMessage()
+    bbs.goto("editor")
+    assert wait_until(lambda: win.session.kind is Kind.EDITOR)
+    QTest.mouseClick(win.btn_type_body, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: not win.typer.running and win.typer.bytes_sent > 0, 10000)
+    _t, body = win.current_texts()
+    assert bytes(bbs.after_login) == body.replace("\n", "\r").encode("cp950")
+    assert len(warned) == 1                                           # the empty title did not block the body
+
+
+def test_title_over_64_bytes_is_typed_with_only_a_warning(win, bbs_factory):
+    bbs = bbs_factory()
+    fill_article(win)
+    long_title = "[新聞] " + "很長的標題" * 10                          # 106 bytes
+    win.w["post_title"].setText(long_title)
+    connect_and_login(win, bbs)
+    win.chk_confirm.setChecked(True)
+    bbs.goto("title")
+    assert wait_until(lambda: win.session.kind is Kind.TITLE_PROMPT)
+    win.type_into_ptt(Target.TITLE)
+    assert wait_until(lambda: not win.typer.running and win.typer.bytes_sent > 0, 10000)
+    sent = bytes(bbs.after_login)
+    assert sent and long_title.encode("cp950").startswith(sent)       # typed, not refused (PTT keeps <= 64 bytes)
+    assert "截掉" in win.issues.toPlainText()
+
+
+def test_copy_refusal_lists_the_errors(win, monkeypatch):
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda _p, title, text, *a, **k: warned.append(text)))
+    fill_article(win)
+    win.w["post_title"].setText("")
+    win.copy("all")
+    assert warned and "發文標題是空的" in warned[-1]
+    warned.clear()
+    win.copy("body")                                                  # an empty title does not block copying the body
+    assert warned == [] and "已複製" in win.statusBar().currentMessage()
 
 
 def test_typing_requires_login_and_matching_screen(win, bbs_factory):

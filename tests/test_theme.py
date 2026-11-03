@@ -24,6 +24,20 @@ def test_light_terminal_ansi_colours_are_readable():
     assert theme.contrast_ratio(t.cursor, t.bg) >= 4.5
 
 
+def test_checkbox_and_radio_indicators_follow_the_theme_and_stay_visible():
+    def rgb(hex_):
+        return tuple(int(hex_[i:i + 2], 16) for i in (1, 3, 5))
+
+    for name in ("light", "dark"):
+        t = theme.get_theme(name)
+        css = theme.stylesheet(t)
+        assert "QCheckBox::indicator" in css and "QRadioButton::indicator" in css
+        assert f"border: 1px solid {t.muted}" in css and f"background: {t.info}" in css
+        for edge in (t.muted, t.info):                       # unchecked border / checked fill: 3:1 non-text contrast
+            assert theme.contrast_ratio(rgb(edge), rgb(t.base)) >= 3, (name, edge)
+            assert theme.contrast_ratio(rgb(edge), rgb(t.window)) >= 3, (name, edge)
+
+
 def test_terminal_palette_choice_dark_or_theme():
     light = theme.get_theme("light").terminal
     dark = theme.get_theme("dark").terminal

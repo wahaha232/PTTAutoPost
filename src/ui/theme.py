@@ -175,6 +175,21 @@ def stylesheet(theme: Theme) -> str:
     QTabBar::tab:selected {{ background: {theme.base}; }}
     QSplitter::handle {{ background: {theme.border}; }}
     QLabel {{ background: transparent; }}
+    QCheckBox::indicator, QRadioButton::indicator {{
+        width: 13px; height: 13px; background: {theme.base}; border: 1px solid {theme.muted};
+    }}
+    QCheckBox::indicator {{ border-radius: 2px; }}
+    QRadioButton::indicator {{ border-radius: 7px; }}
+    QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {theme.info}; }}
+    QCheckBox::indicator:checked {{ background: {theme.info}; border-color: {theme.info}; }}
+    QRadioButton::indicator:checked {{
+        border-color: {theme.info};
+        background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                                    stop:0 {theme.info}, stop:0.5 {theme.info}, stop:0.6 {theme.base}, stop:1 {theme.base});
+    }}
+    QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+        background: {theme.alt}; border-color: {theme.border};
+    }}
     QToolTip {{ background: {theme.base}; color: {theme.text}; border: 1px solid {theme.border}; }}
     """
 

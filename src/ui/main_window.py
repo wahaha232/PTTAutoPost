@@ -2347,11 +2347,20 @@ class MainWindow(QMainWindow):
         self.issues.setPlainText("\n".join(lines))
         return issues
 
+    def _refuse_for_errors(self, issues: list[compose.Issue], part: str | None, action: str) -> bool:
+        """True (and tell the user exactly which items) when error-level issues block this action."""
+        errs = compose.errors(issues, part)
+        if not errs:
+            return False
+        listed = "\n".join(f"・{e.message}" + (f"（第 {e.line} 行）" if e.line else "") for e in errs)
+        self._notice(f"已拒絕{action}：{errs[0].message}" + (f"（另有 {len(errs) - 1} 項）" if len(errs) > 1 else ""))
+        QMessageBox.warning(self, f"無法{action}", f"以下「錯誤」等級的檢查項目需要先修正：\n\n{listed}")
+        return True
+
     def copy(self, what: str):
         title, body = self.current_texts()
         issues = self.run_checks()
-        if compose.has_errors(issues):
-            self._notice("有「錯誤」等級的檢查項目，已拒絕複製（請先修正）。")
+        if self._refuse_for_errors(issues, {"title": "title", "body": "body"}.get(what), "複製"):
             return
         text = {"all": f"{title}\n\n{body}" if title else body, "body": body, "title": title}[what]
         cb = QApplication.clipboard()
@@ -3032,8 +3041,8 @@ class MainWindow(QMainWindow):
             return
         title, body = self.current_texts()
         issues = self.run_checks()
-        if compose.has_errors(issues):
-            self._notice("有「錯誤」等級的檢查項目，已拒絕輸入（請先修正）。")
+        part = "title" if target is Target.TITLE else "body"     # a title problem must not block typing the body
+        if self._refuse_for_errors(issues, part, "輸入" + ("標題" if target is Target.TITLE else "內文")):
             return
         did = self.save_draft()                           # one save; also persists the exact text that will be typed
         if did is None:

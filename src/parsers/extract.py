@@ -28,6 +28,13 @@ _NOISE_TOK = ("comment|comments|related|recommend|recommended|share|sharing|soci
               "sidebar|newsletter|subscribe|subscription|promo|widget|more-news|morenews|extended|keyword|keywords|toolbar|author-box|"
               "authorbox|author-card|author-info|author-bio|copyright|banner|popup|modal|login|paywall|adcolumn|ad|ads|ad-blk|hr-separator|tags")
 NOISE_ATTR = re.compile(r"(?:^|[\s_.\-])(?:" + _NOISE_TOK + r")(?:$|[\s_.\-])", re.I)
+# embed code published by social platforms (blockquote/div classes) and the post URLs those embeds link to
+SOCIAL_EMBED_CLASS = re.compile(r"(?:^|\s)(?:twitter-tweet|twitter-video|twitter-timeline|instagram-media|tiktok-embed|"
+                                r"fb-post|fb-video|fb-page|fb-xfbml-parse-ignore|text-post-media|threads-embed|"
+                                r"reddit-embed-bq|bluesky-embed|imgur-embed-pub|plurk-embed)(?:$|\s)", re.I)
+SOCIAL_POST_URL = re.compile(r"^https?://(?:www\.|mobile\.|m\.)?(?:(?:twitter|x)\.com/[^/?#]+/status/|"
+                             r"instagram\.com/(?:p|reel|tv)/|facebook\.com/(?:[^?#]+/(?:posts|videos|photos)/|permalink\.php|watch)|"
+                             r"threads\.(?:net|com)/@[^/?#]+/post/|tiktok\.com/@[^/?#]+/video/|bsky\.app/profile/[^/?#]+/post/)", re.I)
 NOISE_CAMEL = re.compile(r"__(?:Related|Recommend|Share|Social|Comment|Ad|Advert|Banner|Sponsor|Newsletter|Sidebar|Breadcrumb)\w*")
 PLACES = ("台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|苗栗|彰化|南投|雲林|嘉義|屏東|宜蘭|花蓮|台東|臺東|澎湖|金門|連江|馬祖|"
           "華盛頓|紐約|倫敦|東京|北京|巴黎|柏林|首爾|曼谷|新加坡|雅加達|馬尼拉|布魯塞爾|莫斯科|開羅|墨爾本|雪梨|洛杉磯|舊金山")
@@ -487,11 +494,33 @@ def _trim_head(paras, title):
 KIND_RANK = {"profile": 0, "itemprop": 1, "article": 2, "dense": 3, "generic": 4, "body": 5}
 
 
+def _strip_social_embeds(root: Tag) -> int:
+    """Remove embedded social posts (X/Twitter, Instagram, Facebook, Threads, TikTok, ...). Returns how many.
+
+    News pages paste the platform's embed code into the article; without the platform script it is only
+    a quote of someone else's post (often shown as "not found"), not part of the news text.
+    """
+    found = []
+    for el in root.find_all(["blockquote", "div", "figure", "section"]):
+        if SOCIAL_EMBED_CLASS.search(_noise_ident(el)):
+            found.append(el)
+        elif el.name == "blockquote" and any(SOCIAL_POST_URL.search(a.get("href") or "") for a in el.find_all("a")):
+            found.append(el)                           # class stripped by the CMS, but it links to the post itself
+    ids = {id(el) for el in found}
+    outer = [el for el in found if not any(id(anc) in ids for anc in el.parents)]   # nested matches go with their embed
+    for el in outer:
+        el.decompose()
+    return len(outer)
+
+
 def _extract_body(doc, selectors, warnings, hint_len=0, title=None):
     # One serialisation + parse per page, then strip noise once.  The previous code
     # re-parsed up to 18 candidate subtrees with BeautifulSoup(str(el)), which dominated
     # CPU time on large news pages.
     work = BeautifulSoup(str(doc), "lxml")
+    embeds = _strip_social_embeds(work)                # before candidate selection: an embed is never the article
+    if embeds:
+        warnings.append(f"已移除 {embeds} 則內嵌的社群貼文（X／Instagram／Facebook 等），內文只保留新聞本身。")
     page_text_len = len((work.body or work).get_text(strip=True))
     candidates = [(el, kind) for el, kind in _candidates(work, selectors)
                   if not _candidate_is_noise(el, page_text_len)][:18]

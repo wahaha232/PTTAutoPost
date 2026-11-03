@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.21"
-BUILD_DATE = "2026/11/02"
+__version__ = "0.8.22"
+BUILD_DATE = "2026/11/03"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,21 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.22", "2026/11/03", [
+        "Typing / copy: when error-level checks refuse '輸入標題', '輸入內文' or a copy, a dialog and the status "
+        "bar now list the actual items (before, only 'there are error-level items' was shown, with no detail).",
+        "Typing / copy: only errors that concern the target block it, so a title problem no longer blocks "
+        "typing or copying the body, and a body problem no longer blocks the title.",
+        "Title length: a title over 64 bytes (pttbbs TTLEN, including the [category] prefix) is now a warning "
+        "instead of an error, by user request; the warning says PTT may cut the extra part and asks to check "
+        "the terminal after typing.",
+        "Theme: check boxes and radio buttons are drawn with the theme colours (muted border, accent fill "
+        "when checked, dimmed when disabled) in both light and dark themes, so their outline stays visible.",
+        "Fetch: social posts embedded in the article (X/Twitter, Instagram, Facebook, Threads, TikTok, Bluesky, "
+        "Reddit, Imgur, Plurk embed code, or a blockquote linking to such a post) are removed before the body "
+        "is chosen, so only the news text is kept; a fetch warning says how many were removed. Ordinary "
+        "quotation blockquotes are kept.",
+    ]),
     ("0.8.21", "2026/11/02", [
         "Article images: fetching an article without images now removes the previous article's thumbnails "
         "(they used to stay under the new article and open the old images).",

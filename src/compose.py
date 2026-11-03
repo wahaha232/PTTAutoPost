@@ -19,7 +19,7 @@ MAX_LINE = 78            # warn above this
 # pttbbs include/pttstruct.h: TTLEN 64 (fileheader_t.title[TTLEN + 1]); DISP_TTLEN 46 is what the
 # article list shows.  The stored title includes the "[分類] " prefix, so the whole title is compared.
 TITLE_WARN_BYTES = 46    # DISP_TTLEN: longer titles are cut in the article list
-TITLE_ERROR_BYTES = 64   # TTLEN: PTT keeps at most this many bytes
+TITLE_ERROR_BYTES = 64   # TTLEN: PTT keeps at most this many bytes (warning only since 0.8.22, by user request)
 
 
 @dataclass
@@ -27,6 +27,7 @@ class Issue:
     level: str            # "error" | "warn"
     message: str
     line: int | None = None
+    part: str = ""        # "title" | "body" | "" (both): which typing/copy target the issue blocks
 
     def __str__(self) -> str:
         return ("【錯誤】" if self.level == "error" else "【警告】") + self.message + (f"（第 {self.line} 行）" if self.line else "")
@@ -181,19 +182,19 @@ def check(title: str, body: str, sig_text: str = "", used_signature: bool = Fals
     issues: list[Issue] = []
     if not title.strip():
         if require_title:
-            issues.append(Issue("error", "發文標題是空的。"))
+            issues.append(Issue("error", "發文標題是空的。", part="title"))
     else:
         b = byte_len(title)
         if b > TITLE_ERROR_BYTES:
-            issues.append(Issue("error", f"標題過長（{b} bytes），超過 PTT 標題上限 {TITLE_ERROR_BYTES} bytes（含分類），會被截斷。"))
+            issues.append(Issue("warn", f"標題 {b} bytes，超過 PTT 標題欄位 {TITLE_ERROR_BYTES} bytes（含分類）；仍可輸入，但超出部分可能被 PTT 截掉，輸入後請在終端機確認。", part="title"))
         elif b > TITLE_WARN_BYTES:
             issues.append(Issue("warn", f"標題 {b} bytes：超過 {TITLE_WARN_BYTES} bytes 時文章列表只會顯示前段（上限 {TITLE_ERROR_BYTES} bytes）。"))
     if not body.strip():
-        issues.append(Issue("error", "內文是空的。"))
-    for label, text in (("標題", title), ("內文", body)):
+        issues.append(Issue("error", "內文是空的。", part="body"))
+    for label, part, text in (("標題", "title", title), ("內文", "body", body)):
         for i, line in enumerate(text.split("\n"), 1):
             if CONTROL.search(line) or "\x1b" in line:
-                issues.append(Issue("error", f"{label}含有控制字元，可能觸發 PTT 快捷鍵。", i))
+                issues.append(Issue("error", f"{label}含有控制字元，可能觸發 PTT 快捷鍵。", i, part))
             for j, ch in enumerate(line):
                 try:
                     ch.encode("cp950")
@@ -222,9 +223,14 @@ def check(title: str, body: str, sig_text: str = "", used_signature: bool = Fals
     if used_signature and sig_text.strip() and "\n--\n" not in body:
         issues.append(Issue("warn", "已勾選套用簽名檔，但預覽中沒有簽名檔（預覽可能被手動改過）。"))
     if sig_text.strip() and any(l.strip() == "--" for l in sig_text.split("\n")):
-        issues.append(Issue("error", "簽名檔文字不可含單獨一行的「--」。"))
+        issues.append(Issue("error", "簽名檔文字不可含單獨一行的「--」。", part="body"))
     return issues
 
 
-def has_errors(issues: list[Issue]) -> bool:
-    return any(i.level == "error" for i in issues)
+def errors(issues: list[Issue], part: str | None = None) -> list[Issue]:
+    """Error-level issues; with part ("title"/"body"), only those that block that target."""
+    return [i for i in issues if i.level == "error" and (part is None or i.part in ("", part))]
+
+
+def has_errors(issues: list[Issue], part: str | None = None) -> bool:
+    return bool(errors(issues, part))

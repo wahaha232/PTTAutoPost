@@ -84,8 +84,13 @@ def test_unencodable_characters_are_warnings_not_errors():
     assert not has_errors(issues)
     assert any("--" in i.message for i in issues) and any("媒體來源" in i.message for i in issues)
     long_title = "很長的標題" * 10
+    both = check("", "")                                               # empty title + empty body
+    assert [i.message for i in compose.errors(both, "title")] == ["發文標題是空的。"]
+    assert [i.message for i in compose.errors(both, "body")] == ["內文是空的。"]
+    assert has_errors(both, "title") and has_errors(both, "body") and len(compose.errors(both)) == 2
     assert any(i.level == "warn" and "標題" in i.message for i in check(long_title[:25], "x"))   # 50 bytes: warn only
-    assert any(i.level == "error" and "過長" in i.message for i in check(long_title * 2, "x"))
+    over = check(long_title * 2, "x")                                  # > 64 bytes: still only a warning (0.8.22)
+    assert not has_errors(over) and any(i.level == "warn" and "截掉" in i.message for i in over)
 
 
 def test_check_link_field_on_same_or_next_line():
@@ -388,7 +393,8 @@ def test_upgrade_makes_a_backup_first_and_invisible_regex_is_escaped(tmp_path):
 def test_title_limit_matches_pttbbs_ttlen():
     # pttbbs TTLEN = 64 bytes for the whole stored title, "[分類] " prefix included
     ok = "[新聞] " + "測" * 29                     # 7 + 58 = 65 bytes
-    assert compose.byte_len(ok) == 65 and has_errors(check(ok, "內文"))
+    over = check(ok, "內文")                                  # 0.8.22: over the limit is a warning, not an error
+    assert compose.byte_len(ok) == 65 and not has_errors(over) and any("64" in i.message and "截掉" in i.message for i in over)
     exact = "[新聞] " + "測" * 28 + "a"             # 64 bytes: allowed, but longer than the list shows
     issues = check(exact, "內文")
     assert compose.byte_len(exact) == 64 and not has_errors(issues)

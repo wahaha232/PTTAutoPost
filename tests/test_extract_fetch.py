@@ -761,3 +761,30 @@ def test_sessions_ignore_proxy_environment_variables(monkeypatch):
     monkeypatch.setattr(up, "_pin_session", lambda s, url: None)
     with up._session_for("https://catbox.moe/user/api.php") as s:
         assert s.trust_env is False
+
+
+TWEET = ('<blockquote class="twitter-tweet"><p dir="ltr" lang="es">HARRY KANE falla hoy <a href="https://t.co/abc">'
+         'https://t.co/abc</a></p>— Someone (@someone) <a href="https://x.com/someone/status/2116604525700325757">'
+         'October 31, 2026</a></blockquote><script src="https://platform.x.com/widgets.js"></script>')
+INSTAGRAM = ('<blockquote class="instagram-media" data-instgrm-permalink="https://www.instagram.com/p/XYZ/">'
+             '<div><a href="https://www.instagram.com/p/XYZ/">在 Instagram 查看這則貼文</a></div>'
+             '<p>某人分享的貼文</p></blockquote>')
+BARE_FB = '<blockquote><p>粉專貼文內容</p><a href="https://www.facebook.com/page/posts/123">貼文連結</a></blockquote>'
+
+
+def test_social_embeds_are_removed_from_the_article_body():
+    body = (f"<article><p>{LONG}</p>{TWEET}<p>第二段：賽後檢討的新聞內容，仍然是文章本身。</p>"
+            f"{INSTAGRAM}{BARE_FB}<p>第三段：結尾的新聞內容。</p></article>")
+    r = parse(page(body=body), "https://www.ltsports.com.tw/article/1")
+    text = r.body.value
+    assert "第二段" in text and "第三段" in text and LONG[:20] in text
+    for gone in ("HARRY KANE", "@someone", "October 31", "Instagram", "某人分享", "粉專貼文"):
+        assert gone not in text, gone
+    assert any("已移除 3 則內嵌的社群貼文" in w for w in r.warnings)
+
+
+def test_a_normal_quote_blockquote_is_kept():
+    quote = '<blockquote><p>這是記者引用的一段官方聲明，不是社群貼文。</p><a href="https://www.gov.tw/news/1">原文</a></blockquote>'
+    r = parse(page(body=f"<article><p>{LONG}</p>{quote}</article>"), "https://unknown.example/a")
+    assert "官方聲明" in r.body.value
+    assert not any("社群貼文" in w for w in r.warnings)
