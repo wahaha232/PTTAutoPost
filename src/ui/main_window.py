@@ -8,6 +8,7 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlparse
 
 from PySide6.QtCore import QByteArray, QEvent, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl
 from PySide6.QtGui import QAction, QCursor, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QIcon, QKeySequence, QPixmap
@@ -491,8 +492,10 @@ class MainWindow(QMainWindow):
         config = self._proxy_config()
         if config is None:
             return False
-        if config.enabled:
+        if config.enabled and urlparse(url).scheme != "ssh":
             self._notice(f"連線經 {config.label()}；PTT 會看到代理的對外 IP，請遵守 PTT 站規。")
+        elif config.enabled:
+            self._notice("SSH 連線使用系統 ssh.exe 直連，不套用代理設定。")
         else:
             self._notice(f"直連 {url}。")
         self.session.connect_to(url, config)
@@ -2591,8 +2594,9 @@ class MainWindow(QMainWindow):
         self.lbl_site_status = QLabel("")
         self.lbl_site_status.setWordWrap(True)
         left.addWidget(self.lbl_site_status)
-        hint = QLabel("WSS 與 Telnet 可使用內建終端機連線；SSH 目前只保存書籤，連線功能待後續版本。"
-                      "Telnet 是明文傳輸，請避免在公用網路輸入重要密碼。測試連線只建立 TCP 連線，不送出帳密或任何 BBS 指令。")
+        hint = QLabel("WSS、Telnet 與 SSH 都可使用內建終端機連線。PTT／PTT2 的 WSS 若連線失敗，"
+                      "會自動改用相同站台的 SSH（反之亦然）。Telnet 是明文傳輸，請避免在公用網路輸入重要密碼。"
+                      "測試連線只建立 TCP 連線，不送出帳密或任何 BBS 指令。")
         hint.setWordWrap(True)
         left.addWidget(hint)
         outer.addLayout(left, 1)
@@ -2605,6 +2609,8 @@ class MainWindow(QMainWindow):
             self.site_protocol.addItem(sites.PROTOCOL_LABELS[key], key)
         self.site_host = QLineEdit()
         self.site_host.setPlaceholderText("例如 ws.ptt.cc 或 bbs.example.edu.tw")
+        self.site_user = QLineEdit()
+        self.site_user.setPlaceholderText("SSH 帳號（預設 bbs）")
         self.site_port = QSpinBox()
         self.site_port.setRange(1, 65535)
         self.site_port.setValue(443)
@@ -2615,6 +2621,7 @@ class MainWindow(QMainWindow):
         form.addRow("名稱", self.site_name)
         form.addRow("協定", self.site_protocol)
         form.addRow("主機", self.site_host)
+        form.addRow("SSH 帳號", self.site_user)
         form.addRow("連接埠", self.site_port)
         form.addRow("路徑", self.site_path)
         form.addRow("備註", self.site_note)
@@ -2643,7 +2650,9 @@ class MainWindow(QMainWindow):
         self.btn_site_add.clicked.connect(self.add_site_bookmark)
         self.btn_site_save.clicked.connect(self.save_site_bookmark)
         self.btn_site_delete.clicked.connect(self.delete_site_bookmark)
+        self.site_protocol.currentIndexChanged.connect(lambda _i: self._sync_site_protocol_ui())
         self._reload_sites()
+        self._sync_site_protocol_ui()
         return w
 
     def _reload_sites(self, select: int = 0) -> None:
@@ -2663,10 +2672,17 @@ class MainWindow(QMainWindow):
         else:
             self._clear_site_form()
 
+    def _sync_site_protocol_ui(self) -> None:
+        ssh = self.site_protocol.currentData() == "ssh"
+        self.site_user.setEnabled(ssh)
+        if not ssh:
+            self.site_user.clear()
+
     def _clear_site_form(self) -> None:
         self.site_name.clear()
         self.site_protocol.setCurrentIndex(0)
         self.site_host.clear()
+        self.site_user.clear()
         self.site_port.setValue(443)
         self.site_path.setText("/bbs")
         self.site_note.clear()
@@ -2681,6 +2697,7 @@ class MainWindow(QMainWindow):
         idx = self.site_protocol.findData(site.get("protocol"))
         self.site_protocol.setCurrentIndex(max(0, idx))
         self.site_host.setText(site.get("host", ""))
+        self.site_user.setText(site.get("user", ""))
         self.site_port.setValue(int(site.get("port") or 443))
         self.site_path.setText(site.get("path", ""))
         self.site_note.setText(site.get("note", ""))
@@ -2690,6 +2707,7 @@ class MainWindow(QMainWindow):
             "name": self.site_name.text(), "protocol": self.site_protocol.currentData(),
             "host": self.site_host.text(), "port": self.site_port.value(),
             "path": self.site_path.text(), "note": self.site_note.text(),
+            "user": self.site_user.text(),
         })
 
     def _site_error(self, msg: str) -> None:
@@ -2698,7 +2716,7 @@ class MainWindow(QMainWindow):
 
     def add_site_bookmark(self) -> None:
         site = self._site_from_form()
-        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"])
+        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"], site["user"])
         if err:
             self._site_error(err)
             return
@@ -2718,7 +2736,7 @@ class MainWindow(QMainWindow):
             self._site_error("請先選擇要儲存的書籤。")
             return
         site = self._site_from_form()
-        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"])
+        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"], site["user"])
         if err:
             self._site_error(err)
             return
@@ -2751,7 +2769,7 @@ class MainWindow(QMainWindow):
 
     def test_site(self) -> None:
         site = self._site_from_form()
-        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"])
+        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"], site["user"])
         if err:
             self._site_error(err)
             return
@@ -2770,13 +2788,12 @@ class MainWindow(QMainWindow):
 
     def connect_site(self) -> None:
         site = self._site_from_form()
-        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"])
+        err = sites.validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"], site["user"])
         if err:
             self._site_error(err)
             return
-        if site["protocol"] not in ("wss", "telnet"):
-            self._notice("此版本尚未支援 SSH 連線；站台書籤仍保留，可手動使用其他 SSH 客戶端。")
-            self.lbl_site_test.setText("SSH 連線尚未支援；書籤資料保留。")
+        if site["protocol"] not in ("wss", "telnet", "ssh"):
+            self._site_error("此站台協定不受支援。")
             return
         if site["protocol"] == "telnet":
             if QMessageBox.warning(
@@ -2799,6 +2816,8 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(0)
         if site["protocol"] == "telnet":
             self._notice(f"正在以 Telnet（明文）連線 {site['name']}：{url}；請勿在公用網路輸入重要密碼。")
+        elif site["protocol"] == "ssh":
+            self._notice(f"正在以 SSH（加密）連線 {site['name']}：{url}")
         else:
             self._notice(f"正在連線 {site['name']}：{url}")
 

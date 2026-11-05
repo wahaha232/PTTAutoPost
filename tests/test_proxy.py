@@ -118,6 +118,7 @@ def test_wss_socket_receives_proxy_before_open(monkeypatch):
         assert ws.proxy.type() == QNetworkProxy.ProxyType.Socks5Proxy
         assert (ws.proxy.hostName(), ws.proxy.port()) == ("127.0.0.1", 1080)
         assert client.state is State.CONNECTING
+        assert client._fallback is None                       # SSH cannot use the proxy: never bypass it
     finally:
         client.close()
 

@@ -285,7 +285,7 @@ class Database:
             if not isinstance(item, dict):
                 continue
             site = normalize_site(item)
-            if validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"]) is None:
+            if validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"], site["user"]) is None:
                 out.append(site)
         return out
 
@@ -293,7 +293,7 @@ class Database:
         clean = []
         for item in items:
             site = normalize_site(item)
-            if validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"]) is None:
+            if validate_site(site["name"], site["protocol"], site["host"], site["port"], site["path"], site["note"], site["user"]) is None:
                 clean.append(site)
         self.set_setting("sites.bookmarks", json.dumps(clean, ensure_ascii=False))
 

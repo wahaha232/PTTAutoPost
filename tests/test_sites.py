@@ -14,6 +14,7 @@ def test_default_sites_are_the_verified_list():
     assert items[1]["host"] == "ws.ptt2.cc"
     assert sum(1 for s in items if s["protocol"] == "telnet") == 8
     assert sum(1 for s in items if s["protocol"] == "ssh") == 3
+    assert all(s.get("user") == "bbs" for s in items if s["protocol"] == "ssh")
     assert all(s["note"].startswith("2026-10-23") for s in items)
     assert sites.PROTOCOL_LABELS["telnet"] == "Telnet（明文）"
 
@@ -21,7 +22,11 @@ def test_default_sites_are_the_verified_list():
 def test_site_address_and_validation():
     assert sites.site_address(sites.DEFAULT_SITES[0]) == "wss://ws.ptt.cc/bbs"
     assert sites.site_address(sites.DEFAULT_SITES[2]) == "telnet://bbs.ccns.ncku.edu.tw:23"
+    assert sites.site_address(sites.DEFAULT_SITES[10]) == "ssh://bbs@43.224.33.158:22"
     assert sites.validate_site("x", "wss", "ws.ptt.cc", 443, "/bbs", "") is None
+    assert sites.validate_site("x", "ssh", "bbs.example", 22, "", "", "bbs") is None
+    assert sites.validate_site("x", "ssh", "bbs.example", 22, "", "", "bad user")
+    assert sites.validate_site("x", "telnet", "bbs.example", 23, "", "", "bbs")
     assert sites.validate_site("", "wss", "ws.ptt.cc", 443, "/bbs", "")
     assert sites.validate_site("x", "gopher", "ws.ptt.cc", 443, "", "")
     assert sites.validate_site("x", "wss", "bad host", 443, "/bbs", "")
@@ -160,16 +165,29 @@ def test_telnet_connection_can_be_cancelled_at_the_warning(win, monkeypatch):
     assert notices and "取消" in notices[-1]
 
 
-def test_connect_ssh_is_refused_but_bookmark_remains(win, monkeypatch):
+def test_connect_ssh_uses_the_bookmarked_account(win, monkeypatch):
     calls = []
     notices = []
     monkeypatch.setattr(win.session, "connect_to", lambda url, proxy=None: calls.append(url))
     monkeypatch.setattr(win, "_notice", lambda msg: notices.append(msg))
+    win.session.client.state = __import__("src.net.client", fromlist=["State"]).State.DISCONNECTED
     win.site_list.setCurrentRow(10)
     win.btn_site_connect.click()
-    assert calls == []
+    assert calls == ["ssh://bbs@43.224.33.158:22"]
     assert notices and "SSH" in notices[-1]
+    assert win.url_box.currentText() == "ssh://bbs@43.224.33.158:22"
     assert len(win.db.site_bookmarks()) == 13
+
+
+def test_ptt_wss_and_ssh_fallback_urls():
+    from src.net.client import fallback_url
+    assert fallback_url("wss://ws.ptt.cc/bbs") == "ssh://bbs@ptt.cc:22"
+    assert fallback_url("wss://ws.ptt2.cc/bbs") == "ssh://bbs@ptt2.cc:22"
+    assert fallback_url("ssh://bbs@ptt.cc:22") == "wss://ws.ptt.cc/bbs"
+    assert fallback_url("ssh://ptt.cc") == "wss://ws.ptt.cc/bbs"
+    assert fallback_url("wss://ws.ptt.cc/other") is None
+    assert fallback_url("ssh://alice@ptt.cc:22") is None
+    assert fallback_url("wss://example.org/bbs") is None
 
 
 def test_ipv6_hosts_are_bracketed_and_bad_ports_are_reported():

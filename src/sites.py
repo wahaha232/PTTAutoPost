@@ -1,7 +1,7 @@
 """BBS site bookmarks: defaults verified on 2026-10-23, validation and a read-only TCP check.
 
-The client connects over WSS and Telnet. SSH entries are kept as bookmarks for the planned
-ssh.exe transport; the UI says so instead of pretending to connect.
+The client connects over WSS, Telnet and SSH (the system OpenSSH client).  A failed initial
+WSS connection to PTT/PTT2 switches to the matching SSH endpoint automatically.
 """
 from __future__ import annotations
 
@@ -34,14 +34,15 @@ DEFAULT_SITES = (
     {"name": "網際新世界", "protocol": "telnet", "host": "209.141.35.127", "port": 23,
      "path": "", "note": f"{VERIFIED} TCP 可連；3 秒內無 banner"},
     {"name": "交大淒美燈塔", "protocol": "ssh", "host": "43.224.33.158", "port": 22,
-     "path": "", "note": f"{VERIFIED} SSH 可連；BBS 入口待確認"},
+     "path": "", "user": "bbs", "note": f"{VERIFIED} SSH 可連；BBS 入口待確認"},
     {"name": "中山七月七日晴", "protocol": "ssh", "host": "77bbs.com", "port": 22,
-     "path": "", "note": f"{VERIFIED} SSH 可連；BBS 入口待確認"},
+     "path": "", "user": "bbs", "note": f"{VERIFIED} SSH 可連；BBS 入口待確認"},
     {"name": "臺大資管鳴蟬", "protocol": "ssh", "host": "bbs.im.ntu.edu.tw", "port": 22,
-     "path": "", "note": f"{VERIFIED} SSH 可連；BBS 入口待確認"},
+     "path": "", "user": "bbs", "note": f"{VERIFIED} SSH 可連；BBS 入口待確認"},
 )
 
 _HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|[0-9A-Fa-f:]+")
+_USER_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 def site_address(site: dict) -> str:
@@ -52,10 +53,15 @@ def site_address(site: dict) -> str:
     if proto == "wss":
         path = site.get("path") or "/bbs"
         return f"wss://{host}:{port}{path}" if port != 443 else f"wss://{host}{path}"
+    if proto == "ssh":
+        user = str(site.get("user") or "").strip()
+        auth = f"{user}@" if user else ""
+        return f"ssh://{auth}{host}:{port}"
     return f"{proto}://{host}:{port}"
 
 
-def validate_site(name: str, protocol: str, host: str, port: int, path: str = "", note: str = "") -> str | None:
+def validate_site(name: str, protocol: str, host: str, port: int, path: str = "", note: str = "",
+                  user: str = "") -> str | None:
     if not name.strip() or len(name.strip()) > 60:
         return "名稱需為 1～60 個字元。"
     if protocol not in PROTOCOLS:
@@ -77,6 +83,11 @@ def validate_site(name: str, protocol: str, host: str, port: int, path: str = ""
             return "WSS 路徑不可含空白。"
     elif p:
         return "Telnet／SSH 不使用路徑。"
+    u = str(user or "").strip()
+    if protocol == "ssh" and u and not _USER_RE.fullmatch(u):
+        return "SSH 帳號只能使用英文字母、數字、句點、底線與連字號（最多 64 字元）。"
+    if protocol != "ssh" and u:
+        return "只有 SSH 站台可以設定帳號。"
     if len(note) > 200:
         return "備註最多 200 個字元。"
     return None
@@ -92,7 +103,8 @@ def _port(value) -> int:
 def normalize_site(site: dict) -> dict:
     return {"name": str(site.get("name", "")).strip(), "protocol": str(site.get("protocol", "")),
             "host": str(site.get("host", "")).strip(), "port": _port(site.get("port")),
-            "path": str(site.get("path", "")).strip(), "note": str(site.get("note", "")).strip()}
+            "path": str(site.get("path", "")).strip(), "note": str(site.get("note", "")).strip(),
+            "user": str(site.get("user", "")).strip()}
 
 
 def check_site(site: dict, timeout: float = 5) -> tuple[bool, str]:

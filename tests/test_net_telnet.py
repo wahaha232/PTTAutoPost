@@ -13,6 +13,25 @@ def test_endpoint_allows_telnet_but_not_credentials():
     assert endpoint_problem("wss://ws.ptt.cc/bbs") is None
 
 
+def test_failed_initial_connection_switches_protocol_once(qapp):
+    client = PttClient()
+    starts, failed = [], []
+    client._start_connect = starts.append
+    client.failed.connect(failed.append)
+    client._fallback = "ssh://bbs@ptt.cc:22"
+    client._set_state(State.CONNECTING)
+    client._connect_failed("WSS 連線錯誤：拒絕連線")
+    assert starts == ["ssh://bbs@ptt.cc:22"]
+    assert failed and "自動改用 SSH" in failed[-1]
+    assert client.state is State.DISCONNECTED
+
+    client._set_state(State.CONNECTING)
+    client._connect_failed("SSH 連線錯誤：逾時")
+    assert starts == ["ssh://bbs@ptt.cc:22"]                 # only one switch, never a loop
+    assert failed[-1] == "SSH 連線錯誤：逾時"
+    client.close()
+
+
 def test_iac_filter_strips_and_answers_negotiation():
     f = IacFilter()
     data, replies = f.feed_with_replies(b"A\xff\xfb\x01B\xff\xfd\x03C")

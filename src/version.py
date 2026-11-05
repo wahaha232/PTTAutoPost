@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.22"
-BUILD_DATE = "2026/11/03"
+__version__ = "0.8.23"
+BUILD_DATE = "2026/11/05"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,15 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.23", "2026/11/05", [
+        "SSH: BBS sites can now be opened in the built-in terminal over the system OpenSSH client "
+        "(ssh.exe). SSH bookmarks have an optional account field (default 'bbs'); the first host key "
+        "is accepted automatically and later changes are refused. No Python SSH dependency was added.",
+        "Automatic protocol switch: when the first connection to the official PTT/PTT2 WSS endpoint "
+        "fails (error or timeout), the client tries the matching SSH endpoint (ssh bbs@ptt.cc or "
+        "ssh bbs@ptt2.cc) once; an SSH bookmark for those sites falls back to WSS the same way. An "
+        "already established session is still never reconnected or resent.",
+    ]),
     ("0.8.22", "2026/11/03", [
         "Typing / copy: when error-level checks refuse '輸入標題', '輸入內文' or a copy, a dialog and the status "
         "bar now list the actual items (before, only 'there are error-level items' was shown, with no detail).",

@@ -170,12 +170,20 @@ def test_endpoint_policy_wss_only_no_userinfo_and_login_only_to_ptt():
     from src.net.client import endpoint_problem, login_host_trusted
     assert endpoint_problem("wss://ws.ptt.cc/bbs") is None
     assert endpoint_problem("ws://127.0.0.1:9/bbs") is None                  # local testing only
-    for bad in ("ws://ws.ptt.cc/bbs", "ws://evil.example/bbs", "http://ws.ptt.cc/bbs", "wss://u:p@ws.ptt.cc/bbs", "wss:///bbs", "ftp://x"):
+    assert endpoint_problem("ssh://bbs@ptt.cc:22") is None
+    assert endpoint_problem("ssh://ptt.cc") is None
+    assert endpoint_problem("ssh://user@bbs.example:22") is None
+    for bad in ("ws://ws.ptt.cc/bbs", "ws://evil.example/bbs", "http://ws.ptt.cc/bbs", "wss://u:p@ws.ptt.cc/bbs",
+                "wss:///bbs", "ftp://x", "ssh://bbs:pw@ptt.cc:22", "ssh://bad user@ptt.cc:22", "ssh://bbs@ptt.cc:22/path",
+                "wss://user@ws.ptt.cc/bbs"):
         assert endpoint_problem(bad), bad
     assert login_host_trusted("wss://ws.ptt.cc/bbs") and login_host_trusted("ws://127.0.0.1:1/bbs")
     assert not login_host_trusted("wss://evil.example/bbs") and not login_host_trusted("wss://ws.ptt.cc.evil.example/bbs")
     assert not login_host_trusted("wss://ws.ptt.cc:8443/bbs")        # other port
     assert not login_host_trusted("wss://ws.ptt.cc/other")           # other path
+    assert login_host_trusted("ssh://bbs@ptt.cc:22") and login_host_trusted("ssh://ptt.cc")
+    assert not login_host_trusted("ssh://alice@ptt.cc:22")
+    assert not login_host_trusted("ssh://bbs@ptt.cc:2222")
 
 
 def test_disconnect_is_immediate_and_a_quick_reconnect_is_possible(sess, bbs_factory):
