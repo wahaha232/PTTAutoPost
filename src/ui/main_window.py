@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(760, 560)                     # freely resizable above this
         self._quitting = False
         self._disguise = False
+        self._last_focus_article = False
         self._normal_window_title = self.windowTitle()
         self._normal_menu_actions: list[QAction] = []
         self._fake_menus: list[QMenu] = []
@@ -165,6 +166,9 @@ class MainWindow(QMainWindow):
         self._central_stack.addWidget(tabs)
         self._central_stack.addWidget(self.disguise_view)
         self.setCentralWidget(self._central_stack)
+        app = QApplication.instance()
+        if app is not None:
+            app.focusChanged.connect(self._on_focus_changed)
         self.term.linkActivated.connect(self._open_link)
         self.term.linksChanged.connect(self._on_links_changed)
         self.term.linkHovered.connect(self._on_link_hovered)
@@ -318,11 +322,46 @@ class MainWindow(QMainWindow):
             else:
                 self._update_tray(self.session.client.state is State.CONNECTED)
 
+    def _on_focus_changed(self, _old, new) -> None:
+        """Remember whether the user was last reading the article panel or the terminal."""
+        if new is None:
+            return
+        panel = getattr(self, "article_panel", None)
+        if panel is not None and (new is panel or panel.isAncestorOf(new)):
+            self._last_focus_article = True
+        elif hasattr(self, "term") and (new is self.term or self.term.isAncestorOf(new)):
+            self._last_focus_article = False
+
+    def _article_disguise_text(self) -> str:
+        """The article as a plain text document: title, body, then personal notes."""
+        if not hasattr(self, "body"):
+            return ""
+        parts = []
+        title = self.w["post_title"].text().strip() if hasattr(self, "w") else ""
+        if title:
+            parts.append(title)
+        body = self.body.toPlainText().rstrip()
+        if body:
+            parts.append(body)
+        notes = self.notes.toPlainText().rstrip() if hasattr(self, "notes") else ""
+        if notes:
+            parts.append(notes)
+        return "\n\n".join(parts)
+
+    def _disguise_text(self) -> str:
+        """Article when the user was reading it, otherwise the current PTT screen."""
+        terminal = termsel.screen_text(self.term.s.screen.grid)
+        article = self._article_disguise_text()
+        if article and not getattr(self, "_article_collapsed", True):
+            if not terminal or getattr(self, "_last_focus_article", False):
+                return article
+        return terminal or article or "（目前沒有可顯示的文字）"
+
     def _refresh_disguise_text(self) -> None:
-        """Mirror the current PTT screen as plain text; never fetch or render anything."""
+        """Mirror the reading text as plain text; never fetch or render anything."""
         if not getattr(self, "_disguise", False) or not hasattr(self, "disguise_view"):
             return
-        self.disguise_view.set_text(termsel.screen_text(self.term.s.screen.grid))
+        self.disguise_view.set_text(self._disguise_text())
 
     def _show_disguise_menus(self) -> None:
         for action in self._normal_menu_actions:
@@ -983,8 +1022,8 @@ class MainWindow(QMainWindow):
         self.chk_disguise.toggled.connect(self._disguise_toggled)
         af.addRow("", self.chk_disguise)
         disguise_note = QLabel(
-            "開啟後視窗會變成 Windows 記事本樣式，只顯示目前 PTT 畫面的純文字；圖片與連結都不會開啟。"
-            "按 Ctrl+Shift+D 或「檔案 > 結束」可回到正常模式。")
+            "開啟後視窗會變成 Windows 記事本樣式，顯示目前閱讀中的文章內容或 PTT 畫面純文字；"
+            "圖片與連結都不會開啟。按 Ctrl+Shift+D 或「檔案 > 結束」可回到正常模式。")
         disguise_note.setWordWrap(True)
         af.addRow(disguise_note)
         lay.addWidget(ap)
@@ -1824,10 +1863,12 @@ class MainWindow(QMainWindow):
             h.addWidget(lab)
             form.addRow(LABELS[f], h)
             self.w[f], self.state_lbl[f] = e, lab
+        self.w["post_title"].textChanged.connect(self._refresh_disguise_text)
         ll.addLayout(form)
         ll.addWidget(QLabel("原文內文（可修改；個人心得與簽名檔在「預覽與輸入」頁）"))
         self.body = QPlainTextEdit()
         self.body.textChanged.connect(self._body_changed)
+        self.body.textChanged.connect(self._refresh_disguise_text)
         ll.addWidget(self.body, 3)
         self.article_images_box = QGroupBox("文章圖片（顯示在文章下方；點縮圖可在程式內看大圖）")
         ail = QVBoxLayout(self.article_images_box)
@@ -1877,6 +1918,7 @@ class MainWindow(QMainWindow):
         self.notes = QPlainTextEdit()
         self.notes.setFixedHeight(90)
         self.notes.textChanged.connect(self._schedule_preview)
+        self.notes.textChanged.connect(self._refresh_disguise_text)
         rl.addWidget(self.notes)
 
         sg = QGroupBox(f"簽名檔（可直接輸入／編輯；最多 {MAX_SIGNATURES} 則，保存在本機）")

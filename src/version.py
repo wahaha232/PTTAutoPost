@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.25"
+__version__ = "0.8.26"
 BUILD_DATE = "2026/11/06"
 APP_NAME = "PTT AutoPost"
 
@@ -14,6 +14,14 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.26", "2026/11/06", [
+        "Disguise mode: when an article is open in the article panel, the Notepad-style view now shows the "
+        "article (post title, body and personal notes) instead of staying blank while the terminal has no "
+        "text. The terminal screen is still used when the user was last reading it, and a plain-text notice "
+        "is shown when both sources are empty.",
+        "Disguise mode follows the last focused pane, so toggling it while reading the article keeps the "
+        "article visible; editing the title, body or notes refreshes the cover immediately.",
+    ]),
     ("0.8.25", "2026/11/06", [
         "New disguise mode: the window can masquerade as Windows Notepad showing a read-only text file. "
         "It mirrors the current PTT screen as plain text, hides the normal app UI, and refuses to open "

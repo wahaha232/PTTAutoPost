@@ -28,6 +28,53 @@ def test_disguise_shows_plain_text_and_hides_the_app(qapp, tmp_path):
     db.close()
 
 
+def test_disguise_shows_the_open_article_when_the_terminal_is_empty(qapp, tmp_path):
+    win, db = make_window(tmp_path)
+    win._set_article_panel_visible(True)
+    win.w["post_title"].setText("[新聞] 測試標題")
+    win.body.setPlainText("這是文章內文")
+    win.notes.setPlainText("這是個人心得")
+
+    win.set_disguise(True)
+
+    text = win.disguise_view.text()
+    assert "[新聞] 測試標題" in text and "這是文章內文" in text and "這是個人心得" in text
+    assert "（目前沒有可顯示的文字）" not in text
+    win.set_disguise(False)
+    db.close()
+
+
+def test_disguise_follows_the_last_focused_pane_and_refreshes_on_edits(qapp, tmp_path):
+    win, db = make_window(tmp_path)
+    win._set_article_panel_visible(True)
+    win.session.screen.feed("PTT 畫面文字\r\n".encode("cp950"))
+    win.session.screenChanged.emit()
+    win.body.setPlainText("文章內文")
+
+    win._on_focus_changed(None, win.body)
+    win.set_disguise(True)
+    assert "文章內文" in win.disguise_view.text() and "PTT 畫面文字" not in win.disguise_view.text()
+
+    win.body.setPlainText("更新後的文章內文")
+    assert "更新後的文章內文" in win.disguise_view.text()
+
+    win.set_disguise(False)
+    win._on_focus_changed(None, win.term)
+    win.set_disguise(True)
+    assert "PTT 畫面文字" in win.disguise_view.text()
+
+    win.set_disguise(False)
+    db.close()
+
+
+def test_disguise_shows_a_plain_text_notice_when_there_is_nothing_to_read(qapp, tmp_path):
+    win, db = make_window(tmp_path)
+    win.set_disguise(True)
+    assert win.disguise_view.text() == "（目前沒有可顯示的文字）"
+    win.set_disguise(False)
+    db.close()
+
+
 def test_disguise_blocks_images_links_and_hover_preview(qapp, tmp_path, monkeypatch):
     win, db = make_window(tmp_path)
     opened = []
