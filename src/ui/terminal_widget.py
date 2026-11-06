@@ -126,6 +126,8 @@ class TerminalWidget(QWidget):
         self.sx, self.sy, self.ox, self.oy = 1.0, 1.0, 0.0, 0.0   # glyph stretch and grid offset (fit mode)
         self.locked = False                             # True while an automatic typing / login run owns the keyboard
         self.cursor_style = "outline"                   # outline / block / underline / bar
+        self.notepad = False                            # disguise mode: plain black text on white, no ANSI colours
+        self.links_enabled = True                       # disguise mode turns links off (they stay visible as text)
         self.stretch = False                            # True: distort glyphs so the grid fills the area completely
         self._adv: dict[str, float] = {}
         self._links: list[Link] = []
@@ -189,6 +191,32 @@ class TerminalWidget(QWidget):
         self.colors = terminal_palette(self.theme_name)
         self.update()
 
+    def set_notepad(self, on: bool) -> None:
+        """Plain-text (Notepad) look: black text on white, no ANSI colours, bar caret."""
+        on = bool(on)
+        if on == self.notepad:
+            return
+        if on:
+            self._notepad_cursor_style = self.cursor_style
+            self.cursor_style = "bar"
+            self.notepad = True
+        else:
+            self.notepad = False
+            self.cursor_style = getattr(self, "_notepad_cursor_style", self.cursor_style)
+        self.update()
+
+    def set_links_enabled(self, on: bool) -> None:
+        """Links remain readable text, but hover/click activation can be disabled (disguise mode)."""
+        on = bool(on)
+        if on == self.links_enabled:
+            return
+        self.links_enabled = on
+        if not on:
+            self._hover_link = None
+            self.unsetCursor()
+            self.linkHovered.emit("")
+        self.update()
+
     # ----------------------------------------------------------------- links / mouse
     linkActivated = Signal(str)
     linksChanged = Signal(object)
@@ -211,6 +239,8 @@ class TerminalWidget(QWidget):
         return list(self._links)
 
     def link_at(self, pos) -> Link | None:
+        if not self.links_enabled:
+            return None
         x = (pos.x() - self.ox) / self.cw if self.cw else -1
         y = (pos.y() - self.oy) / self.ch if self.ch else -1
         if x < 0 or y < 0:
@@ -653,7 +683,11 @@ class TerminalWidget(QWidget):
         p.setFont(self.draw_font)
         scr, cw, ch = self.s.screen, self.cw, self.ch
         fm = QFontMetricsF(self.draw_font)
-        p.fillRect(self.rect(), QColor(*self.colors.bg))
+        notepad = self.notepad
+        base_bg = (255, 255, 255) if notepad else self.colors.bg
+        base_fg = (0, 0, 0)
+        highlight = (232, 240, 254)                   # Notepad-like selection / reversed BBS bars
+        p.fillRect(self.rect(), QColor(*base_bg))
         p.translate(self.ox, self.oy)
         sx = self.sx
         center = int(Qt.AlignmentFlag.AlignCenter)
@@ -672,14 +706,18 @@ class TerminalWidget(QWidget):
                     continue
                 cells = 2 if x + 1 < len(row) and row[x + 1][3] & WIDE2 else 1
                 left, w = x * cw, cells * cw
-                f = self.colors.bright[fg] if fl & BOLD else self.colors.normal[fg]
-                b = self.colors.bg_colors[bg]
-                if fl & REVERSE:
-                    f, b = b, f
                 selected = bool(picked is not None and (picked[x] or (cells == 2 and x + 1 < len(row) and picked[x + 1])))
-                if selected:
-                    f, b = b, f
-                if selected or b != self.colors.bg:
+                if notepad:
+                    f = base_fg
+                    b = highlight if (fl & REVERSE) or selected else base_bg
+                else:
+                    f = self.colors.bright[fg] if fl & BOLD else self.colors.normal[fg]
+                    b = self.colors.bg_colors[bg]
+                    if fl & REVERSE:
+                        f, b = b, f
+                    if selected:
+                        f, b = b, f
+                if selected or b != base_bg:
                     p.fillRect(QRectF(left, top, w + 0.6, ch + 0.6), QColor(*b))   # +0.6: no hairline gaps between cells
                 if c.strip():
                     p.setPen(QColor(*f))
@@ -695,18 +733,19 @@ class TerminalWidget(QWidget):
                     p.restore()
                     if fl & UNDERLINE:
                         p.drawLine(int(left), int(top + ch - 2), int(left + w), int(top + ch - 2))
-        if self._links:
-            p.setPen(QPen(QColor(*self.colors.cursor), max(1.0, ch / 18)))
+        link_color = (0, 0, 0) if notepad else self.colors.cursor
+        if self._links and self.links_enabled:
+            p.setPen(QPen(QColor(*link_color), max(1.0, ch / 18)))
             for link in self._links:
                 p.drawLine(int(link.start_col * cw), int(link.row * ch + ch - 2),
                            int(link.end_col * cw), int(link.row * ch + ch - 2))
-        if self._hover_link is not None:
+        if self._hover_link is not None and self.links_enabled:
             link = self._hover_link
-            p.setPen(QPen(QColor(*self.colors.cursor), max(1.0, ch / 14)))
+            p.setPen(QPen(QColor(*link_color), max(1.0, ch / 14)))
             p.drawLine(int(link.start_col * cw), int(link.row * ch + ch - 2),
                        int(link.end_col * cw), int(link.row * ch + ch - 2))
         cur = scr.cur
-        cursor = QColor(*self.colors.cursor)
+        cursor = QColor(*link_color)
         if not self.hasFocus():
             cursor.setAlpha(140)
         rect = QRectF(cur.x * cw, cur.y * ch, cw - 1, ch - 1)

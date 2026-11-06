@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.26"
+__version__ = "0.8.27"
 BUILD_DATE = "2026/11/06"
 APP_NAME = "PTT AutoPost"
 
@@ -14,6 +14,14 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.27", "2026/11/06", [
+        "Disguise mode is now interactive like PTT Star: the real PTT screen is shown as plain black text "
+        "on white (no ANSI colours, Notepad title/menu, bar caret) while the terminal keeps keyboard focus. "
+        "Browsing and posting with PTT's own keys (arrows, Ctrl+P, typing, Ctrl+X) still work.",
+        "In disguise mode mouse links, link underlines and hover previews are disabled, and image/auto-open "
+        "paths stay blocked. If PTT is not connected, an already loaded article (title, body, notes) or a "
+        "plain-text notice is shown instead of a blank page; it switches to the live screen when connected.",
+    ]),
     ("0.8.26", "2026/11/06", [
         "Disguise mode: when an article is open in the article panel, the Notepad-style view now shows the "
         "article (post title, body and personal notes) instead of staying blank while the terminal has no "

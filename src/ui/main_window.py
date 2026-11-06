@@ -114,10 +114,10 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(760, 560)                     # freely resizable above this
         self._quitting = False
         self._disguise = False
-        self._last_focus_article = False
         self._normal_window_title = self.windowTitle()
         self._normal_menu_actions: list[QAction] = []
         self._fake_menus: list[QMenu] = []
+        self._wrap_action: QAction | None = None
         self._status_was_visible = True
         self._dirty = False                               # unsaved edits in the current draft
         self._typing_draft_id: int | None = None          # draft that the running typing session belongs to
@@ -162,13 +162,16 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_settings_tab(), "設定")
         self.tabs = tabs
         self.disguise_view = NotepadView(self)
+        self.disguise_terminal = QWidget(self)
+        self.disguise_terminal.setStyleSheet("background: #ffffff;")
+        self.disguise_terminal_layout = QVBoxLayout(self.disguise_terminal)
+        self.disguise_terminal_layout.setContentsMargins(0, 0, 0, 0)
+        self.disguise_terminal_layout.setSpacing(0)
         self._central_stack = QStackedWidget(self)
         self._central_stack.addWidget(tabs)
         self._central_stack.addWidget(self.disguise_view)
+        self._central_stack.addWidget(self.disguise_terminal)
         self.setCentralWidget(self._central_stack)
-        app = QApplication.instance()
-        if app is not None:
-            app.focusChanged.connect(self._on_focus_changed)
         self.term.linkActivated.connect(self._open_link)
         self.term.linksChanged.connect(self._on_links_changed)
         self.term.linkHovered.connect(self._on_link_hovered)
@@ -279,7 +282,7 @@ class MainWindow(QMainWindow):
             checkbox.blockSignals(False)
 
     def set_disguise(self, on: bool, save: bool = True) -> None:
-        """Switch between the normal window and the read-only Notepad-style cover."""
+        """Switch between the normal window and the interactive Notepad-style cover."""
         on = bool(on)
         if on == getattr(self, "_disguise", False):
             self._sync_disguise_action(on)
@@ -291,9 +294,10 @@ class MainWindow(QMainWindow):
         if on:
             self._close_image_viewer()
             self._hide_hover_preview()
-            self.disguise_view.apply_notepad_font()
+            self.term.set_notepad(True)                  # black text on white; keep the BBS keyboard live
+            self.term.set_links_enabled(False)           # links remain text, but hover/click do nothing
             self._refresh_disguise_text()
-            self._central_stack.setCurrentWidget(self.disguise_view)
+            self._show_disguise_page()
             self.setWindowTitle(DISGUISE_TITLE)
             self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
             self._status_was_visible = not self.statusBar().isHidden()
@@ -303,7 +307,11 @@ class MainWindow(QMainWindow):
                            getattr(self, "act_focus_terminal", None)):
                 if action is not None:
                     action.setEnabled(False)
+            self._focus_disguise_page()
         else:
+            self._restore_terminal_to_panel()
+            self.term.set_notepad(False)
+            self.term.set_links_enabled(True)
             self._central_stack.setCurrentWidget(self.tabs)
             self.setWindowTitle(getattr(self, "_normal_window_title", f"{APP_NAME} {__version__}"))
             self.setWindowIcon(app_icon())
@@ -314,6 +322,7 @@ class MainWindow(QMainWindow):
                            getattr(self, "act_focus_terminal", None)):
                 if action is not None:
                     action.setEnabled(True)
+            self.term._relayout()
             self.term.setFocus(Qt.FocusReason.ShortcutFocusReason)
         if self._tray is not None:
             if on:
@@ -321,16 +330,6 @@ class MainWindow(QMainWindow):
                 self._tray.setToolTip(DISGUISE_TITLE)
             else:
                 self._update_tray(self.session.client.state is State.CONNECTED)
-
-    def _on_focus_changed(self, _old, new) -> None:
-        """Remember whether the user was last reading the article panel or the terminal."""
-        if new is None:
-            return
-        panel = getattr(self, "article_panel", None)
-        if panel is not None and (new is panel or panel.isAncestorOf(new)):
-            self._last_focus_article = True
-        elif hasattr(self, "term") and (new is self.term or self.term.isAncestorOf(new)):
-            self._last_focus_article = False
 
     def _article_disguise_text(self) -> str:
         """The article as a plain text document: title, body, then personal notes."""
@@ -348,20 +347,65 @@ class MainWindow(QMainWindow):
             parts.append(notes)
         return "\n\n".join(parts)
 
-    def _disguise_text(self) -> str:
-        """Article when the user was reading it, otherwise the current PTT screen."""
-        terminal = termsel.screen_text(self.term.s.screen.grid)
+    def _show_live_disguise(self) -> None:
+        """Show the real BBS screen as black-on-white text so browsing/posting keys still work."""
+        if self.term.parent() is not self.disguise_terminal:
+            self.term_holder.removeWidget(self.term)
+            self.disguise_terminal_layout.addWidget(self.term)
+        self._central_stack.setCurrentWidget(self.disguise_terminal)
+        self._align_terminal()
+        self.term._relayout()
+        if getattr(self, "_wrap_action", None) is not None:
+            self._wrap_action.setEnabled(False)
+        self.term.setFocus(Qt.FocusReason.ShortcutFocusReason)
+
+    def _show_article_disguise(self, text: str) -> None:
+        """Read-only plain text page used offline when an article is loaded but PTT is not connected."""
+        self._restore_terminal_to_panel()
+        self.disguise_view.set_text(text)
+        self._central_stack.setCurrentWidget(self.disguise_view)
+        if getattr(self, "_wrap_action", None) is not None:
+            self._wrap_action.setEnabled(True)
+        self.disguise_view.editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
+
+    def _show_disguise_page(self) -> None:
+        if self.session.client.state is State.CONNECTED:
+            self._show_live_disguise()
+            return
         article = self._article_disguise_text()
-        if article and not getattr(self, "_article_collapsed", True):
-            if not terminal or getattr(self, "_last_focus_article", False):
-                return article
-        return terminal or article or "（目前沒有可顯示的文字）"
+        if article:
+            self._show_article_disguise(article)
+        elif termsel.screen_text(self.term.s.screen.grid).strip():
+            self._show_live_disguise()
+        else:
+            self._show_article_disguise("（目前沒有可顯示的文字）")
+
+    def _restore_terminal_to_panel(self) -> None:
+        if self.term.parent() is not self.disguise_terminal:
+            return
+        self.disguise_terminal_layout.removeWidget(self.term)
+        self.term_holder.addWidget(self.term, 0, 0)
+        self._align_terminal()
+        self.term._relayout()
+
+    def _focus_disguise_page(self) -> None:
+        current = self._central_stack.currentWidget()
+        if current is self.disguise_terminal:
+            self.term.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        elif current is self.disguise_view:
+            self.disguise_view.editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def _refresh_disguise_text(self) -> None:
-        """Mirror the reading text as plain text; never fetch or render anything."""
+        """Keep the offline article page ready; switch to the live screen once PTT is connected."""
         if not getattr(self, "_disguise", False) or not hasattr(self, "disguise_view"):
             return
-        self.disguise_view.set_text(self._disguise_text())
+        article = self._article_disguise_text()
+        self.disguise_view.set_text(article or "（目前沒有可顯示的文字）")
+        if self._central_stack.currentWidget() is self.disguise_view:
+            if self.session.client.state is State.CONNECTED:
+                self._show_live_disguise()
+            elif not article and termsel.screen_text(self.term.s.screen.grid).strip():
+                self._show_live_disguise()
 
     def _show_disguise_menus(self) -> None:
         for action in self._normal_menu_actions:
@@ -372,20 +416,32 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(lambda: self.set_disguise(False))
         edit_menu = self.menuBar().addMenu("編輯(E)")
         copy_action = edit_menu.addAction("複製(C)")
-        copy_action.setShortcut(QKeySequence.StandardKey.Copy)
-        copy_action.triggered.connect(self.disguise_view.editor.copy)
+        copy_action.triggered.connect(self._disguise_copy)
         select_action = edit_menu.addAction("全選(A)")
-        select_action.setShortcut(QKeySequence.StandardKey.SelectAll)
-        select_action.triggered.connect(self.disguise_view.editor.selectAll)
+        select_action.triggered.connect(self._disguise_select_all)
         format_menu = self.menuBar().addMenu("格式(O)")
         wrap_action = format_menu.addAction("自動換行(W)")
         wrap_action.setCheckable(True)
         wrap_action.setChecked(self.disguise_view.editor.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth)
+        wrap_action.setEnabled(self._central_stack.currentWidget() is self.disguise_view)
         wrap_action.toggled.connect(self.disguise_view.set_word_wrap)
+        self._wrap_action = wrap_action
         help_menu = self.menuBar().addMenu("說明(H)")
         about_action = help_menu.addAction("關於記事本(A)")
         about_action.triggered.connect(self._show_notepad_about)
         self._fake_menus = [file_menu, edit_menu, format_menu, help_menu]
+
+    def _disguise_copy(self) -> None:
+        if self._central_stack.currentWidget() is self.disguise_terminal:
+            self.term.copy_selection()
+        else:
+            self.disguise_view.editor.copy()
+
+    def _disguise_select_all(self) -> None:
+        if self._central_stack.currentWidget() is self.disguise_terminal:
+            self.term.select_all()
+        else:
+            self.disguise_view.editor.selectAll()
 
     def _hide_disguise_menus(self) -> None:
         bar = self.menuBar()
@@ -393,6 +449,7 @@ class MainWindow(QMainWindow):
             bar.removeAction(menu.menuAction())
             menu.deleteLater()
         self._fake_menus = []
+        self._wrap_action = None
         bar.setStyleSheet("")
         for action in self._normal_menu_actions:
             action.setVisible(True)
@@ -537,7 +594,10 @@ class MainWindow(QMainWindow):
 
     def _align_terminal(self):
         """Fixed-size terminal is centred; in fill mode it takes the whole area."""
-        self.term_holder.setAlignment(self.term, Qt.AlignmentFlag(0) if self.term.fill else Qt.AlignmentFlag.AlignCenter)
+        alignment = Qt.AlignmentFlag(0) if self.term.fill else Qt.AlignmentFlag.AlignCenter
+        self.term_holder.setAlignment(self.term, alignment)
+        if hasattr(self, "disguise_terminal_layout"):
+            self.disguise_terminal_layout.setAlignment(self.term, alignment)
 
     # ================================================================== article panel layout
     @staticmethod
@@ -1022,8 +1082,9 @@ class MainWindow(QMainWindow):
         self.chk_disguise.toggled.connect(self._disguise_toggled)
         af.addRow("", self.chk_disguise)
         disguise_note = QLabel(
-            "開啟後視窗會變成 Windows 記事本樣式，顯示目前閱讀中的文章內容或 PTT 畫面純文字；"
-            "圖片與連結都不會開啟。按 Ctrl+Shift+D 或「檔案 > 結束」可回到正常模式。")
+            "開啟後視窗會變成 Windows 記事本樣式，可直接用鍵盤瀏覽 PTT 與發文（PTT 原生按鍵）；"
+            "未連線時顯示已載入的文章內容。圖片與連結都不會開啟。"
+            "按 Ctrl+Shift+D 或「檔案 > 結束」可回到正常模式。")
         disguise_note.setWordWrap(True)
         af.addRow(disguise_note)
         lay.addWidget(ap)
