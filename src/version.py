@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.23"
-BUILD_DATE = "2026/11/05"
+__version__ = "0.8.24"
+BUILD_DATE = "2026/11/06"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,11 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.24", "2026/11/06", [
+        "Keyboard focus: after automatic title/body typing finishes, and after saving or choosing a "
+        "signature, focus returns to the terminal. Ctrl-X to save in PTT and typing the next screen "
+        "no longer need a manual click on the terminal first; F6 focuses the terminal at any time.",
+    ]),
     ("0.8.23", "2026/11/05", [
         "SSH: BBS sites can now be opened in the built-in terminal over the system OpenSSH client "
         "(ssh.exe). SSH bookmarks have an optional account field (default 'bbs'); the first host key "

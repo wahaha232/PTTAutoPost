@@ -1894,3 +1894,23 @@ def test_update_waits_for_typing_to_finish(win, monkeypatch, tmp_path):
     win._typing_finished(True, "done")
     pump(20)
     assert applied == [staged] and win._pending_update is None
+
+
+def test_keyboard_returns_to_the_terminal_after_typing_and_signature_choice(win, monkeypatch):
+    calls = []
+    monkeypatch.setattr(win.term, "setFocus", lambda *a: calls.append(a))
+
+    win._typing_finished(True, "done")
+    pump(20)
+    assert calls and win.tabs.currentIndex() == 0
+
+    win.db.save_signature_entry(-1, "s", "sig")
+    win._reload_signatures(0)
+    calls.clear()
+    win._pick_signature(0)
+    pump(20)
+    assert calls
+
+    calls.clear()
+    win.act_focus_terminal.trigger()
+    assert calls

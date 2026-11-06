@@ -46,7 +46,8 @@ STATE_TEXT = {"found": "已取得", "missing": "未取得", "inferred": "推定�
 BODY_TEXT = {"likely_complete": "內文可能完整（仍請對照原網頁）", "suspect_partial": "內文疑似不完整", "insufficient": "內文不足或沒有內文"}
 STATUS_TEXT = {"success": "擷取成功", "partial": "部分成功", "failed": "擷取失敗"}
 TYPE_HELP = ("操作順序：在目標看板文章列表按「開始發文（Ctrl+P）」→ 確認標題提示 → 輸入標題 → "
-             "自行按 Enter → 進入編輯畫面 → 輸入內文 → 自行檢查並存檔／發文。")
+             "自行按 Enter → 進入編輯畫面 → 輸入內文 → 自行檢查並存檔／發文。"
+             "輸入完成後鍵盤會自動回到終端機；若焦點跑到程式欄位，按 F6 可隨時切回終端機。")
 REPLY_HELP = ("回覆流程：在 PTT 文章畫面按 r → 確認／Enter 進入回覆編輯區（PTT 會帶入 Re: 標題與引文）→ "
               "回程式按「輸入回覆內文」→ 回終端機確認後自行存檔／送出。程式不輸入標題，也不按存檔或送出。")
 MAX_AUTO_OPEN_PER_MINUTE = 3
@@ -195,6 +196,12 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         view = self.menuBar().addMenu("檢視")
         view.addAction(self.act_toggle_article)
+        self.act_focus_terminal = QAction("聚焦終端機", self)
+        self.act_focus_terminal.setShortcut(QKeySequence("F6"))
+        self.act_focus_terminal.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.act_focus_terminal.triggered.connect(self._focus_terminal)
+        self.addAction(self.act_focus_terminal)
+        view.addAction(self.act_focus_terminal)
         self.act_fullscreen = QAction("全螢幕", self)
         self.act_fullscreen.setCheckable(True)
         self.act_fullscreen.setShortcut(QKeySequence("F11"))
@@ -226,6 +233,13 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
         elif not on and self.isFullScreen():
             self.showNormal()
+
+    def _focus_terminal(self) -> None:
+        """Hand the keyboard back to PTT (F6, or after typing / choosing a signature)."""
+        if not hasattr(self, "term"):
+            return
+        self.tabs.setCurrentIndex(0)
+        self.term.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def _build_terminal_article_tab(self) -> QWidget:
         """One page: terminal on the left, the article panel on the right (collapsible)."""
@@ -2297,6 +2311,7 @@ class MainWindow(QMainWindow):
         self._sync_sig_snapshot_ui()
         self._dirty = True
         self._schedule_preview(False)
+        QTimer.singleShot(0, self._focus_terminal)
 
     def regen_preview(self):
         if self._preview_manual and QMessageBox.question(
@@ -2527,6 +2542,7 @@ class MainWindow(QMainWindow):
         self._apply_signature_if_present(text)
         self._notice("簽名檔已儲存。")
         self._schedule_preview(False)
+        QTimer.singleShot(0, self._focus_terminal)
 
     def _reload_signatures(self, select: int) -> None:
         """Refill the drop-down from the DB and show entry `select` (-1 = empty new entry)."""
@@ -2559,6 +2575,7 @@ class MainWindow(QMainWindow):
         if had_snapshot:
             self._dirty = True
         self._schedule_preview(False)
+        QTimer.singleShot(0, self._focus_terminal)
 
     def new_signature(self):
         if len(self.db.signatures()) >= MAX_SIGNATURES:
@@ -3171,6 +3188,7 @@ class MainWindow(QMainWindow):
         self._notice(msg)                                 # keep the typing result in front of an auto-open notice
         self.chk_retype.setChecked(False)
         self._update_type_buttons()
+        QTimer.singleShot(0, self._focus_terminal)      # the user's next action is Ctrl-X / review in PTT
         if self._pending_update is not None:
             QTimer.singleShot(0, self._maybe_apply_pending_update)
 
