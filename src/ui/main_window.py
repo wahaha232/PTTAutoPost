@@ -15,7 +15,8 @@ from PySide6.QtGui import QAction, QCursor, QDesktopServices, QFont, QFontDataba
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFontComboBox, QFormLayout, QGridLayout, QGroupBox,
                                QHBoxLayout, QFileDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                                QMenu, QPlainTextEdit, QPushButton, QProgressBar, QRadioButton, QScrollArea, QSizePolicy,
-                               QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
+                               QSpinBox, QSplitter, QStackedWidget, QStyle, QSystemTrayIcon, QTabWidget, QVBoxLayout,
+                               QWidget)
 
 from .. import boards, compose, pttmoney, sites, update
 from ..errors import ToolError
@@ -28,6 +29,7 @@ from ..terminal.detect import Kind
 from ..net.poster import PostTyper, Target, preflight
 from ..net.session import Login, PttSession
 from ..net.upload import HOSTS, UploadBatch, host_choices, upload_images as upload_image_files
+from ..terminal import selection as termsel
 from ..parsers.extract import ParseResult, parse
 from ..net.image import download_images_zip
 from ..parsers.fetch import fetch
@@ -35,6 +37,7 @@ from ..paths import resource_path
 from ..storage.db import MAX_SIGNATURES, Database
 from ..version import APP_NAME, BUILD_DATE, SPONSOR_MESSAGE, SPONSOR_TEXT, SPONSOR_URL, __version__
 from . import browser, theme
+from .disguise import DISGUISE_TITLE, NotepadView
 from .icon import app_icon, tray_icon
 from .image_viewer import ImageHoverPreview, ImageViewer, InlineImageStrip
 from .terminal_widget import TerminalWidget
@@ -56,6 +59,13 @@ CURSOR_STYLES = (("outline", "外框方塊（預設）"), ("block", "半透明�
                  ("underline", "底線"), ("bar", "細直線"))
 FIELDS = ("post_title", "title", "site", "author", "published", "url")
 LABELS = {"post_title": "發文標題", "title": "新聞標題", "site": "媒體來源", "author": "記者／作者", "published": "發布時間", "url": "原文網址"}
+DISGUISE_MENU_QSS = """
+QMenuBar { background: #f0f0f0; color: #000000; }
+QMenuBar::item { background: transparent; color: #000000; }
+QMenuBar::item:selected { background: #cce8ff; color: #000000; }
+QMenu { background: #ffffff; color: #000000; border: 1px solid #b0b0b0; }
+QMenu::item:selected { background: #cce8ff; color: #000000; }
+"""
 
 
 
@@ -103,6 +113,11 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(app_icon())
         self.setMinimumSize(760, 560)                     # freely resizable above this
         self._quitting = False
+        self._disguise = False
+        self._normal_window_title = self.windowTitle()
+        self._normal_menu_actions: list[QAction] = []
+        self._fake_menus: list[QMenu] = []
+        self._status_was_visible = True
         self._dirty = False                               # unsaved edits in the current draft
         self._typing_draft_id: int | None = None          # draft that the running typing session belongs to
         self._ack_incomplete: set[int] = set()            # drafts whose partial body the user already confirmed
@@ -145,7 +160,11 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_drafts_tab(), "草稿")
         tabs.addTab(self._build_settings_tab(), "設定")
         self.tabs = tabs
-        self.setCentralWidget(tabs)
+        self.disguise_view = NotepadView(self)
+        self._central_stack = QStackedWidget(self)
+        self._central_stack.addWidget(tabs)
+        self._central_stack.addWidget(self.disguise_view)
+        self.setCentralWidget(self._central_stack)
         self.term.linkActivated.connect(self._open_link)
         self.term.linksChanged.connect(self._on_links_changed)
         self.term.linkHovered.connect(self._on_link_hovered)
@@ -166,6 +185,7 @@ class MainWindow(QMainWindow):
         self.session.client.stateChanged.connect(self._on_conn_state)
         self.session.loginChanged.connect(self._on_login_state)
         self.session.notice.connect(self._notice)
+        self.session.screenChanged.connect(self._refresh_disguise_text)
         self.typer.started.connect(self._typing_started)
         self.typer.finished.connect(self._typing_finished)
         self.typer.progress.connect(self._typing_progress)
@@ -177,6 +197,8 @@ class MainWindow(QMainWindow):
             if self.chk_auto_update.isChecked():
                 QTimer.singleShot(5000, lambda: self.check_updates(auto=True))
         self._on_conn_state(self.session.client.state)
+        if self.db.get_setting("ui.disguise", "0") == "1":
+            self.set_disguise(True, save=False)
 
     # ================================================================== terminal tab
     @staticmethod
@@ -202,6 +224,13 @@ class MainWindow(QMainWindow):
         self.act_focus_terminal.triggered.connect(self._focus_terminal)
         self.addAction(self.act_focus_terminal)
         view.addAction(self.act_focus_terminal)
+        self.act_disguise = QAction("偽裝模式（記事本外觀）", self)
+        self.act_disguise.setCheckable(True)
+        self.act_disguise.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        self.act_disguise.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.act_disguise.toggled.connect(self._disguise_toggled)
+        self.addAction(self.act_disguise)
+        view.addAction(self.act_disguise)
         self.act_fullscreen = QAction("全螢幕", self)
         self.act_fullscreen.setCheckable(True)
         self.act_fullscreen.setShortcut(QKeySequence("F11"))
@@ -227,8 +256,114 @@ class MainWindow(QMainWindow):
         self.act_sponsor = QAction(f"贊助 {APP_NAME}", self)
         self.act_sponsor.triggered.connect(self._open_sponsor)
         help_menu.addAction(self.act_sponsor)
+        self._normal_menu_actions = [view.menuAction(), help_menu.menuAction()]
+
+    # ================================================================== disguise mode
+    def _disguise_toggled(self, on: bool) -> None:
+        self.set_disguise(bool(on))
+
+    def _sync_disguise_action(self, on: bool) -> None:
+        action = getattr(self, "act_disguise", None)
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(on)
+            action.blockSignals(False)
+        checkbox = getattr(self, "chk_disguise", None)
+        if checkbox is not None:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(on)
+            checkbox.blockSignals(False)
+
+    def set_disguise(self, on: bool, save: bool = True) -> None:
+        """Switch between the normal window and the read-only Notepad-style cover."""
+        on = bool(on)
+        if on == getattr(self, "_disguise", False):
+            self._sync_disguise_action(on)
+            return
+        self._disguise = on
+        if save:
+            self.db.set_setting("ui.disguise", "1" if on else "0")
+        self._sync_disguise_action(on)
+        if on:
+            self._close_image_viewer()
+            self._hide_hover_preview()
+            self.disguise_view.apply_notepad_font()
+            self._refresh_disguise_text()
+            self._central_stack.setCurrentWidget(self.disguise_view)
+            self.setWindowTitle(DISGUISE_TITLE)
+            self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+            self._status_was_visible = not self.statusBar().isHidden()
+            self.statusBar().hide()
+            self._show_disguise_menus()
+            for action in (getattr(self, "act_toggle_article", None), getattr(self, "act_fullscreen", None),
+                           getattr(self, "act_focus_terminal", None)):
+                if action is not None:
+                    action.setEnabled(False)
+        else:
+            self._central_stack.setCurrentWidget(self.tabs)
+            self.setWindowTitle(getattr(self, "_normal_window_title", f"{APP_NAME} {__version__}"))
+            self.setWindowIcon(app_icon())
+            if getattr(self, "_status_was_visible", True):
+                self.statusBar().show()
+            self._hide_disguise_menus()
+            for action in (getattr(self, "act_toggle_article", None), getattr(self, "act_fullscreen", None),
+                           getattr(self, "act_focus_terminal", None)):
+                if action is not None:
+                    action.setEnabled(True)
+            self.term.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        if self._tray is not None:
+            if on:
+                self._tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+                self._tray.setToolTip(DISGUISE_TITLE)
+            else:
+                self._update_tray(self.session.client.state is State.CONNECTED)
+
+    def _refresh_disguise_text(self) -> None:
+        """Mirror the current PTT screen as plain text; never fetch or render anything."""
+        if not getattr(self, "_disguise", False) or not hasattr(self, "disguise_view"):
+            return
+        self.disguise_view.set_text(termsel.screen_text(self.term.s.screen.grid))
+
+    def _show_disguise_menus(self) -> None:
+        for action in self._normal_menu_actions:
+            action.setVisible(False)
+        self.menuBar().setStyleSheet(DISGUISE_MENU_QSS)
+        file_menu = self.menuBar().addMenu("檔案(F)")
+        exit_action = file_menu.addAction("結束(X)")
+        exit_action.triggered.connect(lambda: self.set_disguise(False))
+        edit_menu = self.menuBar().addMenu("編輯(E)")
+        copy_action = edit_menu.addAction("複製(C)")
+        copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        copy_action.triggered.connect(self.disguise_view.editor.copy)
+        select_action = edit_menu.addAction("全選(A)")
+        select_action.setShortcut(QKeySequence.StandardKey.SelectAll)
+        select_action.triggered.connect(self.disguise_view.editor.selectAll)
+        format_menu = self.menuBar().addMenu("格式(O)")
+        wrap_action = format_menu.addAction("自動換行(W)")
+        wrap_action.setCheckable(True)
+        wrap_action.setChecked(self.disguise_view.editor.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth)
+        wrap_action.toggled.connect(self.disguise_view.set_word_wrap)
+        help_menu = self.menuBar().addMenu("說明(H)")
+        about_action = help_menu.addAction("關於記事本(A)")
+        about_action.triggered.connect(self._show_notepad_about)
+        self._fake_menus = [file_menu, edit_menu, format_menu, help_menu]
+
+    def _hide_disguise_menus(self) -> None:
+        bar = self.menuBar()
+        for menu in self._fake_menus:
+            bar.removeAction(menu.menuAction())
+            menu.deleteLater()
+        self._fake_menus = []
+        bar.setStyleSheet("")
+        for action in self._normal_menu_actions:
+            action.setVisible(True)
+
+    def _show_notepad_about(self) -> None:
+        QMessageBox.about(self, "記事本", "Microsoft Windows\n記事本\n\n此文字檔為唯讀。")
 
     def _set_fullscreen(self, on: bool) -> None:
+        if getattr(self, "_disguise", False):
+            return
         if on and not self.isFullScreen():
             self.showFullScreen()
         elif not on and self.isFullScreen():
@@ -236,7 +371,7 @@ class MainWindow(QMainWindow):
 
     def _focus_terminal(self) -> None:
         """Hand the keyboard back to PTT (F6, or after typing / choosing a signature)."""
-        if not hasattr(self, "term"):
+        if getattr(self, "_disguise", False) or not hasattr(self, "term"):
             return
         self.tabs.setCurrentIndex(0)
         self.term.setFocus(Qt.FocusReason.ShortcutFocusReason)
@@ -402,6 +537,8 @@ class MainWindow(QMainWindow):
         self.main_splitter.setSizes([max(1, total - width), width])
 
     def _set_article_panel_visible(self, visible: bool) -> None:
+        if getattr(self, "_disguise", False):
+            return
         if not hasattr(self, "article_panel") or not hasattr(self, "main_splitter"):
             return
         visible = bool(visible)
@@ -630,6 +767,8 @@ class MainWindow(QMainWindow):
             dialog.deleteLater()
 
     def _open_sponsor_page(self, url: str, dialog: QDialog | None = None) -> bool:
+        if getattr(self, "_disguise", False):
+            return False
         ok, msg = browser.open_url(url, "system")
         self._notice(msg)
         if ok and dialog is not None:
@@ -637,6 +776,8 @@ class MainWindow(QMainWindow):
         return ok
 
     def _open_sponsor(self) -> bool:
+        if getattr(self, "_disguise", False):
+            return False
         url = SPONSOR_URL.strip()
         if not url or not validate_http_url(url):
             self._notice("未設定贊助連結。")
@@ -653,6 +794,8 @@ class MainWindow(QMainWindow):
 
     def _open_link(self, url: str) -> bool:
         """Open a manually clicked link in the configured browser."""
+        if getattr(self, "_disguise", False):
+            return False
         mode = self.browser_combo.currentData() if hasattr(self, "browser_combo") else "system"
         path = self.browser_path.text().strip() if hasattr(self, "browser_path") else ""
         ok, msg = browser.open_url(url, mode or "system", path)
@@ -663,6 +806,8 @@ class MainWindow(QMainWindow):
 
     def _open_image_inside(self, url: str) -> bool:
         """Show an auto-opened image in the app's own viewer; never starts a browser."""
+        if getattr(self, "_disguise", False):
+            return False
         if self._image_viewer is None:
             self._image_viewer = ImageViewer(self)
         self._image_viewer.show_url(url)
@@ -671,6 +816,8 @@ class MainWindow(QMainWindow):
 
     def _open_article_images(self, urls: list[str], referer: str = "") -> bool:
         """Show images found in the fetched article below the article body (no browser window)."""
+        if getattr(self, "_disguise", False):
+            return False
         if not urls:
             self._clear_article_images()
             return False
@@ -681,6 +828,8 @@ class MainWindow(QMainWindow):
 
     def _open_article_image_full(self, url: str) -> None:
         """Open the clicked thumbnail larger inside the program (never a browser); the other article images stay one click away."""
+        if getattr(self, "_disguise", False):
+            return
         if self._image_viewer is None:
             self._image_viewer = ImageViewer(self)
         urls = self.article_images.urls or [url]
@@ -697,6 +846,9 @@ class MainWindow(QMainWindow):
         return bool(hasattr(self, "chk_hover_image") and self.chk_hover_image.isChecked())
 
     def _on_link_hovered(self, url: str) -> None:
+        if getattr(self, "_disguise", False):
+            self._hide_hover_preview()
+            return
         self._hover_timer.stop()
         self._hover_url = url
         if not url or not self._hover_enabled() or not is_auto_open_image_url(url):
@@ -705,6 +857,8 @@ class MainWindow(QMainWindow):
         self._hover_timer.start()
 
     def _show_hover_preview(self) -> None:
+        if getattr(self, "_disguise", False):
+            return
         url = self._hover_url
         if not url or not self._hover_enabled() or not is_auto_open_image_url(url):
             return
@@ -737,6 +891,8 @@ class MainWindow(QMainWindow):
             self._image_viewer.close()
 
     def _on_links_changed(self, links) -> None:
+        if getattr(self, "_disguise", False):
+            return
         if not (hasattr(self, "chk_auto_image") and self.chk_auto_image.isChecked()):
             return
         images = [link for link in links if is_auto_open_image_url(link.url)]
@@ -822,6 +978,15 @@ class MainWindow(QMainWindow):
         palette_note = QLabel("只影響終端機；「永遠深色」固定黑底，「跟隨主題」在淺色主題使用淺色配色。")
         palette_note.setWordWrap(True)
         af.addRow(palette_note)
+        self.chk_disguise = QCheckBox("偽裝模式（記事本外觀；純文字唯讀，停用圖片與連結）")
+        self.chk_disguise.setChecked(self.db.get_setting("ui.disguise", "0") == "1")
+        self.chk_disguise.toggled.connect(self._disguise_toggled)
+        af.addRow("", self.chk_disguise)
+        disguise_note = QLabel(
+            "開啟後視窗會變成 Windows 記事本樣式，只顯示目前 PTT 畫面的純文字；圖片與連結都不會開啟。"
+            "按 Ctrl+Shift+D 或「檔案 > 結束」可回到正常模式。")
+        disguise_note.setWordWrap(True)
+        af.addRow(disguise_note)
         lay.addWidget(ap)
 
         bg = QGroupBox("連結與瀏覽器")
@@ -1136,6 +1301,7 @@ class MainWindow(QMainWindow):
 
     def apply_settings(self):
         self._apply_ui_font(save=True)
+        self.set_disguise(self.chk_disguise.isChecked())
         self._apply_theme(self.theme_combo.currentData() or "system")
         palette = self.terminal_palette_combo.currentData()
         self._terminal_palette_choice = palette if palette in theme.TERMINAL_PALETTE_KEYS else "dark"
@@ -1372,6 +1538,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "更新失敗", msg)
 
     def open_update_folder(self) -> None:
+        if getattr(self, "_disguise", False):
+            return
         try:
             folder = update.updates_dir()
         except update.UpdateError as e:
@@ -1381,6 +1549,8 @@ class MainWindow(QMainWindow):
         self._notice(f"已開啟更新資料夾：{folder}")
 
     def open_manual_download(self) -> None:
+        if getattr(self, "_disguise", False):
+            return
         QDesktopServices.openUrl(QUrl(update.RELEASES_PAGE))
         self._notice(f"已在瀏覽器開啟 GitHub Releases：{update.RELEASES_PAGE}")
 
@@ -1915,6 +2085,8 @@ class MainWindow(QMainWindow):
 
     def download_article_images(self):
         """Ask for the ZIP path first, then download every article image at its original URL."""
+        if getattr(self, "_disguise", False):
+            return
         if self._zip_busy:
             self._notice("圖片打包下載進行中。")
             return
@@ -1967,6 +2139,8 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- image upload
     def upload_images_dialog(self):
         """Pick local images and upload them to the selected anonymous public host."""
+        if getattr(self, "_disguise", False):
+            return
         if self._upload_busy:
             self._notice("圖片上傳進行中。")
             return

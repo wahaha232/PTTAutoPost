@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.24"
+__version__ = "0.8.25"
 BUILD_DATE = "2026/11/06"
 APP_NAME = "PTT AutoPost"
 
@@ -14,6 +14,14 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.25", "2026/11/06", [
+        "New disguise mode: the window can masquerade as Windows Notepad showing a read-only text file. "
+        "It mirrors the current PTT screen as plain text, hides the normal app UI, and refuses to open "
+        "images or links (manual clicks, hover previews, automatic image opening, article images).",
+        "Disguise mode can be toggled from the View menu, the settings tab, or Ctrl+Shift+D; "
+        "'File > Exit' or Ctrl+Shift+D returns to the normal window. The choice is remembered. "
+        "The cover title shows a generic .txt filename rather than the app name.",
+    ]),
     ("0.8.24", "2026/11/06", [
         "Keyboard focus: after automatic title/body typing finishes, and after saving or choosing a "
         "signature, focus returns to the terminal. Ctrl-X to save in PTT and typing the next screen "
