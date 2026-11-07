@@ -136,6 +136,7 @@ class MainWindow(QMainWindow):
         self._draft_sig: str | None = None                # signature snapshot of the opened draft (None = use the selected one)
         self._tray: QSystemTrayIcon | None = None
         self._tray_hint_shown = False
+        self._was_minimized = False
         self._theme_choice = self._load_theme_choice()
         self._theme_name = self._resolve_theme(self._theme_choice)
         self._theme_data = theme.get_theme(self._theme_name)
@@ -3733,7 +3734,8 @@ class MainWindow(QMainWindow):
                                    QSystemTrayIcon.MessageIcon.Information, 4000)
 
     def restore_from_tray(self) -> None:
-        self.showNormal()
+        self._was_minimized = False
+        self.showMaximized()                              # enlarging from the tray fills the screen
         self.raise_()
         self.activateWindow()
         self._tray_settings_changed()
@@ -3748,6 +3750,11 @@ class MainWindow(QMainWindow):
             self.act_fullscreen.blockSignals(True)
             self.act_fullscreen.setChecked(self.isFullScreen())
             self.act_fullscreen.blockSignals(False)
+            if self.isMinimized():
+                self._was_minimized = True
+            elif self._was_minimized:                     # taskbar restore: fill the screen
+                self._was_minimized = False
+                QTimer.singleShot(0, self.showMaximized)
         if (e.type() == QEvent.Type.WindowStateChange and self.isMinimized() and self._tray is not None
                 and self.chk_tray_min.isChecked()):
             QTimer.singleShot(0, self._to_tray)

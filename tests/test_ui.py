@@ -568,7 +568,7 @@ def test_tray_options_persist_and_close_hides_instead_of_quitting(qapp, tmp_path
     assert not w.isVisible() and w._tray.isVisible()
     db.get_setting("tray.close")                        # db still open
     w.restore_from_tray()
-    assert w.isVisible()
+    assert w.isVisible() and w.isMaximized()
     w.quit_app()                                        # real exit
     assert not w.isVisible()
     pump(50)
@@ -1934,3 +1934,13 @@ def test_ptt_screen_images_show_inline_and_can_be_turned_off(win, monkeypatch):
     win.term._on_screen_changed()
     pump(450)
     assert shown == []
+
+
+def test_taskbar_restore_maximizes_the_window(win):
+    win.show()
+    win.showMinimized()
+    pump(50)
+    assert win.isMinimized()
+    win.showNormal()
+    pump(100)
+    assert win.isMaximized()

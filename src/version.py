@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.28"
+__version__ = "0.8.29"
 BUILD_DATE = "2026/11/07"
 APP_NAME = "PTT AutoPost"
 
@@ -14,6 +14,11 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.29", "2026/11/07", [
+        "Window restore: clicking the tray icon or restoring the window from the taskbar now maximizes "
+        "it to fill the screen instead of returning to the previous size. F11 still switches to true "
+        "full screen, and unmaximizing keeps the normal window controls available.",
+    ]),
     ("0.8.28", "2026/11/07", [
         "PTT inline images: while reading a PTT screen, https image links (including URLs split by "
         "terminal wrapping) are downloaded in the background and shown in a strip under the terminal. "
