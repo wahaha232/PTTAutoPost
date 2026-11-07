@@ -153,3 +153,17 @@ def test_disguise_shortcut_toggles_and_mode_is_remembered(qapp, tmp_path):
     win2.act_disguise.trigger()
     assert not win2._disguise and not win2.term.notepad and win2.term.links_enabled
     db2.close()
+
+
+def test_disguise_blocks_new_terminal_image_downloads(qapp, tmp_path, monkeypatch):
+    win, db = make_window(tmp_path, "disguise-images.db")
+    shown = []
+    monkeypatch.setattr(win.term_images, "set_images", lambda urls, referer="": shown.append(list(urls)))
+    win.set_disguise(True)
+    win.session.screen.feed("https://i.imgur.com/a.jpg".encode("cp950"))
+    win.session.screenChanged.emit()
+    assert not win._term_image_timer.isActive()
+    assert shown == []
+    assert win.term_images_box.isHidden()
+    win.set_disguise(False)
+    db.close()

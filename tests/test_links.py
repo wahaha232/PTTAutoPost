@@ -1,4 +1,5 @@
-from src.links import Link, find_links, is_article_image_url, is_auto_open_image_url, is_image_url, validate_http_url
+from src.links import (Link, find_image_urls, find_links, is_article_image_url, is_auto_open_image_url,
+                       is_image_url, validate_http_url)
 from src.terminal.screen import Screen
 
 
@@ -95,3 +96,21 @@ def test_balanced_parentheses_stay_in_the_url_and_unbalanced_one_is_trimmed():
     assert [l.url for l in links] == ["https://en.wikipedia.org/wiki/Foo_(bar)"]
     links = find_links(make_screen("(https://example.com/a) and (https://en.wikipedia.org/wiki/Foo_(bar))."))
     assert [l.url for l in links] == ["https://example.com/a", "https://en.wikipedia.org/wiki/Foo_(bar)"]
+
+
+def test_find_image_urls_joins_a_url_split_by_terminal_wrapping():
+    target = "https://i.imgur.com/" + "a" * 70 + ".jpg"
+    s = Screen()
+    s.feed(target.encode("cp950"))                 # terminal wraps at column 80
+    assert s.row_text(0) and s.row_text(1)
+    assert find_image_urls(s) == [target]
+
+
+def test_find_image_urls_does_not_join_a_complete_url_to_unrelated_text():
+    s = make_screen("see https://i.imgur.com/a.jpg\r\nnext line")
+    assert find_image_urls(s) == ["https://i.imgur.com/a.jpg"]
+
+
+def test_find_image_urls_ignores_non_images_and_http():
+    s = make_screen("https://example.com/article http://i.imgur.com/a.jpg https://i.imgur.com/a.png")
+    assert find_image_urls(s) == ["https://i.imgur.com/a.png"]

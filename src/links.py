@@ -149,3 +149,58 @@ def find_links(screen) -> list[Link]:
             end_x, end_w = spans[m.start() + len(url) - 1]
             found.append(Link(url=url, row=y, start_col=start, end_col=end_x + end_w))
     return found
+
+
+_URL_RUN = re.compile(r"(?i)[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
+
+
+def find_image_urls(screen, limit: int = 16) -> list[str]:
+    """Image URLs visible on a PTT screen, joining a URL that terminal wrapping split across rows.
+
+    Only https image links (known image hosts or an image suffix) are returned; this is display-only,
+    so the result has no row/column spans.
+    """
+    rows = [_row_cells(screen, y)[0].rstrip() for y in range(screen.rows)]
+    found: list[str] = []
+
+    def has_extension(url: str) -> bool:
+        return PurePosixPath(urlparse(url).path).suffix.lower() in _IMAGE_EXTENSIONS
+
+    def add(url: str) -> None:
+        url = _trim(url)
+        if url and url not in found and is_auto_open_image_url(url) and len(found) < limit:
+            found.append(url)
+
+    for y, text in enumerate(rows):
+        if not text:
+            continue
+        for m in _URL_RE.finditer(text):
+            base = _trim(m.group(0))
+            # Only a URL that fills the whole 80-column row can have been split by wrapping;
+            # a URL ending a shorter line is complete.
+            if m.end() != len(text) or len(text) < screen.cols:
+                add(base)
+                continue
+            if has_extension(base) and is_auto_open_image_url(base):
+                add(base)                         # a complete image URL that happens to end at the edge
+                continue
+            parts = [m.group(0)]
+            best = ""
+            continued = False
+            for yy in range(y + 1, min(y + 4, len(rows))):
+                nxt = rows[yy]
+                run = _URL_RUN.match(nxt) if nxt and not nxt[0].isspace() else None
+                if run is None:
+                    break
+                continued = True
+                parts.append(run.group(0))
+                joined = _trim("".join(parts))
+                if has_extension(joined) and is_auto_open_image_url(joined):
+                    best = joined
+                    break
+                # Only keep joining when this row is itself full: a short row means the URL
+                # ended there and the next line is unrelated text.
+                if run.end() < len(nxt) or len(nxt) < screen.cols:
+                    break
+            add(best or ("" if continued else base))
+    return found

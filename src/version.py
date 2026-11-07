@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.27"
-BUILD_DATE = "2026/11/06"
+__version__ = "0.8.28"
+BUILD_DATE = "2026/11/07"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,15 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.28", "2026/11/07", [
+        "PTT inline images: while reading a PTT screen, https image links (including URLs split by "
+        "terminal wrapping) are downloaded in the background and shown in a strip under the terminal. "
+        "Modes are off / compact / normal / full (default normal); click a thumbnail to open the in-app "
+        "viewer. Article, push and signature images visible on the current screen are included. No new "
+        "dependency or embedded browser was added.",
+        "Disguise mode keeps images blocked: entering it cancels pending thumbnail downloads and hides "
+        "the PTT image strip, and screen changes never start new image downloads while disguised.",
+    ]),
     ("0.8.27", "2026/11/06", [
         "Disguise mode is now interactive like PTT Star: the real PTT screen is shown as plain black text "
         "on white (no ANSI colours, Notepad title/menu, bar caret) while the terminal keeps keyboard focus. "

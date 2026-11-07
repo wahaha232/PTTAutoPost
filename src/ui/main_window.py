@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
 
 from .. import boards, compose, pttmoney, sites, update
 from ..errors import ToolError
-from ..links import is_auto_open_image_url, validate_http_url
+from ..links import find_image_urls, is_auto_open_image_url, validate_http_url
 from ..logging_setup import get_logger
 from ..net import shortener
 from ..net.client import DEFAULT_URL, State
@@ -55,6 +55,17 @@ REPLY_HELP = ("回覆流程：在 PTT 文章畫面按 r → 確認／Enter 進�
               "回程式按「輸入回覆內文」→ 回終端機確認後自行存檔／送出。程式不輸入標題，也不按存檔或送出。")
 MAX_AUTO_OPEN_PER_MINUTE = 3
 MAX_AUTO_OPEN_PER_SCREEN = 1
+TERMINAL_IMAGE_MODES = (
+    ("off", "關閉"),
+    ("compact", "微開圖（小縮圖）"),
+    ("normal", "一般開圖（中縮圖）"),
+    ("full", "滿版開圖（大縮圖）"),
+)
+TERMINAL_IMAGE_SIZES = {
+    "compact": (QSize(96, 72), 104),
+    "normal": (QSize(160, 120), 152),
+    "full": (QSize(260, 195), 228),
+}
 CURSOR_STYLES = (("outline", "外框方塊（預設）"), ("block", "半透明實心方塊"),
                  ("underline", "底線"), ("bar", "細直線"))
 FIELDS = ("post_title", "title", "site", "author", "published", "url")
@@ -142,6 +153,13 @@ class MainWindow(QMainWindow):
         self._hover_timer.timeout.connect(self._show_hover_preview)
         self._article_image_urls: list[str] = []
         self._article_referer = ""
+        self._term_image_urls: list[str] = []
+        mode = self.db.get_setting("links.terminal_images_mode", "normal")
+        self._term_image_mode = mode if mode in dict(TERMINAL_IMAGE_MODES) else "normal"
+        self._term_image_timer = QTimer(self)
+        self._term_image_timer.setSingleShot(True)
+        self._term_image_timer.setInterval(350)          # wait for a full screen redraw before downloading
+        self._term_image_timer.timeout.connect(self._apply_terminal_images)
         self._zip_busy = False
         self._zip_task: ArticleImagesZipTask | None = None
         self._upload_busy = False
@@ -294,6 +312,7 @@ class MainWindow(QMainWindow):
         if on:
             self._close_image_viewer()
             self._hide_hover_preview()
+            self._clear_terminal_images()                # disguise mode must not keep downloading images
             self.term.set_notepad(True)                  # black text on white; keep the BBS keyboard live
             self.term.set_links_enabled(False)           # links remain text, but hover/click do nothing
             self._refresh_disguise_text()
@@ -544,6 +563,18 @@ class MainWindow(QMainWindow):
         self.term_holder.addWidget(self.term, 0, 0)
         self._align_terminal()
         lay.addLayout(self.term_holder, 1)
+        self.term_images_box = QWidget()
+        til = QVBoxLayout(self.term_images_box)
+        til.setContentsMargins(0, 2, 0, 0)
+        til.setSpacing(2)
+        self.term_images_label = QLabel("PTT 文章圖片（點縮圖在程式內看大圖；圖床會看到您的 IP）")
+        til.addWidget(self.term_images_label)
+        size, height = TERMINAL_IMAGE_SIZES.get(self._term_image_mode, TERMINAL_IMAGE_SIZES["normal"])
+        self.term_images = InlineImageStrip(thumb_size=size, strip_height=height)
+        self.term_images.clicked.connect(self._open_terminal_image_full)
+        til.addWidget(self.term_images)
+        self.term_images_box.setVisible(False)
+        lay.addWidget(self.term_images_box)
         fb = QHBoxLayout()
         self.tb_font = QFontComboBox()
         self.tb_font.setCurrentFont(QFont(self.term.font_.family()))
@@ -984,6 +1015,59 @@ class MainWindow(QMainWindow):
         elif not on:
             self._clear_article_images()
 
+    def _terminal_image_mode_changed(self) -> None:
+        mode = self.term_image_mode.currentData()
+        mode = mode if mode in dict(TERMINAL_IMAGE_MODES) else "normal"
+        self._term_image_mode = mode
+        self.db.set_setting("links.terminal_images_mode", mode)
+        size, height = TERMINAL_IMAGE_SIZES.get(mode, TERMINAL_IMAGE_SIZES["normal"])
+        self.term_images.configure(size, height)
+        self._clear_terminal_images()
+        if mode == "off":
+            self._notice("已關閉 PTT 文章開圖。")
+            return
+        self._notice(f"PTT 文章開圖：{dict(TERMINAL_IMAGE_MODES)[mode]}。")
+        self._apply_terminal_images()
+
+    def _schedule_terminal_images(self) -> None:
+        """Wait for a stable screen before downloading images (URLs can be split while redrawing)."""
+        if (self._term_image_mode == "off" or getattr(self, "_disguise", False)
+                or not hasattr(self, "term_images")):
+            return
+        self._term_image_timer.start()
+
+    def _apply_terminal_images(self) -> None:
+        if (self._term_image_mode == "off" or getattr(self, "_disguise", False)
+                or not hasattr(self, "term_images")):
+            self._clear_terminal_images()
+            return
+        urls = find_image_urls(self.term.s.screen)
+        if urls == self._term_image_urls:
+            return
+        self._term_image_urls = urls
+        if not urls:
+            self.term_images.clear()
+            self.term_images_box.setVisible(False)
+            return
+        self.term_images.set_images(urls)
+        self.term_images_box.setVisible(True)
+
+    def _clear_terminal_images(self) -> None:
+        self._term_image_timer.stop()
+        self._term_image_urls = []
+        if hasattr(self, "term_images"):
+            self.term_images.clear()
+            self.term_images_box.setVisible(False)
+
+    def _open_terminal_image_full(self, url: str) -> None:
+        if getattr(self, "_disguise", False):
+            return
+        if self._image_viewer is None:
+            self._image_viewer = ImageViewer(self)
+        urls = self._term_image_urls or [url]
+        start = urls.index(url) if url in urls else 0
+        self._image_viewer.show_images(urls, strict=False, referer=None, start=start)
+
     def _close_image_viewer(self) -> None:
         self._hide_hover_preview()
         if self._image_viewer is not None:
@@ -992,6 +1076,7 @@ class MainWindow(QMainWindow):
     def _on_links_changed(self, links) -> None:
         if getattr(self, "_disguise", False):
             return
+        self._schedule_terminal_images()
         if not (hasattr(self, "chk_auto_image") and self.chk_auto_image.isChecked()):
             return
         images = [link for link in links if is_auto_open_image_url(link.url)]
@@ -1120,6 +1205,17 @@ class MainWindow(QMainWindow):
         bf.addRow("", self.lbl_hover_image_note)
         bf.addRow("", self.chk_article_image)
         bf.addRow("", self.lbl_article_image_note)
+        self.term_image_mode = QComboBox()
+        for key, label in TERMINAL_IMAGE_MODES:
+            self.term_image_mode.addItem(label, key)
+        idx = self.term_image_mode.findData(self._term_image_mode)
+        self.term_image_mode.setCurrentIndex(max(0, idx))
+        self.term_image_note = QLabel(
+            "預設一般開圖。自動抓取 PTT 畫面中的 https 圖片連結（含被換行切斷的網址），顯示在終端機下方；"
+            "點縮圖可在程式內看大圖。圖床會看到您的 IP，不想自動載入請選「關閉」。")
+        self.term_image_note.setWordWrap(True)
+        bf.addRow("PTT 文章開圖", self.term_image_mode)
+        bf.addRow("", self.term_image_note)
         lay.addWidget(bg)
         self._browser_paths: dict[str, str] = {}
         self._reload_browser_combo(self._browser_mode)
@@ -1130,6 +1226,7 @@ class MainWindow(QMainWindow):
         self.chk_auto_image.toggled.connect(self._auto_image_toggled)
         self.chk_hover_image.toggled.connect(self._hover_image_toggled)
         self.chk_article_image.toggled.connect(self._article_images_toggled)
+        self.term_image_mode.currentIndexChanged.connect(lambda _i: self._terminal_image_mode_changed())
         self._sync_browser_ui()
 
         g = QGroupBox("終端機顯示")
@@ -1413,6 +1510,7 @@ class MainWindow(QMainWindow):
         self.db.set_setting("links.image_auto_open", "1" if self.chk_auto_image.isChecked() else "0")
         self.db.set_setting("links.image_hover_preview", "1" if self.chk_hover_image.isChecked() else "0")
         self.db.set_setting("links.article_images_open", "1" if self.chk_article_image.isChecked() else "0")
+        self.db.set_setting("links.terminal_images_mode", self._term_image_mode)
         if self.chk_auto_image.isChecked():
             self._on_links_changed(self.term.links())
         self._apply_terminal_settings()
@@ -1689,6 +1787,8 @@ class MainWindow(QMainWindow):
             self._auto_open_times.clear()
         self._update_tray(c)
         self._update_type_buttons()
+        if st is State.DISCONNECTED:
+            self._clear_terminal_images()
         if st is State.DISCONNECTED and self._pending_site_url:
             url, self._pending_site_url = self._pending_site_url, None
             self._connect_bbs(url)

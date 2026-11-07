@@ -165,10 +165,10 @@ class _Thumb(QLabel):
 
     clicked = Signal(str)
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, size: QSize | None = None):
         super().__init__("載入中…")
         self.url = url
-        self.setFixedSize(200, 140)
+        self.setFixedSize(size or QSize(200, 140))
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background:#202020;color:#dddddd;border:1px solid #444;")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -193,12 +193,14 @@ class InlineImageStrip(QScrollArea):
 
     clicked = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, thumb_size: QSize | None = None, strip_height: int = 178):
         super().__init__(parent)
+        self._thumb_size = (QSize(thumb_size.width(), thumb_size.height())
+                            if thumb_size is not None else QSize(200, 140))
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setFixedHeight(178)
+        self.setFixedHeight(strip_height)
         self._host = QWidget()
         self._lay = QHBoxLayout(self._host)
         self._lay.setContentsMargins(4, 4, 4, 4)
@@ -221,6 +223,13 @@ class InlineImageStrip(QScrollArea):
     def referer(self) -> str:
         return self._referer
 
+    def configure(self, thumb_size: QSize, strip_height: int) -> None:
+        """Change the thumbnail box without reloading; call clear()/set_images() to re-fit existing images."""
+        self._thumb_size = QSize(thumb_size.width(), thumb_size.height())
+        self.setFixedHeight(strip_height)
+        for thumb in self._thumbs:
+            thumb.setFixedSize(self._thumb_size)
+
     def set_images(self, urls: list[str], referer: str = "") -> None:
         """Replace the strip contents and start loading the thumbnails off the GUI thread."""
         self.clear()
@@ -231,7 +240,7 @@ class InlineImageStrip(QScrollArea):
         self._generation += 1
         generation = self._generation
         for url in self._urls:
-            thumb = _Thumb(url)
+            thumb = _Thumb(url, self._thumb_size)
             thumb.clicked.connect(self.clicked.emit)
             self._lay.insertWidget(self._lay.count() - 1, thumb)
             self._thumbs.append(thumb)

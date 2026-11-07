@@ -1914,3 +1914,23 @@ def test_keyboard_returns_to_the_terminal_after_typing_and_signature_choice(win,
     calls.clear()
     win.act_focus_terminal.trigger()
     assert calls
+
+
+def test_ptt_screen_images_show_inline_and_can_be_turned_off(win, monkeypatch):
+    shown = []
+    monkeypatch.setattr(win.term_images, "set_images", lambda urls, referer="": shown.append(list(urls)))
+    win._term_image_mode = "compact"
+    win.term_image_mode.setCurrentIndex(win.term_image_mode.findData("compact"))
+    win.term.s.screen.feed("\r\n".join(["", "https://i.imgur.com/a.jpg"]).encode("cp950"))
+    win.term._on_screen_changed()
+    pump(450)
+    assert shown and shown[-1] == ["https://i.imgur.com/a.jpg"]
+    assert not win.term_images_box.isHidden()
+
+    win.term_image_mode.setCurrentIndex(win.term_image_mode.findData("off"))
+    assert win.term_images_box.isHidden()
+    shown.clear()
+    win.term.s.screen.feed(b"\r\nhttps://i.imgur.com/b.jpg")
+    win.term._on_screen_changed()
+    pump(450)
+    assert shown == []
