@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.29"
-BUILD_DATE = "2026/11/07"
+__version__ = "0.8.30"
+BUILD_DATE = "2026/11/12"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,14 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.30", "2026/11/12", [
+        "Assisted login now works on Bahamut BBS (telnet://bbs.gamer.com.tw:23): the login and password "
+        "prompts are recognised even with a word between 請輸入 and 代號/密碼 (Bahamut shows 請輸入勇者代號：), "
+        "and that exact endpoint is trusted for assisted login. The site has no encrypted entrance, so the "
+        "password is sent in plaintext either way, just as when typed by hand.",
+        "The endpoint drop-down remembers up to 10 endpoints that connected successfully, most recent first; "
+        "only addresses are stored, never accounts or passwords. Settings has a new 連線紀錄 group to clear them.",
+    ]),
     ("0.8.29", "2026/11/07", [
         "Window restore: clicking the tray icon or restoring the window from the taskbar now maximizes "
         "it to fill the screen instead of returning to the previous size. F11 still switches to true "
