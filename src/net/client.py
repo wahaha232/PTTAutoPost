@@ -34,6 +34,8 @@ DEFAULT_URL = "wss://ws.ptt.cc/bbs"
 ORIGIN = "https://term.ptt.cc"
 _PROXY_PREFIX = b"HTTP/1.1 200 OK\r\n\r\n"
 TRUSTED_LOGIN_HOSTS = ("ws.ptt.cc",)          # the assisted login only ever sends credentials to these hosts
+# Telnet sites with no encrypted entrance; the password is plaintext either way (typed by hand or not).
+TRUSTED_TELNET_LOGINS = {("bbs.gamer.com.tw", 23)}
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
 DEFAULT_SSH_USER = "bbs"
 # Explicit pairs only: a failed official WSS endpoint may use the matching SSH endpoint,
@@ -124,7 +126,7 @@ def origin_for(url: str) -> str:
 
 
 def login_host_trusted(url: str) -> bool:
-    """True only for the exact official endpoint (or a local test endpoint).
+    """True only for an exact official endpoint (PTT WSS/SSH, Bahamut Telnet) or a local test endpoint.
 
     A suffix match is not enough: a crafted host such as ws.ptt.cc.evil.example must
     never receive the user's credentials, and neither should another port or path.
@@ -137,6 +139,13 @@ def login_host_trusted(url: str) -> bool:
         return False
     if host in _LOOPBACK:
         return True                                        # local fake BBS used by the tests
+    if p.scheme == "telnet":
+        try:
+            port = p.port or 23
+        except ValueError:
+            return False
+        return ((host, port) in TRUSTED_TELNET_LOGINS and not p.username and not p.password
+                and (p.path or "") in ("", "/"))
     if p.scheme == "ssh":
         return (host == "ptt.cc" and (p.username or DEFAULT_SSH_USER).lower() == "bbs"
                 and p.port in (None, 22) and not p.password and (p.path or "") == "")

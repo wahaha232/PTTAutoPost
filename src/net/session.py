@@ -96,10 +96,10 @@ class PttSession(QObject):
             self.notice.emit("尚未連線，無法登入。")
             return False
         if self.kind is not Kind.LOGIN_PROMPT:
-            self.notice.emit("目前畫面不是登入畫面（請求輸入代號），已停止；請在終端機中自行操作。")
+            self.notice.emit("目前畫面不是登入畫面（請輸入代號），已停止；請在終端機中自行操作。")
             return False
         if not login_host_trusted(self.client.url):
-            self.notice.emit("目前連線的不是 PTT 官方端點（ws.ptt.cc 或 ssh bbs@ptt.cc），輔助登入已停用，"
+            self.notice.emit("目前連線的不是已知的官方端點（PTT 的 ws.ptt.cc／ssh bbs@ptt.cc、巴哈姆特 bbs.gamer.com.tw:23），輔助登入已停用，"
                              "帳密不會由程式送出；如需登入請自行在終端機輸入。")
             return False
         if not account or not password:

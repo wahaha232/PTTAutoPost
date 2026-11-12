@@ -8,8 +8,14 @@ caller therefore treats "no match" as "stop", never as "carry on".
 from __future__ import annotations
 
 import enum
+import re
 
 from .screen import Screen
+
+
+# "請輸入代號" (PTT) / "請輸入勇者代號：" (Bahamut): a few characters may sit between 請輸入 and the noun.
+_LOGIN_RE = re.compile(r"請輸入[^\s：:，,]{0,4}代號")
+_PASSWORD_RE = re.compile(r"請輸入[^\s：:，,]{0,4}密碼")
 
 
 class Kind(enum.Enum):
@@ -53,9 +59,9 @@ def classify(s: Screen) -> Kind:
         return Kind.CLEAR_ERRLOG
     if "任意鍵" in t:
         return Kind.PRESS_ANY_KEY
-    if "請輸入您的密碼" in t or s.row_text(s.cur.y).lstrip().startswith("密碼"):
+    if _PASSWORD_RE.search(t) or s.row_text(s.cur.y).lstrip().startswith("密碼"):
         return Kind.PASSWORD_PROMPT
-    if "請輸入代號" in t:
+    if _LOGIN_RE.search(t):
         return Kind.LOGIN_PROMPT
     return Kind.UNKNOWN
 

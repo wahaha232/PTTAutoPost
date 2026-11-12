@@ -132,6 +132,21 @@ def test_classify_login_flow_screens():
     assert classify(Screen()) == Kind.UNKNOWN
 
 
+def test_classify_bahamut_login_prompts():
+    """Bahamut (bbs.gamer.com.tw) says 請輸入勇者代號：, captured 2026-11-12; PTT's wording must keep working."""
+    crlf, esc = chr(13) + chr(10), chr(27)
+    s = Screen()
+    feed_text(s, "請輸入勇者代號：             " + crlf
+              + "※ 第一次登入請先至 https://user.gamer.com.tw/openBBS.php 啟用 ! " + esc + "[1;17H")
+    assert classify(s) == Kind.LOGIN_PROMPT
+    feed_text(s, "abc" + crlf + "請輸入勇者密碼：")     # password wording not captured yet; same 請輸入…密碼 shape assumed
+    assert classify(s) == Kind.PASSWORD_PROMPT
+    for text in ("請輸入：代號", "請輸入一個很長的名字的代號", "代號"):  # separator / too far apart / no 請輸入
+        s = Screen()
+        feed_text(s, text)
+        assert classify(s) == Kind.UNKNOWN, text
+
+
 def test_classify_post_screens():
     s = Screen()
     feed_text(s, "標題：")

@@ -184,6 +184,11 @@ def test_endpoint_policy_wss_only_no_userinfo_and_login_only_to_ptt():
     assert login_host_trusted("ssh://bbs@ptt.cc:22") and login_host_trusted("ssh://ptt.cc")
     assert not login_host_trusted("ssh://alice@ptt.cc:22")
     assert not login_host_trusted("ssh://bbs@ptt.cc:2222")
+    assert login_host_trusted("telnet://bbs.gamer.com.tw:23") and login_host_trusted("telnet://bbs.gamer.com.tw")
+    for bad in ("telnet://bbs.gamer.com.tw:2323", "telnet://bbs.gamer.com.tw.evil.example:23", "telnet://evil.example:23",
+                "telnet://u:p@bbs.gamer.com.tw:23", "telnet://bbs.gamer.com.tw:23/x", "telnet://ptt.cc:23",
+                "telnet://bbs.gamer.com.tw:99999"):
+        assert not login_host_trusted(bad), bad
 
 
 def test_disconnect_is_immediate_and_a_quick_reconnect_is_possible(sess, bbs_factory):
