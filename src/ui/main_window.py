@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
                                QSpinBox, QSplitter, QStackedWidget, QStyle, QSystemTrayIcon, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from .. import boards, compose, pttmoney, sites, update
+from .. import boards, compose, conn_history, pttmoney, sites, update
 from ..errors import ToolError
 from ..links import find_image_urls, is_auto_open_image_url, validate_http_url
 from ..logging_setup import get_logger
@@ -519,8 +519,10 @@ class MainWindow(QMainWindow):
         bar = QHBoxLayout()
         self.url_box = QComboBox()
         self.url_box.setEditable(True)
-        self.url_box.addItem(DEFAULT_URL)
         self.url_box.setMinimumWidth(240)
+        self.url_box.setToolTip("下拉可選最近連線過的端點（只記位址，不記帳號密碼）；可在「設定」清除。")
+        self._conn_history = conn_history.parse(self.db.get_setting(conn_history.SETTING_KEY, "[]"))
+        self._fill_url_box(DEFAULT_URL)
         self.btn_connect = QPushButton("連線")
         self.btn_disconnect = QPushButton("斷線")
         self.account = QLineEdit()
@@ -769,6 +771,37 @@ class MainWindow(QMainWindow):
             return None
         self._save_proxy_settings()
         return config
+
+    def _fill_url_box(self, text: str) -> None:
+        """Default endpoint plus the recent ones (most recent first); the typed text is kept as is."""
+        self.url_box.blockSignals(True)
+        self.url_box.clear()
+        for url in dict.fromkeys(self._conn_history + [DEFAULT_URL]):
+            self.url_box.addItem(url)
+        self.url_box.setEditText(text)
+        self.url_box.blockSignals(False)
+
+    def _record_connection(self, url: str) -> None:
+        history = conn_history.add(self._conn_history, url)
+        if history == self._conn_history:
+            return
+        self._conn_history = history
+        self.db.set_setting(conn_history.SETTING_KEY, conn_history.dump(history))
+        self._fill_url_box(self.url_box.currentText())
+        self._sync_history_ui()
+
+    def _clear_conn_history(self) -> None:
+        self._conn_history = []
+        self.db.set_setting(conn_history.SETTING_KEY, "[]")
+        self._fill_url_box(self.url_box.currentText())
+        self._sync_history_ui()
+        self._notice("已清除連線紀錄。")
+
+    def _sync_history_ui(self) -> None:
+        if hasattr(self, "btn_clear_history"):
+            n = len(self._conn_history)
+            self.btn_clear_history.setEnabled(n > 0)
+            self.lbl_history.setText(f"目前記錄 {n} 筆（最多 {conn_history.MAX_ENTRIES} 筆）。" if n else "目前沒有連線紀錄。")
 
     def _connect_bbs(self, url: str) -> bool:
         config = self._proxy_config()
@@ -1307,6 +1340,18 @@ class MainWindow(QMainWindow):
         self.proxy_user.editingFinished.connect(self._save_proxy_settings)
         self._sync_proxy_ui()
 
+        hg = QGroupBox("連線紀錄")
+        hl = QHBoxLayout(hg)
+        self.lbl_history = QLabel()
+        self.lbl_history.setWordWrap(True)
+        self.btn_clear_history = QPushButton("清除連線紀錄")
+        self.btn_clear_history.clicked.connect(self._clear_conn_history)
+        hl.addWidget(QLabel("連線成功後，端點會記在上方「端點」下拉選單；只記位址，不記帳號密碼。"), 1)
+        hl.addWidget(self.lbl_history)
+        hl.addWidget(self.btn_clear_history)
+        lay.addWidget(hg)
+        self._sync_history_ui()
+
         tg = QGroupBox("視窗與系統匣")
         tl = QVBoxLayout(tg)
         self.chk_tray_min = QCheckBox("最小化時縮到系統匣（工作列不顯示，從系統匣圖示還原）")
@@ -1784,6 +1829,7 @@ class MainWindow(QMainWindow):
         self.btn_disconnect.setEnabled(st is not State.DISCONNECTED)
         self.btn_login.setEnabled(c and not self._paste_active())
         if st is State.CONNECTED:
+            self._record_connection(self.session.client.url)      # the endpoint actually reached (incl. SSH fallback)
             self._auto_opened.clear()
             self._auto_open_times.clear()
         self._update_tray(c)
