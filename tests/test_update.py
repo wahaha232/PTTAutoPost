@@ -411,3 +411,27 @@ def test_apply_script_rolls_back_when_a_copy_fails(monkeypatch, tmp_path):
     assert (app / "_internal" / "a.dll").read_bytes() == b"old-a"      # restored from backup
     assert not (app / "_internal" / "new.dll").exists()                # newly added file removed
     assert "rolled back" in (app / "updates" / "apply-error.log").read_text(encoding="utf-8-sig")
+
+
+def test_prune_old_updates_keeps_only_current_backup(tmp_path):
+    for name in ("backup-0.8.23", "backup-0.8.29", "backup-0.8.30", "staging-0.8.29", "staging-0.8.30", "notes"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "PTTAutoPost.exe").write_bytes(b"x")
+    files = ("apply-0.8.29.ps1", "apply-0.8.30.ps1", "apply-error.seen.log", "PTTAutoPost-0.8.29-portable.zip",
+             "PTTAutoPost-0.8.30-delta-0.8.29.zip.part", "PTTAutoPost-0.8.31-setup.exe", "readme.txt")
+    for name in files:
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    removed = update.prune_old_updates("0.8.30", tmp_path)
+    assert sorted(removed) == ["PTTAutoPost-0.8.29-portable.zip", "PTTAutoPost-0.8.30-delta-0.8.29.zip.part",
+                               "apply-0.8.29.ps1", "backup-0.8.23", "backup-0.8.29", "staging-0.8.29"]
+    left = sorted(p.name for p in tmp_path.iterdir())
+    assert left == ["PTTAutoPost-0.8.31-setup.exe", "apply-0.8.30.ps1", "apply-error.seen.log", "backup-0.8.30",
+                    "notes", "readme.txt", "staging-0.8.30"]
+    assert (tmp_path / "backup-0.8.30" / "PTTAutoPost.exe").exists()
+    assert update.prune_old_updates("0.8.30", tmp_path) == []          # idempotent
+
+
+def test_prune_old_updates_ignores_bad_version_and_missing_folder(tmp_path):
+    (tmp_path / "backup-0.8.1").mkdir()
+    assert update.prune_old_updates("dev", tmp_path) == [] and (tmp_path / "backup-0.8.1").exists()
+    assert update.prune_old_updates("0.8.30", tmp_path / "missing") == []

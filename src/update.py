@@ -598,3 +598,56 @@ def take_apply_error(app_dir: Path | None = None) -> str | None:
     except OSError:
         pass
     return text or None
+
+
+_PRUNE_DIR_RE = re.compile(r"^(backup|staging)-(\d+\.\d+\.\d+)$")
+_PRUNE_FILE_RE = re.compile(r"^apply-(\d+\.\d+\.\d+)\.ps1$")
+
+
+def prune_old_updates(current: str = __version__, folder: Path | None = None) -> list[str]:
+    """After the current version started cleanly, keep only its backup and drop older update leftovers.
+
+    Removed: backup-/staging- folders and apply-*.ps1 helpers of other versions, downloaded release
+    assets (and .part files) for versions not newer than the running one.  Kept: backup-<current>,
+    staging-/apply- of the current version (its helper may still be finishing), newer downloads
+    (e.g. a setup.exe waiting to be installed), error logs and anything that does not match these
+    exact names.  Links are never followed.  Returns the removed names.
+    """
+    cur = parse_version(current)
+    if cur is None:
+        return []
+    try:
+        root = folder or updates_dir()
+        entries = list(root.iterdir())
+    except (OSError, UpdateError):
+        return []
+    removed: list[str] = []
+    for entry in entries:
+        name = entry.name
+        try:
+            if entry.is_symlink():
+                continue
+            m = _PRUNE_DIR_RE.match(name)
+            if m and entry.is_dir():
+                if parse_version(m.group(2)) != cur:
+                    shutil.rmtree(entry)
+                    removed.append(name)
+                continue
+            if not entry.is_file():
+                continue
+            m = _PRUNE_FILE_RE.match(name)
+            if m:
+                if parse_version(m.group(1)) != cur:
+                    entry.unlink()
+                    removed.append(name)
+                continue
+            base = name[:-len(".part")] if name.endswith(".part") else name
+            ver = asset_version(base)
+            if ver and parse_version(ver) and parse_version(ver) <= cur:
+                entry.unlink()
+                removed.append(name)
+        except OSError as e:
+            log.warning("could not remove old update file %s: %s", name, e)
+    if removed:
+        log.info("removed old update files: %s", ", ".join(sorted(removed)))
+    return removed

@@ -1767,6 +1767,10 @@ class MainWindow(QMainWindow):
         if msg:
             log.warning("previous update failed: %s", msg)
             QMessageBox.warning(self, "上次更新失敗", "上次的更新沒有完成，已還原為原本的版本。\n\n" + msg[-800:])
+            return
+        removed = update.prune_old_updates()                  # keep only the current version's backup
+        if removed:
+            self._notice(f"已刪除 {len(removed)} 個舊版更新檔，只保留目前版本的備份。")
 
     def _on_update_error(self, msg: str) -> None:
         phase, auto = self._update_phase, self._update_auto
