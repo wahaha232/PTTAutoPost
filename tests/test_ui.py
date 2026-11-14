@@ -1992,3 +1992,108 @@ def test_mouse_browsing_options_send_only_navigation_keys(win, bbs_factory):
     assert bytes(bbs.after_login) == want
     win.term.locked = False
     assert mouse_map.valid("mouse.wheel", "bogus") == "arrows"
+
+
+def test_terminal_images_zip_button_asks_for_path_and_downloads(win, monkeypatch, tmp_path):
+    from PySide6.QtCore import QRunnable
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from src.ui import main_window as mw
+    from src.ui.tasks import _ZipSignals
+    target = tmp_path / "ptt.zip"
+    asked = []
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: asked.append(a) or (str(target), "")))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    started = []
+
+    class FakeTask(QRunnable):
+        def __init__(self, urls, target, referer):
+            super().__init__()
+            self.signals = _ZipSignals()
+            started.append((urls, str(target), referer))
+
+        def cancel(self):
+            pass
+
+        def run(self):
+            pass
+
+    from src.ui import image_viewer as iv
+
+    class NoFetch(QRunnable):                             # thumbnails must not touch the network in tests
+        def __init__(self, *a, **k):
+            super().__init__()
+            self.signals = iv._Signals()
+
+        def cancel(self):
+            pass
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(mw, "ArticleImagesZipTask", FakeTask)
+    monkeypatch.setattr(iv, "ImageFetchTask", NoFetch)
+    urls = ["https://i.imgur.com/a.jpg", "https://i.imgur.com/b.png", "https://i.imgur.com/c.gif"]
+    win.term_images.set_images(urls)
+    win._sync_term_zip_button()
+    assert win.term_images.checked_urls() == urls and "3/3" in win.btn_term_zip.text()
+    win.term_images._thumbs[1].check.setChecked(False)     # untick the second thumbnail
+    assert "2/3" in win.btn_term_zip.text() and not win.chk_term_all.isChecked()
+    win.btn_term_zip.click()
+    assert asked and started == [(["https://i.imgur.com/a.jpg", "https://i.imgur.com/c.gif"], str(target), None)]
+    assert win._zip_busy and not win.btn_term_zip.isEnabled()
+    win._zip_failed("x")
+    assert win.btn_term_zip.isEnabled()
+    win.chk_term_all.click()                              # tick all again
+    assert win.term_images.checked_urls() == urls and win.chk_term_all.isChecked()
+    win.chk_term_all.click()                              # untick all: nothing to download
+    assert win.term_images.checked_urls() == [] and not win.btn_term_zip.isEnabled()
+    win.term_images.clear()
+
+
+def test_image_viewer_saves_the_original_bytes(qapp, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+    from src.net.image import ImageData
+    from src.ui.image_viewer import ImageViewer, LoadedImage, ImageFetchTask
+    from PySide6.QtGui import QImage
+    viewer = ImageViewer()
+    viewer._urls, viewer._index = ["https://i.imgur.com/abc.png"], 0
+    task = ImageFetchTask("https://i.imgur.com/abc.png")
+    viewer._task = task
+    assert not viewer.save_button.isEnabled()
+    menu = viewer._build_image_menu()
+    assert [a.text() for a in menu.actions()] == ["另存圖片…", "複製圖片網址"] and not menu.actions()[0].isEnabled()
+    img = QImage(4, 4, QImage.Format.Format_RGB32)
+    raw = b"\x89PNG-original-bytes"
+    viewer._on_done(task, LoadedImage(ImageData("https://i.imgur.com/abc.png", "image/png", raw), img, ""))
+    assert viewer.save_button.isEnabled() and viewer._build_image_menu().actions()[0].isEnabled()
+    target = tmp_path / "saved"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
+    path = viewer.save_current()
+    assert path == tmp_path / "saved.png" and path.read_bytes() == raw
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: ("", "")))
+    assert viewer.save_current() is None                  # cancelled
+    viewer.close()
+
+
+def test_right_click_selection_survives_unrelated_redraws_and_menu_copies_links(win):
+    term = win.term
+    term.s.screen.feed("看板 Test  文章 https://example.com/x\r\n第二行".encode("cp950"))
+    term._on_screen_changed()
+    term.select_all()
+    term._sel_anchor, term._sel_cursor = (0, 0), (0, 6)
+    term._sel_snapshot = term.selection_text()
+    term.s.screen.feed(b"\x1b[2;1Hzz")                 # PTT redraws another row (clock / status line)
+    term._on_screen_changed()
+    assert term.has_selection()
+    menu = term._build_context_menu("https://example.com/x")
+    names = [a.text() for a in menu.actions() if a.text()]
+    assert names[:2] == ["複製連結", "複製"]
+    menu.actions()[0].trigger()
+    from PySide6.QtGui import QGuiApplication
+    assert QGuiApplication.clipboard().text() == "https://example.com/x"
+    term.s.screen.feed(b"\x1b[1;1HXX")                 # the selected text itself changed
+    term._on_screen_changed()
+    assert not term.has_selection()
+    names = [a.text() for a in term._build_context_menu().actions() if a.text()]
+    assert names[0] == "複製（先用左鍵拖曳選取文字）"

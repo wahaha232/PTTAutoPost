@@ -9,13 +9,17 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPoint, QRunnable, QSize, Qt, QThreadPool, Signal
+from pathlib import Path
+
+from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QObject, QPoint, QRunnable, QSize, QStandardPaths, Qt,
+                            QThreadPool, Signal)
 from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QPixmap
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton,
+                               QScrollArea, QVBoxLayout, QWidget)
 
 from ..errors import ToolError
 from ..logging_setup import get_logger
-from ..net.image import MAX_IMAGE_BYTES, ImageData, fetch_image
+from ..net.image import MAX_IMAGE_BYTES, ImageData, _zip_name, fetch_image
 from ..version import APP_NAME
 
 log = get_logger("image_viewer")
@@ -165,10 +169,17 @@ class _Thumb(QLabel):
 
     clicked = Signal(str)
 
-    def __init__(self, url: str, size: QSize | None = None):
+    def __init__(self, url: str, size: QSize | None = None, checkable: bool = False):
         super().__init__("載入中…")
         self.url = url
         self.setFixedSize(size or QSize(200, 140))
+        self.check: QCheckBox | None = None
+        if checkable:                                   # small box in the top-left corner: include in the ZIP
+            self.check = QCheckBox(self)
+            self.check.setChecked(True)
+            self.check.setToolTip("勾選的圖片會包含在「打包下載」裡")
+            self.check.setStyleSheet("QCheckBox{background:rgba(0,0,0,150);padding:2px;}")
+            self.check.move(4, 4)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background:#202020;color:#dddddd;border:1px solid #444;")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -193,8 +204,12 @@ class InlineImageStrip(QScrollArea):
 
     clicked = Signal(str)
 
-    def __init__(self, parent=None, thumb_size: QSize | None = None, strip_height: int = 178):
+    checkedChanged = Signal()
+
+    def __init__(self, parent=None, thumb_size: QSize | None = None, strip_height: int = 178,
+                 checkable: bool = False):
         super().__init__(parent)
+        self._checkable = checkable
         self._thumb_size = (QSize(thumb_size.width(), thumb_size.height())
                             if thumb_size is not None else QSize(200, 140))
         self.setWidgetResizable(True)
@@ -223,6 +238,17 @@ class InlineImageStrip(QScrollArea):
     def referer(self) -> str:
         return self._referer
 
+    def checked_urls(self) -> list[str]:
+        """Ticked thumbnails in strip order (all images when the strip has no check boxes)."""
+        if not self._checkable:
+            return list(self._urls)
+        return [t.url for t in self._thumbs if t.check is not None and t.check.isChecked()]
+
+    def set_all_checked(self, on: bool) -> None:
+        for t in self._thumbs:
+            if t.check is not None:
+                t.check.setChecked(on)
+
     def configure(self, thumb_size: QSize, strip_height: int) -> None:
         """Change the thumbnail box without reloading; call clear()/set_images() to re-fit existing images."""
         self._thumb_size = QSize(thumb_size.width(), thumb_size.height())
@@ -240,8 +266,10 @@ class InlineImageStrip(QScrollArea):
         self._generation += 1
         generation = self._generation
         for url in self._urls:
-            thumb = _Thumb(url, self._thumb_size)
+            thumb = _Thumb(url, self._thumb_size, self._checkable)
             thumb.clicked.connect(self.clicked.emit)
+            if thumb.check is not None:
+                thumb.check.toggled.connect(lambda _on: self.checkedChanged.emit())
             self._lay.insertWidget(self._lay.count() - 1, thumb)
             self._thumbs.append(thumb)
             task = ImageFetchTask(url, strict_host=False, referer=referer or None, fit=thumb.size())
@@ -276,6 +304,26 @@ class InlineImageStrip(QScrollArea):
             thumb.setText("無法載入")
 
 
+def save_image_data(parent, data: ImageData) -> Path | None:
+    """Ask where to save and write the original downloaded bytes (no re-encoding, no resizing)."""
+    folder = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation) or str(Path.home())
+    name = _zip_name(data.url, data.content_type, set())
+    ext = Path(name).suffix
+    target, _ = QFileDialog.getSaveFileName(parent, "另存圖片", str(Path(folder) / name),
+                                            f"圖片 (*{ext});;所有檔案 (*.*)")
+    if not target:
+        return None
+    path = Path(target)
+    if not path.suffix:
+        path = path.with_name(path.name + ext)
+    try:
+        path.write_bytes(data.data)
+    except OSError as e:
+        QMessageBox.warning(parent, "另存圖片", f"無法儲存圖片：\n{path}\n\n{e}")
+        return None
+    return path
+
+
 class ImageViewer(QDialog):
     """Modeless, non-activating preview window owned by the main window."""
 
@@ -291,8 +339,11 @@ class ImageViewer(QDialog):
         self._index = 0
         self._strict = True
         self._referer: str | None = None
+        self._data: ImageData | None = None            # original bytes of the image on screen (for saving)
 
         self.image_label = QLabel("載入中…")
+        self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.image_label.customContextMenuRequested.connect(self._image_menu)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setMinimumSize(320, 240)
         self.image_label.setStyleSheet("background: #202020; color: #dddddd;")
@@ -303,6 +354,10 @@ class ImageViewer(QDialog):
         self.next_button = QPushButton("下一張")
         self.count_label = QLabel("")
         self.close_button = QPushButton("關閉")
+        self.save_button = QPushButton("下載圖片")
+        self.save_button.setToolTip("把目前這張圖片以原始檔案存到電腦（會先詢問儲存位置）。")
+        self.save_button.setEnabled(False)
+        self.save_button.clicked.connect(self.save_current)
         self.prev_button.clicked.connect(self.show_previous)
         self.next_button.clicked.connect(self.show_next)
         self.close_button.clicked.connect(self.close)
@@ -312,6 +367,7 @@ class ImageViewer(QDialog):
         buttons.addWidget(self.next_button)
         buttons.addWidget(self.count_label)
         buttons.addStretch(1)
+        buttons.addWidget(self.save_button)
         buttons.addWidget(self.close_button)
         lay = QVBoxLayout(self)
         lay.addWidget(self.image_label, 1)
@@ -363,6 +419,8 @@ class ImageViewer(QDialog):
         self._cancel_task()
         url = self.current_url()
         self._pixmap = None
+        self._data = None
+        self.save_button.setEnabled(False)
         self.image_label.setPixmap(QPixmap())
         self.image_label.setText("載入中…")
         self.info.setText(url)
@@ -384,9 +442,33 @@ class ImageViewer(QDialog):
             return
         pixmap = QPixmap.fromImage(loaded.image)
         self._pixmap = pixmap
+        self._data = data
+        self.save_button.setEnabled(True)
         self._update_pixmap()
         self.info.setText(f"{pixmap.width()} x {pixmap.height()} · {len(data.data) / 1024:.0f} KB · "
                           f"{data.content_type}\n{data.url}")
+
+    def save_current(self) -> Path | None:
+        if self._data is None:
+            return None
+        path = save_image_data(self, self._data)
+        if path is not None:
+            self.info.setText(f"已儲存到：{path}\n{self._data.url}")
+        return path
+
+    def _build_image_menu(self) -> QMenu:
+        menu = QMenu(self)
+        act_save = menu.addAction("另存圖片…")
+        act_save.setEnabled(self._data is not None)
+        act_save.triggered.connect(self.save_current)
+        url = self.current_url()
+        act_url = menu.addAction("複製圖片網址")
+        act_url.setEnabled(bool(url))
+        act_url.triggered.connect(lambda: QGuiApplication.clipboard().setText(url))
+        return menu
+
+    def _image_menu(self, pos: QPoint) -> None:
+        self._build_image_menu().exec(self.image_label.mapToGlobal(pos))
 
     def _on_failed(self, task: ImageFetchTask, message: str, detail: str) -> None:
         if self._task is not task:

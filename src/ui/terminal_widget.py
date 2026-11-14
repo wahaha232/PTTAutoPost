@@ -131,6 +131,8 @@ class TerminalWidget(QWidget):
         self.links_enabled = True                       # disguise mode turns links off (they stay visible as text)
         self.mouse = {k: d for k, (d, _c) in mouse_map.SETTINGS.items()}   # mouse browsing (see mouse_map)
         self._right_wheel_used = False                  # right+wheel was used: swallow the context menu once
+        self._sel_snapshot = ""                          # selected text when the selection was made
+        self._sel_selecting = False
         self.stretch = False                            # True: distort glyphs so the grid fills the area completely
         self._adv: dict[str, float] = {}
         self._links: list[Link] = []
@@ -226,7 +228,13 @@ class TerminalWidget(QWidget):
     linkHovered = Signal(str)                 # URL under the pointer, "" when none
 
     def _on_screen_changed(self) -> None:
-        self.clear_selection()
+        # Keep a finished selection while the text under it is unchanged: PTT redraws the clock /
+        # status line on its own, and clearing on every redraw made the right-click "複製" useless.
+        if self.has_selection() and not self._sel_selecting:
+            if self.selection_text() != self._sel_snapshot:
+                self.clear_selection()
+        elif not self._sel_selecting:
+            self.clear_selection()
         self._refresh_links()
         self.update()
 
@@ -292,6 +300,7 @@ class TerminalWidget(QWidget):
             self._sel_anchor, self._sel_cursor = (row, span[0]), (row, span[1])
         self._sel_rect = False
         self._sel_selecting = False
+        self._sel_snapshot = self.selection_text()
         self.update()
 
     def has_selection(self) -> bool:
@@ -313,6 +322,7 @@ class TerminalWidget(QWidget):
         rows, cols = self.s.screen.rows, self.s.screen.cols
         self._sel_anchor, self._sel_cursor = (0, 0), (rows - 1, cols - 1)
         self._sel_rect = False
+        self._sel_snapshot = self.selection_text()
         self.update()
 
     def copy_selection(self) -> bool:
@@ -405,9 +415,18 @@ class TerminalWidget(QWidget):
         self.notice.emit(f"貼上中…（{chars} 字、{lines} 行{extra}）；已暫停輸入標題／內文、登入與前往看板。")
         return True
 
-    def _build_context_menu(self) -> QMenu:
+    def copy_link(self, url: str) -> bool:
+        if not url:
+            return False
+        QGuiApplication.clipboard().setText(url)
+        self.notice.emit(f"已複製連結：{url}")
+        return True
+
+    def _build_context_menu(self, link_url: str = "") -> QMenu:
         menu = QMenu(self)
-        act_copy = menu.addAction("複製")
+        if link_url:
+            menu.addAction("複製連結").triggered.connect(lambda: self.copy_link(link_url))
+        act_copy = menu.addAction("複製" if self.has_selection() else "複製（先用左鍵拖曳選取文字）")
         act_copy.setEnabled(self.has_selection())
         act_copy.triggered.connect(self.copy_selection)
         menu.addAction("全選畫面").triggered.connect(self.select_all)
@@ -421,7 +440,8 @@ class TerminalWidget(QWidget):
             self._right_wheel_used = False
             e.accept()
             return
-        menu = self._build_context_menu()
+        link = self.link_at(QPointF(e.pos())) if self.links_enabled else None
+        menu = self._build_context_menu(link.url if link else "")
         menu.exec(e.globalPos())
 
     def _selection_spans(self) -> dict[int, list[tuple[int, int]]]:
@@ -533,6 +553,7 @@ class TerminalWidget(QWidget):
                         self._sel_cursor = cell
                     self.update()
                 self._sel_selecting = False
+                self._sel_snapshot = self.selection_text()
                 e.accept()
                 return
             self._sel_selecting = False

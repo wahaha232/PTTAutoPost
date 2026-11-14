@@ -573,9 +573,21 @@ class MainWindow(QMainWindow):
         til.setContentsMargins(0, 2, 0, 0)
         til.setSpacing(2)
         self.term_images_label = QLabel("PTT 文章圖片（點縮圖在程式內看大圖；圖床會看到您的 IP）")
-        til.addWidget(self.term_images_label)
+        self.btn_term_zip = QPushButton("打包下載圖片（ZIP）")
+        self.btn_term_zip.setToolTip("先選擇 ZIP 儲存路徑，再把目前畫面偵測到的圖片以原始網址下載成 .zip。")
+        self.btn_term_zip.clicked.connect(self.download_terminal_images)
+        self.chk_term_all = QCheckBox("全選")
+        self.chk_term_all.setChecked(True)
+        self.chk_term_all.setToolTip("勾選／取消全部圖片；也可以只勾縮圖左上角的方塊挑選要下載的圖片。")
+        self.chk_term_all.clicked.connect(lambda on: self.term_images.set_all_checked(on))
+        tir = QHBoxLayout()
+        tir.addWidget(self.term_images_label, 1)
+        tir.addWidget(self.chk_term_all)
+        tir.addWidget(self.btn_term_zip)
+        til.addLayout(tir)
         size, height = TERMINAL_IMAGE_SIZES.get(self._term_image_mode, TERMINAL_IMAGE_SIZES["normal"])
-        self.term_images = InlineImageStrip(thumb_size=size, strip_height=height)
+        self.term_images = InlineImageStrip(thumb_size=size, strip_height=height, checkable=True)
+        self.term_images.checkedChanged.connect(self._sync_term_zip_button)
         self.term_images.clicked.connect(self._open_terminal_image_full)
         til.addWidget(self.term_images)
         self.term_images_box.setVisible(False)
@@ -1087,6 +1099,7 @@ class MainWindow(QMainWindow):
             return
         self.term_images.set_images(urls)
         self.term_images_box.setVisible(True)
+        self._sync_term_zip_button()
 
     def _clear_terminal_images(self) -> None:
         self._term_image_timer.stop()
@@ -2362,14 +2375,33 @@ class MainWindow(QMainWindow):
             self._notice(f"儲存格式固定為 ZIP，檔名已改為 {path.name}")
         return path
 
-    def download_article_images(self):
+    def _sync_term_zip_button(self) -> None:
+        if not hasattr(self, "btn_term_zip"):
+            return
+        picked, total = len(self.term_images.checked_urls()), len(self.term_images.urls)
+        self.btn_term_zip.setText(f"打包下載圖片（ZIP，{picked}/{total} 張）" if total else "打包下載圖片（ZIP）")
+        self.btn_term_zip.setEnabled(picked > 0 and not self._zip_busy)
+        self.chk_term_all.blockSignals(True)
+        self.chk_term_all.setChecked(total > 0 and picked == total)
+        self.chk_term_all.blockSignals(False)
+
+    def download_terminal_images(self):
+        """ZIP the ticked images detected on the PTT screen (same flow as the article panel's button)."""
+        urls = self.term_images.checked_urls()
+        if not urls:
+            self._notice("請先勾選要下載的圖片。")
+            return
+        self.download_article_images(urls, referer=None, what="目前 PTT 畫面勾選")
+
+    def download_article_images(self, urls: list[str] | None = None, referer: str | None = "", what: str = "文章"):
         """Ask for the ZIP path first, then download every article image at its original URL."""
         if getattr(self, "_disguise", False):
             return
         if self._zip_busy:
             self._notice("圖片打包下載進行中。")
             return
-        urls = list(self._article_image_urls)
+        if urls is None or isinstance(urls, bool):         # clicked(bool) from the article panel button
+            urls, referer, what = list(self._article_image_urls), self._article_referer, "文章"
         if not urls:
             self._notice("目前文章沒有可下載的圖片。")
             return
@@ -2379,7 +2411,7 @@ class MainWindow(QMainWindow):
             return
         if QMessageBox.question(
                 self, "打包下載圖片",
-                f"將下載文章內 {len(urls)} 張原圖，並存成 ZIP 壓縮檔：\n{target}\n\n"
+                f"將下載{what}的 {len(urls)} 張原圖，並存成 ZIP 壓縮檔：\n{target}\n\n"
                 "下載期間請勿關閉程式。要開始下載嗎？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
@@ -2387,8 +2419,9 @@ class MainWindow(QMainWindow):
             return
         self._zip_busy = True
         self.btn_zip.setEnabled(False)
+        self.btn_term_zip.setEnabled(False)
         self._notice(f"打包下載 {len(urls)} 張原圖…")
-        task = ArticleImagesZipTask(urls, target, self._article_referer)
+        task = ArticleImagesZipTask(urls, target, referer)
         task.signals.progress.connect(self._zip_progress)
         task.signals.done.connect(self._zip_done)
         task.signals.failed.connect(self._zip_failed)
@@ -2402,6 +2435,7 @@ class MainWindow(QMainWindow):
         self._zip_busy = False
         self._zip_task = None
         self.btn_zip.setEnabled(bool(self._article_image_urls))
+        self._sync_term_zip_button()
         msg = f"已下載 {result.saved} 張原圖（未縮圖）到：\n{result.path}"
         if result.skipped:
             msg += f"\n\n略過 {result.skipped} 張（無法下載或格式不支援）。"
@@ -2412,6 +2446,7 @@ class MainWindow(QMainWindow):
         self._zip_busy = False
         self._zip_task = None
         self.btn_zip.setEnabled(bool(self._article_image_urls))
+        self._sync_term_zip_button()
         self._notice("打包下載圖片失敗：" + msg)
         QMessageBox.warning(self, "打包下載失敗", msg)
 

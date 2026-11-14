@@ -79,9 +79,12 @@ def test_single_click_on_blank_area_clears_selection(qapp):
     assert not term.has_selection()
 
 
-def test_screen_update_clears_selection(qapp):
+def test_screen_update_keeps_selection_until_its_text_changes(qapp):
     term = make_term("hello world")
     drag(term, point_for(term, 0, 0), point_for(term, 4, 0))
+    term.s.screenChanged.emit()                        # e.g. PTT redraws its clock: selection stays
+    assert term.has_selection()
+    term.s.screen.feed(b"[1;1HJ")                  # the selected text itself changed
     term.s.screenChanged.emit()
     assert not term.has_selection()
 
@@ -162,8 +165,9 @@ def test_context_menu_offers_copy_select_all_and_copy_screen(qapp):
     term = make_term("hello", "world")
     menu = term._build_context_menu()
     actions = {a.text(): a for a in menu.actions()}
-    assert {"\u8907\u88fd", "\u5168\u9078\u756b\u9762", "\u8907\u88fd\u6574\u500b\u756b\u9762"} <= set(actions)
-    assert not actions["\u8907\u88fd"].isEnabled()
+    hint = "\u8907\u88fd\uff08\u5148\u7528\u5de6\u9375\u62d6\u66f3\u9078\u53d6\u6587\u5b57\uff09"   # disabled copy says how to select
+    assert {hint, "\u5168\u9078\u756b\u9762", "\u8907\u88fd\u6574\u500b\u756b\u9762"} <= set(actions)
+    assert not actions[hint].isEnabled()
     actions["\u5168\u9078\u756b\u9762"].trigger()
     assert term.has_selection()
     menu2 = term._build_context_menu()
