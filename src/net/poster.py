@@ -15,6 +15,7 @@ import re
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from ..compose import INVISIBLE
 from ..logging_setup import get_logger
 from ..terminal.detect import Kind, editor_is_empty, reply_editor_ready, title_prompt_is_empty
 from .client import State
@@ -29,7 +30,7 @@ MONEY_CHUNK_BYTES = 2          # one cp950 character (or one ASCII byte)
 MONEY_CHAR_MS = 500            # PTT: at most 1 P per 2 seconds = 4 chars per 2 s
 # zero-width (non-)joiners, variation selectors and skin-tone modifiers: invisible glue inside one
 # emoji; dropped so a single emoji becomes one '?' instead of "???"
-EMOJI_GLUE = re.compile(r"[\u200c\u200d\ufe00-\ufe0f\U0001f3fb-\U0001f3ff]")
+EMOJI_GLUE = INVISIBLE        # same rule as the preview (compose.INVISIBLE), so widths agree
 
 
 class Target(enum.Enum):

@@ -430,3 +430,15 @@ def test_event_trail_is_trimmed(tmp_path, monkeypatch):
         assert count <= 150 and db.events(1)[0]["detail"] == "249"
     finally:
         db.close()
+
+
+def test_preview_and_send_share_one_invisible_rule():
+    """A skin-toned emoji is one character in the preview and one '?' when sent."""
+    from src import compose
+    from src.net.poster import EMOJI_GLUE, encode_big5
+    thumbs = chr(0x1F44D) + chr(0x1F3FD)
+    text, _notes = compose.normalize("x" + thumbs + "y")
+    assert text == "x" + chr(0x1F44D) + "y"
+    data, bad = encode_big5("x" + thumbs + "y")
+    assert data == b"x?y" and len(bad) == 1
+    assert EMOJI_GLUE is compose.INVISIBLE

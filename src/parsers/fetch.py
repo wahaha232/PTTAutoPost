@@ -14,6 +14,7 @@ import requests
 from urllib3.connection import HTTPConnection as _Urllib3HTTPConnection
 from urllib3.connection import HTTPSConnection as _Urllib3HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
 from urllib3.poolmanager import PoolManager
 
 from ..errors import FetchError, InputError
@@ -43,28 +44,35 @@ _lock = threading.Lock()                # FetchTask runs on pool threads: guard 
 # fetch Session gets its own urllib3 transport whose connection class dials the
 # validated IP while keeping the original host name for the Host header and TLS SNI.
 class _PinnedConnectionMixin:
-    _pinned_ip: str | None = None
+    _pinned_ip: tuple[str, ...] = ()
 
     def _new_conn(self):
         if not self._pinned_ip or getattr(self, "proxy", None):
             return super()._new_conn()
         original = self._dns_host
-        self._dns_host = self._pinned_ip             # connect to the validated address
-        try:
-            return super()._new_conn()               # Host header / SNI still use self.host
-        finally:
-            self._dns_host = original
+        last: Exception | None = None
+        # Try every validated address in the system's order (e.g. IPv6 first, then IPv4), as an
+        # unpinned connection would; only addresses that passed _resolve_public are ever dialled.
+        for ip in self._pinned_ip:
+            self._dns_host = ip                      # connect to the validated address
+            try:
+                return super()._new_conn()           # Host header / SNI still use self.host
+            except (NewConnectionError, ConnectTimeoutError) as e:
+                last = e
+            finally:
+                self._dns_host = original
+        raise last  # type: ignore[misc]
 
 
 class _PinnedHTTPConnection(_PinnedConnectionMixin, _Urllib3HTTPConnection):
-    def __init__(self, *args, pinned_ip: str | None = None, **kwargs):
-        self._pinned_ip = pinned_ip
+    def __init__(self, *args, pinned_ip: tuple[str, ...] = (), **kwargs):
+        self._pinned_ip = tuple(pinned_ip or ())
         super().__init__(*args, **kwargs)
 
 
 class _PinnedHTTPSConnection(_PinnedConnectionMixin, _Urllib3HTTPSConnection):
-    def __init__(self, *args, pinned_ip: str | None = None, **kwargs):
-        self._pinned_ip = pinned_ip
+    def __init__(self, *args, pinned_ip: tuple[str, ...] = (), **kwargs):
+        self._pinned_ip = tuple(pinned_ip or ())
         super().__init__(*args, **kwargs)
 
 
@@ -78,7 +86,7 @@ class _PinnedHTTPSPool(HTTPSConnectionPool):
 
 class _PinnedPoolManager(PoolManager):
     def __init__(self, *args, **kwargs):
-        self.pinned: dict[str, str] = {}
+        self.pinned: dict[str, tuple[str, ...]] = {}
         super().__init__(*args, **kwargs)
         # PoolManager assigns this instance attribute in __init__, so set it after.
         self.pool_classes_by_scheme = {"http": _PinnedHTTPPool, "https": _PinnedHTTPSPool}
@@ -97,10 +105,10 @@ class _PinnedAdapter(requests.adapters.HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
         self.poolmanager = _PinnedPoolManager(*args, **kwargs)
 
-    def pin(self, host: str, ip: str) -> None:
+    def pin(self, host: str, ips: str | tuple[str, ...] | list[str]) -> None:
         if not isinstance(self.poolmanager, _PinnedPoolManager):
             return
-        self.poolmanager.pinned[host.lower()] = ip
+        self.poolmanager.pinned[host.lower()] = (ips,) if isinstance(ips, str) else tuple(ips)
         self.poolmanager.clear()                     # never reuse a connection created before this pin
 
 
@@ -117,12 +125,11 @@ def _pin_session(sess: requests.Session, url: str) -> None:
     if pinned is None:
         return
     host, addresses = pinned
-    # Keep the system's RFC 6724 address order (IPv4 or IPv6) instead of forcing IPv4;
-    # this keeps IPv6-only/dual-stack environments working while still dialling a validated address.
-    ip = addresses[0][1]
+    # Keep the system's RFC 6724 address order (IPv4 or IPv6) and pin every validated address,
+    # so a dual-stack name still works when its first (often IPv6) address has no route.
     adapter = sess.get_adapter(url)
     if isinstance(adapter, _PinnedAdapter):
-        adapter.pin(host, ip)
+        adapter.pin(host, tuple(ip for _family, ip in addresses))
 
 
 @dataclass

@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from ..compose import INVISIBLE
 from ..logging_setup import get_logger
 from .client import State
 from .poster import CHUNK_BYTES, IDLE_MS, MAX_WAIT_MS, build_chunks
@@ -32,7 +33,7 @@ def sanitize_paste(text: str) -> tuple[str, int]:
             out.append("\n")
         elif ch == "\t":
             out.append("    ")
-        elif unicodedata.category(ch) == "Cc":
+        elif unicodedata.category(ch) == "Cc" or INVISIBLE.match(ch):   # zero-width / emoji glue would become '?'
             removed += 1
         else:
             out.append(ch)

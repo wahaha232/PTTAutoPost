@@ -331,3 +331,10 @@ def test_paste_state_signal_reports_start_and_finish(qapp, monkeypatch):
     assert wait_until(lambda: not term._paster.running)
     assert states == [True, False]
     assert not term.pasting
+
+
+def test_sanitize_paste_drops_zero_width_and_emoji_glue():
+    from src.net.paster import sanitize_paste
+    text = "a" + chr(0x200B) + "b" + chr(0x1F44D) + chr(0x1F3FD) + "c" + chr(0xFEFF)
+    out, removed = sanitize_paste(text)
+    assert out == "ab" + chr(0x1F44D) + "c" and removed == 3

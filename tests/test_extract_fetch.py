@@ -420,7 +420,27 @@ def test_pin_uses_the_system_address_order_for_ipv6(monkeypatch):
     monkeypatch.setattr(F, "_resolve_public", lambda url: (
         "v6.example", [(socket.AF_INET6, "2001:db8::1"), (socket.AF_INET, "203.0.113.9")]))
     F._pin_session(Sess(), "https://v6.example/a")
-    assert adapter.pinned == ("v6.example", "2001:db8::1")
+    assert adapter.pinned == ("v6.example", ("2001:db8::1", "203.0.113.9"))   # system order, all validated
+
+
+def test_pinned_adapter_falls_back_to_the_next_validated_address(server):
+    """Dual stack without an IPv6 route: the first pinned address refuses, the next one is used."""
+    import requests
+    from src.parsers.fetch import _PinnedAdapter
+    port = int(server.rsplit(":", 1)[1])
+    sess = requests.Session()
+    sess.trust_env = False
+    adapter = _PinnedAdapter()
+    sess.mount("http://", adapter)
+    try:
+        adapter.pin("dual.invalid", ("::1", "127.0.0.1"))  # test server listens on IPv4 only
+        r = sess.get(f"http://dual.invalid:{port}/ok", timeout=5)
+        assert r.status_code == 200
+        adapter.pin("dual.invalid", ("::1",))             # no address works: the error still surfaces
+        with pytest.raises(requests.ConnectionError):
+            sess.get(f"http://dual.invalid:{port}/ok", timeout=5)
+    finally:
+        sess.close()
 
 
 def test_dns_failure_fails_closed_without_an_unpinned_request(monkeypatch):
