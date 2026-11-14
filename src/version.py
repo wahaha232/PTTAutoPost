@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.30"
-BUILD_DATE = "2026/11/12"
+__version__ = "0.8.31"
+BUILD_DATE = "2026/11/14"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,23 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.31", "2026/11/14", [
+        "PTT screen images under the terminal now have check boxes (all ticked) and a select-all box; the new "
+        "ZIP button asks where to save and downloads only the ticked images.",
+        "The image viewer has a 下載圖片 button and a right-click 另存圖片 that save the original file, plus "
+        "copy image URL.",
+        "Right-click copy in the terminal works again: a selection is kept while PTT redraws other parts of the "
+        "screen (clock / status line). Right-clicking a link offers 複製連結.",
+        "Mouse browsing options modelled on PTT Star: wheel (arrows or PageUp/PageDown), right button + wheel "
+        "(Home/End or PageUp/PageDown), side buttons (leave / enter) and middle button (Enter). Defaults keep the "
+        "old behaviour; only navigation keys are sent.",
+        "Web fetches, image downloads and uploads try every validated address in order, so a dual-stack site "
+        "still works when its IPv6 address has no route.",
+        "Preview, typing and paste share one invisible-character rule (emoji skin-tone modifiers, zero-width "
+        "characters), so preview widths match what is sent and paste no longer sends them as '?'.",
+        "After an update starts cleanly, old update backups and leftovers are deleted; only the current "
+        "version's backup is kept.",
+    ]),
     ("0.8.30", "2026/11/12", [
         "Assisted login now works on Bahamut BBS (telnet://bbs.gamer.com.tw:23): the login and password "
         "prompts are recognised even with a word between 請輸入 and 代號/密碼 (Bahamut shows 請輸入勇者代號：), "
