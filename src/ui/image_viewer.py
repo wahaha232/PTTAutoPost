@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QObject, QPoint, QRunnable, QSize, QStandardPaths, Qt,
                             QThreadPool, Signal)
-from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QPixmap
+from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QMovie, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
@@ -324,6 +324,18 @@ def save_image_data(parent, data: ImageData) -> Path | None:
     return path
 
 
+MAX_ANIMATION_PIXELS = 400_000_000          # frames x width x height; larger animations stay a still image
+
+
+def animation_format(data: bytes) -> bytes | None:
+    """b"gif" / b"webp" when the bytes are an animation QMovie can play, else None (cheap header check)."""
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return b"gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and b"ANIM" in data[12:64]:
+        return b"webp"
+    return None
+
+
 class ImageViewer(QDialog):
     """Modeless, non-activating preview window owned by the main window."""
 
@@ -340,6 +352,9 @@ class ImageViewer(QDialog):
         self._strict = True
         self._referer: str | None = None
         self._data: ImageData | None = None            # original bytes of the image on screen (for saving)
+        self._movie: QMovie | None = None              # animated GIF / WebP being played
+        self._movie_buf: QBuffer | None = None
+        self._movie_bytes: QByteArray | None = None
 
         self.image_label = QLabel("載入中…")
         self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -420,6 +435,7 @@ class ImageViewer(QDialog):
         url = self.current_url()
         self._pixmap = None
         self._data = None
+        self._stop_movie()
         self.save_button.setEnabled(False)
         self.image_label.setPixmap(QPixmap())
         self.image_label.setText("載入中…")
@@ -441,10 +457,12 @@ class ImageViewer(QDialog):
             self.info.setText(f"{loaded.error}\n{data.url}")
             return
         pixmap = QPixmap.fromImage(loaded.image)
+        self._stop_movie()                                 # never leave a previous animation running
         self._pixmap = pixmap
         self._data = data
         self.save_button.setEnabled(True)
-        self._update_pixmap()
+        if not self._start_movie(data.data, pixmap.width(), pixmap.height()):
+            self._update_pixmap()
         self.info.setText(f"{pixmap.width()} x {pixmap.height()} · {len(data.data) / 1024:.0f} KB · "
                           f"{data.content_type}\n{data.url}")
 
@@ -478,7 +496,68 @@ class ImageViewer(QDialog):
         self.info.setText(f"{message}\n{self.current_url()}" + (f"\n{detail}" if detail else ""))
 
     # ------------------------------------------------------------------ geometry
+    # ------------------------------------------------------------------ animation
+    def _start_movie(self, raw: bytes, width: int, height: int) -> bool:
+        """Play an animated GIF/WebP in the label; False keeps the still first frame."""
+        fmt = animation_format(raw)
+        if fmt is None:
+            return False
+        buf_bytes = QByteArray(raw)
+        buf = QBuffer()
+        buf.setData(buf_bytes)
+        if not buf.open(QIODevice.OpenModeFlag.ReadOnly):
+            return False
+        movie = QMovie(buf, QByteArray(fmt), self)
+        frames = movie.frameCount()
+        if not movie.isValid() or frames == 1 or (frames > 1 and frames * width * height > MAX_ANIMATION_PIXELS):
+            movie.deleteLater()
+            buf.close()
+            return False
+        movie.setCacheMode(QMovie.CacheMode.CacheNone)   # decode frame by frame, never hold every frame
+        self._movie, self._movie_buf, self._movie_bytes = movie, buf, buf_bytes
+        self._fit_movie()
+        self.image_label.setMovie(movie)
+        movie.start()
+        return True
+
+    def _fit_movie(self) -> None:
+        if self._movie is None or self._pixmap is None:
+            return
+        area = self.image_label.size()
+        size = self._pixmap.size()
+        if area.width() >= 2 and area.height() >= 2 and (size.width() > area.width() or size.height() > area.height()):
+            size = size.scaled(area, Qt.AspectRatioMode.KeepAspectRatio)
+        self._movie.setScaledSize(size)
+
+    def toggle_movie(self) -> None:
+        if self._movie is not None:
+            self._movie.setPaused(self._movie.state() == QMovie.MovieState.Running)
+
+    def is_animating(self) -> bool:
+        return self._movie is not None and self._movie.state() == QMovie.MovieState.Running
+
+    def _stop_movie(self) -> None:
+        movie, buf = self._movie, self._movie_buf
+        self._movie = self._movie_buf = self._movie_bytes = None
+        if movie is not None:
+            movie.stop()
+            self.image_label.setMovie(None)
+            movie.deleteLater()
+        if buf is not None:
+            buf.close()
+
+    def mousePressEvent(self, e):
+        if self._movie is not None and e.button() == Qt.MouseButton.LeftButton \
+                and self.image_label.geometry().contains(e.position().toPoint()):
+            self.toggle_movie()                         # click the animation to pause / resume
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
     def _update_pixmap(self) -> None:
+        if self._movie is not None:
+            self._fit_movie()
+            return
         if self._pixmap is None:
             return
         area = self.image_label.size()
@@ -512,6 +591,7 @@ class ImageViewer(QDialog):
 
     def closeEvent(self, e):
         self._cancel_task()
+        self._stop_movie()
         self._pixmap = None
         self.image_label.clear()
         super().closeEvent(e)

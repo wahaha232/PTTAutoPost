@@ -2097,3 +2097,44 @@ def test_right_click_selection_survives_unrelated_redraws_and_menu_copies_links(
     assert not term.has_selection()
     names = [a.text() for a in term._build_context_menu().actions() if a.text()]
     assert names[0] == "複製（先用左鍵拖曳選取文字）"
+
+
+def test_image_viewer_plays_animated_gif_and_keeps_still_images_static(qapp):
+    import io
+    from PIL import Image
+    from PySide6.QtGui import QImage
+    from src.net.image import ImageData
+    from src.ui.image_viewer import ImageFetchTask, ImageViewer, LoadedImage, animation_format
+
+    def gif(frames):
+        out = io.BytesIO()
+        imgs = [Image.new("RGB", (8, 6), c) for c in ((255, 0, 0), (0, 255, 0), (0, 0, 255))[:frames]]
+        imgs[0].save(out, "GIF", save_all=frames > 1, append_images=imgs[1:], duration=40, loop=0)
+        return out.getvalue()
+
+    def show(viewer, raw, url):
+        viewer._urls, viewer._index = [url], 0
+        task = ImageFetchTask(url)
+        viewer._task = task
+        img = QImage()
+        img.loadFromData(raw)
+        viewer._on_done(task, LoadedImage(ImageData(url, "image/gif", raw), img, ""))
+
+    animated, still = gif(3), gif(1)
+    assert animation_format(animated) == b"gif" and animation_format(b"\x89PNG....") is None
+    viewer = ImageViewer()
+    viewer.resize(400, 300)
+    show(viewer, animated, "https://i.imgur.com/a.gif")
+    assert viewer.is_animating() and viewer.image_label.movie() is viewer._movie
+    seen = set()
+    wait_until(lambda: seen.add(viewer._movie.currentFrameNumber()) or len(seen) >= 2, timeout_ms=3000)
+    assert len(seen) >= 2                                  # frames really advance
+    viewer.toggle_movie()
+    assert not viewer.is_animating()                       # paused
+    viewer.toggle_movie()
+    assert viewer.is_animating()
+    show(viewer, still, "https://i.imgur.com/b.gif")       # loading another image stops the old animation
+    assert viewer._movie is None and viewer.image_label.movie() is None and viewer._pixmap is not None
+    assert viewer.save_button.isEnabled()                  # the GIF is still saved as the original bytes
+    viewer.close()
+    assert viewer._movie is None
