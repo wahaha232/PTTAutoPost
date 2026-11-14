@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.31"
+__version__ = "0.8.32"
 BUILD_DATE = "2026/11/14"
 APP_NAME = "PTT AutoPost"
 
@@ -14,6 +14,11 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.32", "2026/11/14", [
+        "The image viewer now plays animated GIF and WebP images (looping, scaled to the window); click the "
+        "image to pause or resume. Single-frame images and very large animations stay a still image, and "
+        "saving keeps the original file. Thumbnails and hover previews stay static.",
+    ]),
     ("0.8.31", "2026/11/14", [
         "PTT screen images under the terminal now have check boxes (all ticked) and a select-all box; the new "
         "ZIP button asks where to save and downloads only the ticked images.",
