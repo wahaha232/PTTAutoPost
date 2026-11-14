@@ -36,7 +36,7 @@ from ..parsers.fetch import fetch
 from ..paths import resource_path
 from ..storage.db import MAX_SIGNATURES, Database
 from ..version import APP_NAME, BUILD_DATE, SPONSOR_MESSAGE, SPONSOR_TEXT, SPONSOR_URL, __version__
-from . import browser, theme
+from . import browser, mouse_map, theme
 from .disguise import DISGUISE_TITLE, NotepadView
 from .icon import app_icon, tray_icon
 from .image_viewer import ImageHoverPreview, ImageViewer, InlineImageStrip
@@ -560,6 +560,8 @@ class MainWindow(QMainWindow):
         self.term = TerminalWidget(self.session, family=fam, px=px, fill=fill)
         saved_cursor = self.db.get_setting("ui.cursor_style", "outline")
         self.term.cursor_style = saved_cursor if saved_cursor in dict(CURSOR_STYLES) else "outline"
+        for key in mouse_map.SETTINGS:
+            self.term.mouse[key] = mouse_map.valid(key, self.db.get_setting(key, ""))
         self.term.set_stretch(self.db.get_setting("terminal.stretch", "0") == "1")
         self.term.notice.connect(self._notice)
         self.term_holder = QGridLayout()
@@ -1102,6 +1104,11 @@ class MainWindow(QMainWindow):
         start = urls.index(url) if url in urls else 0
         self._image_viewer.show_images(urls, strict=False, referer=None, start=start)
 
+    def _mouse_option_changed(self, key: str, value: str) -> None:
+        value = mouse_map.valid(key, value or "")
+        self.term.mouse[key] = value
+        self.db.set_setting(key, value)
+
     def _close_image_viewer(self) -> None:
         self._hide_hover_preview()
         if self._image_viewer is not None:
@@ -1296,6 +1303,24 @@ class MainWindow(QMainWindow):
         form.addRow(cursor_note)
         form.addRow("", self.btn_font_default)
         lay.addWidget(g)
+
+        mg = QGroupBox("滑鼠瀏覽（參考 PTT Star）")
+        mform = QFormLayout(mg)
+        self.mouse_combos: dict[str, QComboBox] = {}
+        for key, label in (("mouse.wheel", "滾輪"), ("mouse.right_wheel", "按住右鍵＋滾輪"),
+                           ("mouse.side", "滑鼠側鍵"), ("mouse.middle", "滑鼠中鍵")):
+            combo = QComboBox()
+            for value, text in mouse_map.SETTINGS[key][1]:
+                combo.addItem(text, value)
+            combo.setCurrentIndex(max(0, combo.findData(self.term.mouse[key])))
+            combo.currentIndexChanged.connect(lambda _i, k=key, c=combo: self._mouse_option_changed(k, c.currentData()))
+            self.mouse_combos[key] = combo
+            mform.addRow(label, combo)
+        mouse_note = QLabel("只會送出一般的方向鍵、PageUp／PageDown、Home／End 或 Enter，不會代按存檔或送出；"
+                            "自動輸入、登入輔助與貼上進行中會暫停。左鍵仍是選取文字與點連結，單按右鍵仍是複製／貼上選單。")
+        mouse_note.setWordWrap(True)
+        mform.addRow(mouse_note)
+        lay.addWidget(mg)
 
         pg = QGroupBox("連線代理（跳板／VPN）")
         pf = QFormLayout(pg)

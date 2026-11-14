@@ -15,6 +15,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QGuiApplication, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSizePolicy, QWidget
 
+from . import mouse_map
 from ..links import Link, find_links
 from ..net.client import State
 from ..net.paster import MAX_PASTE_CHARS, PREVIEW_CHARS, PasteSender, paste_preview, paste_stats, sanitize_paste
@@ -128,6 +129,8 @@ class TerminalWidget(QWidget):
         self.cursor_style = "outline"                   # outline / block / underline / bar
         self.notepad = False                            # disguise mode: plain black text on white, no ANSI colours
         self.links_enabled = True                       # disguise mode turns links off (they stay visible as text)
+        self.mouse = {k: d for k, (d, _c) in mouse_map.SETTINGS.items()}   # mouse browsing (see mouse_map)
+        self._right_wheel_used = False                  # right+wheel was used: swallow the context menu once
         self.stretch = False                            # True: distort glyphs so the grid fills the area completely
         self._adv: dict[str, float] = {}
         self._links: list[Link] = []
@@ -414,6 +417,10 @@ class TerminalWidget(QWidget):
         return menu
 
     def contextMenuEvent(self, e):
+        if self._right_wheel_used:                         # right button was a wheel modifier, not a menu click
+            self._right_wheel_used = False
+            e.accept()
+            return
         menu = self._build_context_menu()
         menu.exec(e.globalPos())
 
@@ -446,7 +453,32 @@ class TerminalWidget(QWidget):
                     self.update()
         super().mouseMoveEvent(e)
 
+    def _send_nav(self, data: bytes, what: str) -> bool:
+        """Mouse browsing: send navigation key bytes unless typing/login/paste owns the connection."""
+        if not data:
+            return False
+        if self.locked or self.pasting:
+            self.notice.emit(f"自動輸入、登入或貼上進行中，{what}已暫停。")
+            return True
+        if self.s.send_user_bytes(data) is False:
+            self.notice.emit(f"尚未連線，{what}未送出。")
+        else:
+            self.clear_selection()
+        return True
+
     def mousePressEvent(self, e):
+        btn = e.button()
+        if btn == Qt.MouseButton.RightButton:
+            self._right_wheel_used = False
+        elif btn in (Qt.MouseButton.BackButton, Qt.MouseButton.ForwardButton):
+            data = mouse_map.side_bytes(self.mouse["mouse.side"], btn == Qt.MouseButton.ForwardButton)
+            if self._send_nav(data, "滑鼠側鍵"):
+                e.accept()
+                return
+        elif btn == Qt.MouseButton.MiddleButton:
+            if self._send_nav(mouse_map.middle_bytes(self.mouse["mouse.middle"]), "滑鼠中鍵"):
+                e.accept()
+                return
         if e.button() == Qt.MouseButton.LeftButton:
             pos = e.position()
             self._press_link = self.link_at(pos)
@@ -622,14 +654,16 @@ class TerminalWidget(QWidget):
         if self.locked or self.pasting:
             e.accept()
             return
+        mode = self.mouse["mouse.wheel"]
+        if e.buttons() & Qt.MouseButton.RightButton and self.mouse["mouse.right_wheel"] != "none":
+            mode = self.mouse["mouse.right_wheel"]
+            self._right_wheel_used = True                  # releasing the right button must not open the menu
+        notch = 60 if mode == "arrows" else 120            # page / jump: one per full wheel notch
         self._wheel = getattr(self, "_wheel", 0) + e.angleDelta().y()
-        steps = int(self._wheel / 60)
+        steps = int(self._wheel / notch)
         if steps:
-            self._wheel -= steps * 60
-            if self.s.send_user_bytes((b"\x1b[A" if steps > 0 else b"\x1b[B") * min(abs(steps), 5)) is False:
-                self.notice.emit("尚未連線，捲動未送出。")
-            else:
-                self.clear_selection()
+            self._wheel -= steps * notch
+            self._send_nav(mouse_map.wheel_bytes(mode, steps), "捲動")
         e.accept()
 
     def inputMethodEvent(self, e):

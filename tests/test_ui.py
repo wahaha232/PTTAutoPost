@@ -1944,3 +1944,51 @@ def test_taskbar_restore_maximizes_the_window(win):
     win.showNormal()
     pump(100)
     assert win.isMaximized()
+
+
+def test_mouse_browsing_options_send_only_navigation_keys(win, bbs_factory):
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QContextMenuEvent, QMouseEvent, QWheelEvent
+    from src.ui import mouse_map
+
+    def wheel(dy, buttons=Qt.MouseButton.NoButton):
+        win.term.wheelEvent(QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, dy), buttons,
+                                        Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
+
+    def press(button):
+        win.term.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, QPointF(5, 5), QPointF(5, 5),
+                                             button, button, Qt.KeyboardModifier.NoModifier))
+
+    assert {k: win.term.mouse[k] for k in mouse_map.SETTINGS} == {k: d for k, (d, _c) in mouse_map.SETTINGS.items()}
+    bbs = bbs_factory()
+    connect_and_login(win, bbs)
+    press(Qt.MouseButton.BackButton)                      # defaults: side / middle buttons send nothing
+    press(Qt.MouseButton.MiddleButton)
+    pump(100)
+    assert bytes(bbs.after_login) == b""
+
+    win.mouse_combos["mouse.wheel"].setCurrentIndex(win.mouse_combos["mouse.wheel"].findData("page"))
+    win.mouse_combos["mouse.right_wheel"].setCurrentIndex(win.mouse_combos["mouse.right_wheel"].findData("home_end"))
+    win.mouse_combos["mouse.side"].setCurrentIndex(win.mouse_combos["mouse.side"].findData("leave_enter"))
+    win.mouse_combos["mouse.middle"].setCurrentIndex(win.mouse_combos["mouse.middle"].findData("enter"))
+    assert win.db.get_setting("mouse.wheel") == "page" and win.db.get_setting("mouse.side") == "leave_enter"
+    wheel(-120)                                           # one notch down = one PageDown
+    wheel(60)                                             # half a notch: nothing yet
+    wheel(-60)
+    wheel(120, Qt.MouseButton.RightButton)                # right + wheel up = Home
+    press(Qt.MouseButton.BackButton)
+    press(Qt.MouseButton.ForwardButton)
+    press(Qt.MouseButton.MiddleButton)
+    want = b"\x1b[6~" + b"\x1b[1~" + b"\x1b[D" + b"\x1b[C" + b"\r"
+    assert wait_until(lambda: bytes(bbs.after_login) == want)
+    assert win.term._right_wheel_used                     # releasing the right button must not pop the menu
+    win.term.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5)))
+    assert not win.term._right_wheel_used
+
+    win.term.locked = True                                # typing / login owns the keyboard: nothing is sent
+    wheel(-120)
+    press(Qt.MouseButton.ForwardButton)
+    pump(100)
+    assert bytes(bbs.after_login) == want
+    win.term.locked = False
+    assert mouse_map.valid("mouse.wheel", "bogus") == "arrows"
