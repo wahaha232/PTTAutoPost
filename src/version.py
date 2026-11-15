@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.33"
+__version__ = "0.8.34"
 BUILD_DATE = "2026/11/15"
 APP_NAME = "PTT AutoPost"
 
@@ -14,6 +14,12 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.34", "2026/11/15", [
+        "Click an item in a PTT article list or board list to open it: the program moves PTT's cursor to that "
+        "row with the arrow keys and presses →. Dragging still selects text and links still open; nothing "
+        "happens while reading an article, in disguise mode or while typing / pasting. Turn it off in "
+        "Settings > 滑鼠瀏覽 > 左鍵點列表.",
+    ]),
     ("0.8.33", "2026/11/15", [
         "While reading a PTT article the mouse wheel stays inside it: it scrolls with j/k (which never leave "
         "the article) and stops at the first line and at 100%, instead of jumping to the previous / next post.",
