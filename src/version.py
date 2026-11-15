@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.32"
-BUILD_DATE = "2026/11/14"
+__version__ = "0.8.33"
+BUILD_DATE = "2026/11/15"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,14 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.33", "2026/11/15", [
+        "While reading a PTT article the mouse wheel stays inside it: it scrolls with j/k (which never leave "
+        "the article) and stops at the first line and at 100%, instead of jumping to the previous / next post.",
+        "Hover the left edge of the terminal while reading to show a back arrow; click it to return to the "
+        "article list.",
+        "Consecutive pushes by the same id are shown as one block (the repeated id is hidden); copied text is "
+        "unchanged. Turn it off in Settings > 終端機顯示 > 推文合併相同 ID.",
+    ]),
     ("0.8.32", "2026/11/14", [
         "The image viewer now plays animated GIF and WebP images (looping, scaled to the window); click the "
         "image to pause or resume. Single-frame images and very large animations stay a still image, and "
