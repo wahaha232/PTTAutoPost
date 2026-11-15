@@ -1332,7 +1332,8 @@ class MainWindow(QMainWindow):
         mform = QFormLayout(mg)
         self.mouse_combos: dict[str, QComboBox] = {}
         for key, label in (("mouse.wheel", "滾輪"), ("mouse.right_wheel", "按住右鍵＋滾輪"),
-                           ("mouse.side", "滑鼠側鍵"), ("mouse.middle", "滑鼠中鍵")):
+                           ("mouse.side", "滑鼠側鍵"), ("mouse.middle", "滑鼠中鍵"),
+                           ("mouse.left_click", "左鍵點列表")):
             combo = QComboBox()
             for value, text in mouse_map.SETTINGS[key][1]:
                 combo.addItem(text, value)

@@ -75,3 +75,34 @@ def merged_push_rows(s: Screen) -> dict[int, int]:
             out[y] = cols[end] if end < len(cols) else (cols[-1] + 1)
         prev_id = uid
     return out
+
+
+# A list item row (article list or board list): optional cursor mark, then a number or "★" (pinned post).
+_LIST_ROW = re.compile(r"^(?:>|●)?\s*(?:\d+|★)\s")
+_CURSOR_MARKS = (">", "●")
+MAX_LIST_JUMP = 30
+
+
+def _is_list_row(s: Screen, y: int) -> bool:
+    return bool(_LIST_ROW.match(s.row_text(y)))
+
+
+def list_click_keys(s: Screen, row: int) -> bytes | None:
+    """Keys that open the list item on `row` (article or board list), or None when it is not one.
+
+    pttbbs draws the selection mark (">" or legacy "●") at column 0 of the selected row and leaves the
+    terminal cursor there (mbbsd/stuff.c cursor_show); → opens the selected item.  Every row between
+    the selected row and the clicked row must also be a list row, so a click never walks out of the list.
+    """
+    if reading_state(s) is not None or not (0 <= row < s.rows - 1):
+        return None
+    cur = s.cur.y
+    if not (0 <= cur < s.rows - 1) or s.grid[cur][0][0] not in _CURSOR_MARKS or s.cur.x > 1:
+        return None
+    if not _is_list_row(s, row) or not _is_list_row(s, cur):
+        return None
+    lo, hi = sorted((cur, row))
+    if hi - lo > MAX_LIST_JUMP or not all(_is_list_row(s, y) for y in range(lo, hi + 1)):
+        return None
+    move = (b"\x1b[B" if row > cur else b"\x1b[A") * abs(row - cur)
+    return move + b"\x1b[C"

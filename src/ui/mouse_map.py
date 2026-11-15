@@ -16,7 +16,10 @@ RIGHT_WHEEL = ("none", (("none", "不使用"), ("home_end", "Home／End（跳到
 SIDE = ("none", (("none", "不使用"), ("leave_enter", "上一頁鍵＝← 離開、下一頁鍵＝→ 進入")))
 MIDDLE = ("none", (("none", "不使用"), ("enter", "Enter（進入／確認選取的項目）")))
 
-SETTINGS = {"mouse.wheel": WHEEL, "mouse.right_wheel": RIGHT_WHEEL, "mouse.side": SIDE, "mouse.middle": MIDDLE}
+LEFT_CLICK = ("open", (("open", "點一下文章／看板列表的項目就進入"), ("none", "不使用（左鍵只用來選取文字）")))
+
+SETTINGS = {"mouse.wheel": WHEEL, "mouse.right_wheel": RIGHT_WHEEL, "mouse.side": SIDE, "mouse.middle": MIDDLE,
+            "mouse.left_click": LEFT_CLICK}
 
 
 def valid(key: str, value: str) -> str:

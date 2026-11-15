@@ -15,7 +15,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QGuiApplication, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSizePolicy, QWidget
 
-from ..terminal.reading import merged_push_rows, reading_state
+from ..terminal.reading import list_click_keys, merged_push_rows, reading_state
 from . import mouse_map
 from ..links import Link, find_links
 from ..net.client import State
@@ -135,6 +135,7 @@ class TerminalWidget(QWidget):
         self._sel_snapshot = ""                          # selected text when the selection was made
         self.push_merge = True                          # paint consecutive pushes by the same id as one block
         self._edge_hover = False                        # pointer on the left edge while reading: show "←"
+        self._row_hover = False                         # pointer over a clickable article / board list row
         self._edge_notice_at = 0.0
         self._sel_selecting = False
         self.stretch = False                            # True: distort glyphs so the grid fills the area completely
@@ -467,14 +468,18 @@ class TerminalWidget(QWidget):
             self._edge_hover = edge
             self.update()
         link = self.link_at(e.position())
-        if link != self._hover_link:
-            self._hover_link = link
-            self.linkHovered.emit(link.url if link else "")
-            if link is None:
+        row_hover = link is None and not (e.buttons() & Qt.MouseButton.LeftButton) \
+            and self._list_keys_at(e.position()) is not None
+        if link != self._hover_link or row_hover != self._row_hover:
+            if link != self._hover_link:
+                self._hover_link = link
+                self.linkHovered.emit(link.url if link else "")
+                self.update()
+            self._row_hover = row_hover
+            if link is None and not row_hover:
                 self.unsetCursor()
             else:
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.update()
         if e.buttons() & Qt.MouseButton.LeftButton:
             dx, dy = e.position().x() - self._press_pos.x(), e.position().y() - self._press_pos.y()
             if abs(dx) + abs(dy) > QApplication.startDragDistance():
@@ -582,9 +587,25 @@ class TerminalWidget(QWidget):
                 self.linkActivated.emit(link.url)
                 e.accept()
                 return
+            press_cell, cell = self._cell_at(self._press_pos), self._cell_at(pos)
+            keys = self._list_keys_at(pos)
+            if keys and press_cell is not None and cell is not None and press_cell[0] == cell[0]:
+                self._send_nav(keys, "點選列表")          # move the PTT cursor to the row, then → opens it
+                e.accept()
+                return
         super().mouseReleaseEvent(e)
 
+    def _list_keys_at(self, pos) -> bytes | None:
+        """Keys that open the article / board list item under the pointer (PTT Star style click)."""
+        if self.mouse.get("mouse.left_click") != "open" or self.notepad or self.locked or self.pasting:
+            return None
+        cell = self._cell_at(pos)
+        return list_click_keys(self.s.screen, cell[0]) if cell is not None else None
+
     def leaveEvent(self, e):
+        if self._row_hover:
+            self._row_hover = False
+            self.unsetCursor()
         if self._edge_hover:
             self._edge_hover = False
             self.update()

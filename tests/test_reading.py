@@ -118,3 +118,60 @@ def test_push_merge_paints_and_can_be_turned_off(qapp):
     term.push_merge = False
     term.render(img)
     assert "→ alice: two" in term.s.screen.row_text(1)      # screen text (copy) is never changed
+
+
+ARTICLE_LIST = [
+    "【板主:someone】                    八卦板 Gossiping",
+    "[←]離開 [→]閱讀 [Ctrl-P]發表文章",
+    "   編號    日 期 作  者       文  章  標  題",
+    "  12340 + 11/14 alice        □ [問卦] first",
+    "  12341 + 11/14 bob          □ [問卦] second",
+    ">12342 + 11/14 carol        □ [問卦] third",
+    "  12343 + 11/14 dave         □ [問卦] fourth",
+    "      ★   11/01 admin        □ [公告] pinned",
+]
+
+
+def list_screen(cursor_row=5, footer="文章選讀  (y)回應(X)推文(^X)轉錄"):
+    s = screen_with(ARTICLE_LIST, footer)
+    s.feed(f"\x1b[{cursor_row + 1};1H".encode())          # PTT leaves the terminal cursor on the ">" row
+    return s
+
+
+def test_list_click_keys_moves_the_cursor_then_opens():
+    from src.terminal.reading import list_click_keys
+    s = list_screen()
+    assert list_click_keys(s, 5) == b"\x1b[C"               # the selected row: just open it
+    assert list_click_keys(s, 3) == b"\x1b[A\x1b[A\x1b[C"   # two rows up
+    assert list_click_keys(s, 7) == b"\x1b[B\x1b[B\x1b[C"   # pinned "★" post below
+    assert list_click_keys(s, 2) is None                    # header row is not an item
+    assert list_click_keys(s, 0) is None
+    assert list_click_keys(s, s.rows - 1) is None           # footer
+    reading = screen_with(ARTICLE_LIST, FOOTER_MID)         # an open article is never a list
+    reading.feed(b"\x1b[6;1H")
+    assert list_click_keys(reading, 3) is None
+    no_cursor = screen_with([r.replace(">", " ") for r in ARTICLE_LIST], "x")
+    no_cursor.feed(b"\x1b[6;1H")
+    assert list_click_keys(no_cursor, 3) is None            # no PTT selection mark: do nothing
+
+
+def test_left_click_on_a_list_row_opens_it(qapp):
+    term, sent = make_term(ARTICLE_LIST, "文章選讀  (y)回應(X)推文(^X)轉錄")
+    term.s.screen.feed(b"\x1b[6;1H")
+    pos = QPointF(term.ox + term.cw * 20, term.oy + term.ch * 3.5)   # row 3 ("first")
+    term.mouseMoveEvent(QMouseEvent(QMouseEvent.Type.MouseMove, pos, pos, Qt.MouseButton.NoButton,
+                                    Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    assert term._row_hover
+    for kind in (QMouseEvent.Type.MouseButtonPress, QMouseEvent.Type.MouseButtonRelease):
+        ev = QMouseEvent(kind, pos, pos, Qt.MouseButton.LeftButton,
+                         Qt.MouseButton.LeftButton if kind == QMouseEvent.Type.MouseButtonPress else Qt.MouseButton.NoButton,
+                         Qt.KeyboardModifier.NoModifier)
+        (term.mousePressEvent if kind == QMouseEvent.Type.MouseButtonPress else term.mouseReleaseEvent)(ev)
+    assert sent == [b"\x1b[A\x1b[A\x1b[C"]
+    term.mouse["mouse.left_click"] = "none"                 # turned off: a click only selects text
+    for kind in (QMouseEvent.Type.MouseButtonPress, QMouseEvent.Type.MouseButtonRelease):
+        ev = QMouseEvent(kind, pos, pos, Qt.MouseButton.LeftButton,
+                         Qt.MouseButton.LeftButton if kind == QMouseEvent.Type.MouseButtonPress else Qt.MouseButton.NoButton,
+                         Qt.KeyboardModifier.NoModifier)
+        (term.mousePressEvent if kind == QMouseEvent.Type.MouseButtonPress else term.mouseReleaseEvent)(ev)
+    assert sent == [b"\x1b[A\x1b[A\x1b[C"]
