@@ -15,6 +15,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QGuiApplication, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSizePolicy, QWidget
 
+from ..terminal.reading import merged_push_rows, reading_state
 from . import mouse_map
 from ..links import Link, find_links
 from ..net.client import State
@@ -132,6 +133,9 @@ class TerminalWidget(QWidget):
         self.mouse = {k: d for k, (d, _c) in mouse_map.SETTINGS.items()}   # mouse browsing (see mouse_map)
         self._right_wheel_used = False                  # right+wheel was used: swallow the context menu once
         self._sel_snapshot = ""                          # selected text when the selection was made
+        self.push_merge = True                          # paint consecutive pushes by the same id as one block
+        self._edge_hover = False                        # pointer on the left edge while reading: show "←"
+        self._edge_notice_at = 0.0
         self._sel_selecting = False
         self.stretch = False                            # True: distort glyphs so the grid fills the area completely
         self._adv: dict[str, float] = {}
@@ -451,7 +455,17 @@ class TerminalWidget(QWidget):
                 spans.setdefault(row, []).append((start, end))
         return spans
 
+    def _in_back_edge(self, pos) -> bool:
+        """Pointer on the left edge (margin + first column) while an article is open."""
+        if self.notepad or self.locked or self.pasting or pos.x() > self.ox + self.cw * 1.5:
+            return False
+        return reading_state(self.s.screen) is not None
+
     def mouseMoveEvent(self, e):
+        edge = self._in_back_edge(e.position()) and not (e.buttons() & Qt.MouseButton.LeftButton)
+        if edge != self._edge_hover:
+            self._edge_hover = edge
+            self.update()
         link = self.link_at(e.position())
         if link != self._hover_link:
             self._hover_link = link
@@ -499,6 +513,12 @@ class TerminalWidget(QWidget):
             if self._send_nav(mouse_map.middle_bytes(self.mouse["mouse.middle"]), "滑鼠中鍵"):
                 e.accept()
                 return
+        if e.button() == Qt.MouseButton.LeftButton and self._edge_hover and self._in_back_edge(e.position()):
+            self._edge_hover = False
+            self._send_nav(b"\x1b[D", "返回文章列表")      # ← = leave the article (back to the list)
+            self.update()
+            e.accept()
+            return
         if e.button() == Qt.MouseButton.LeftButton:
             pos = e.position()
             self._press_link = self.link_at(pos)
@@ -565,6 +585,9 @@ class TerminalWidget(QWidget):
         super().mouseReleaseEvent(e)
 
     def leaveEvent(self, e):
+        if self._edge_hover:
+            self._edge_hover = False
+            self.update()
         if self._hover_link is not None:
             self._hover_link = None
             self.unsetCursor()
@@ -684,8 +707,28 @@ class TerminalWidget(QWidget):
         steps = int(self._wheel / notch)
         if steps:
             self._wheel -= steps * notch
-            self._send_nav(mouse_map.wheel_bytes(mode, steps), "捲動")
+            self._send_nav(self._article_safe_wheel(mode, steps), "捲動")
         e.accept()
+
+    def _article_safe_wheel(self, mode: str, steps: int) -> bytes:
+        """While reading an article, never let the wheel leave it.
+
+        pmore quits to the next article on KEY_DOWN at 100%; 'j' / 'k' scroll one line and never quit,
+        and nothing is sent past the first / last line (pttbbs mbbsd/pmore.c key table).
+        """
+        data = mouse_map.wheel_bytes(mode, steps)
+        rd = reading_state(self.s.screen)
+        if rd is None or not data or mode == "home_end":
+            return data
+        if (steps < 0 and rd.at_end) or (steps > 0 and rd.at_top):
+            now = time.monotonic()
+            if now - self._edge_notice_at > 2:
+                self._edge_notice_at = now
+                self.notice.emit("已到文章結尾（不會跳到下一篇）。" if steps < 0 else "已在文章開頭（不會跳到上一篇）。")
+            return b""
+        if mode == "arrows":
+            return (b"k" if steps > 0 else b"j") * min(abs(steps), 5)
+        return data
 
     def inputMethodEvent(self, e):
         if self.pasting:                                   # IME commits must not interleave with paste chunks
@@ -747,6 +790,7 @@ class TerminalWidget(QWidget):
         sx = self.sx
         center = int(Qt.AlignmentFlag.AlignCenter)
         selection = self._selection_spans()
+        merged = merged_push_rows(scr) if self.push_merge and not notepad else {}
         for y, row in enumerate(scr.grid):
             top = y * ch
             spans = selection.get(y)
@@ -788,6 +832,14 @@ class TerminalWidget(QWidget):
                     p.restore()
                     if fl & UNDERLINE:
                         p.drawLine(int(left), int(top + ch - 2), int(left + w), int(top + ch - 2))
+        if merged:
+            dim = QColor(*self.colors.normal[7])
+            dim.setAlpha(110)
+            for y, cells in merged.items():               # same id as the row above: hide the repeated "推 id:"
+                top = y * ch
+                p.fillRect(QRectF(0, top, cells * cw + 0.6, ch + 0.6), QColor(*base_bg))
+                p.setPen(dim)
+                p.drawText(QRectF(cw * 2, top, cw * 2, ch), center, "\u2514")   # └ continuation mark
         link_color = (0, 0, 0) if notepad else self.colors.cursor
         if self._links and self.links_enabled:
             p.setPen(QPen(QColor(*link_color), max(1.0, ch / 18)))
@@ -820,4 +872,13 @@ class TerminalWidget(QWidget):
         else:
             p.setPen(QPen(cursor, 1))
             p.drawRect(rect)
+        if self._edge_hover:
+            p.resetTransform()
+            box = QRectF(2, self.height() / 2 - 28, max(26.0, self.cw * 2.2), 56)
+            back = QColor(0, 0, 0, 150)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(back)
+            p.drawRoundedRect(box, 6, 6)
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(box, center, "\u2190")               # ←
         p.end()

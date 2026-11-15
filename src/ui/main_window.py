@@ -562,6 +562,7 @@ class MainWindow(QMainWindow):
         self.term.cursor_style = saved_cursor if saved_cursor in dict(CURSOR_STYLES) else "outline"
         for key in mouse_map.SETTINGS:
             self.term.mouse[key] = mouse_map.valid(key, self.db.get_setting(key, ""))
+        self.term.push_merge = self.db.get_setting("terminal.push_merge", "1") == "1"
         self.term.set_stretch(self.db.get_setting("terminal.stretch", "0") == "1")
         self.term.notice.connect(self._notice)
         self.term_holder = QGridLayout()
@@ -1117,6 +1118,11 @@ class MainWindow(QMainWindow):
         start = urls.index(url) if url in urls else 0
         self._image_viewer.show_images(urls, strict=False, referer=None, start=start)
 
+    def _push_merge_toggled(self, on: bool) -> None:
+        self.term.push_merge = bool(on)
+        self.db.set_setting("terminal.push_merge", "1" if on else "0")
+        self.term.update()
+
     def _mouse_option_changed(self, key: str, value: str) -> None:
         value = mouse_map.valid(key, value or "")
         self.term.mouse[key] = value
@@ -1311,6 +1317,11 @@ class MainWindow(QMainWindow):
         self.set_cursor_style.setCurrentIndex(max(0, self.set_cursor_style.findData(saved_style)))
         self.set_cursor_style.currentIndexChanged.connect(self._cursor_style_changed)
         form.addRow("游標樣式", self.set_cursor_style)
+        self.chk_push_merge = QCheckBox("推文合併相同 ID（同一人連續多行推文只顯示一次 ID）")
+        self.chk_push_merge.setChecked(self.term.push_merge)
+        self.chk_push_merge.setToolTip("只改變顯示方式；複製文字時仍是完整的原始推文。")
+        self.chk_push_merge.toggled.connect(self._push_merge_toggled)
+        form.addRow("", self.chk_push_merge)
         cursor_note = QLabel("可選外框、半透明實心、底線或細直線；立即套用到終端機。")
         cursor_note.setWordWrap(True)
         form.addRow(cursor_note)
