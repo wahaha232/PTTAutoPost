@@ -172,9 +172,6 @@ class PostTyper(ChunkedSender):
             return None
         return f"輸入途中畫面不是預期的畫面（偵測為：{self.s.kind.value}），已停止；請目視確認終端機內容。"
 
-    def _timeout_message(self) -> str:
-        return "伺服器持續回傳資料或無回應，已停止輸入。"
-
     def _disconnect_message(self) -> str:
         return "連線中斷；不會自動重連或重送。請重新連線並目視檢查編輯區現況。"
 

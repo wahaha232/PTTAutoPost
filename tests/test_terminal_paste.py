@@ -338,3 +338,19 @@ def test_sanitize_paste_drops_zero_width_and_emoji_glue():
     text = "a" + chr(0x200B) + "b" + chr(0x1F44D) + chr(0x1F3FD) + "c" + chr(0xFEFF)
     out, removed = sanitize_paste(text)
     assert out == "ab" + chr(0x1F44D) + "c" and removed == 3
+
+
+def test_sender_total_chars_matches_sent_after_invisible_and_control_cleanup(qapp, monkeypatch):
+    session = PttSession()
+    session.client.state = State.CONNECTED
+    sent = []
+    monkeypatch.setattr(session.client, "send", lambda data: sent.append(bytes(data)) or True)
+    done = []
+    paster = PasteSender(session, lambda: None)
+    paster.finished.connect(lambda ok, msg: done.append((ok, msg)))
+    text = "a\x07" + chr(0x200D) + "b\nc" + chr(0xFEFF) + "d"
+    assert paster.start(text) is None
+    assert wait_until(lambda: not paster.running)
+    assert b"".join(sent) == "ab\rcd".encode("cp950")
+    assert paster.chars_sent == paster.total_chars == 4
+    assert done and done[-1][0] is True

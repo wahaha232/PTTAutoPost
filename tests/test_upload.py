@@ -42,7 +42,7 @@ class FakeSession:
 
 def _patch_session(monkeypatch, resp):
     fake = FakeSession(resp)
-    monkeypatch.setattr(up, "_session_for", lambda url: fake)
+    monkeypatch.setattr(up, "make_pinned_session", lambda url, **kw: fake)
     return fake
 
 
@@ -70,6 +70,13 @@ def test_upload_catbox_sends_multipart_and_returns_the_url(monkeypatch, tmp_path
     assert fake.kwargs["headers"]["User-Agent"].startswith("PTTAutoPost/")
 
 
+def test_upload_uses_the_explicit_mime_table_for_known_extensions(monkeypatch, tmp_path):
+    fake = _patch_session(monkeypatch, Resp())
+    monkeypatch.setattr(up.mimetypes, "guess_type", lambda _name: ("text/html", None))
+    up.upload_image(_png(tmp_path), "catbox")
+    assert fake.kwargs["files"]["fileToUpload"][2] == "image/png"
+
+
 def test_upload_rejects_a_response_from_another_host(monkeypatch, tmp_path):
     _patch_session(monkeypatch, Resp(text="https://evil.example/x.png"))
     with pytest.raises(FetchError, match="非預期"):
@@ -95,17 +102,17 @@ def test_upload_rejects_empty_response_and_bad_extension(monkeypatch, tmp_path):
         up.upload_image(bad, "catbox")
 
 
-def test_upload_session_is_dns_pinned_to_the_fixed_endpoint(monkeypatch):
+def test_shared_pinned_session_builder_pins_the_fixed_endpoint():
+    from src.links import make_pinned_session
     pinned = []
 
     class Sess:
         def close(self):
             pass
 
-    monkeypatch.setattr(up.requests, "Session", Sess)
-    monkeypatch.setattr(up, "_mount_pinning", lambda sess: pinned.append("mount"))
-    monkeypatch.setattr(up, "_pin_session", lambda sess, url: pinned.append(url))
-    sess = up._session_for("https://catbox.moe/user/api.php")
+    sess = make_pinned_session("https://catbox.moe/user/api.php", session_factory=Sess,
+                               mount=lambda _sess: pinned.append("mount"),
+                               pin=lambda _sess, url: pinned.append(url))
     assert pinned == ["mount", "https://catbox.moe/user/api.php"]
     sess.close()
 

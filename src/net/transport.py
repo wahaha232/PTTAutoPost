@@ -33,6 +33,9 @@ class Transport(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._closing = False
+        self._socket = None
+        self._pending = bytearray()
+        self._flushing = False
 
     @property
     def socket(self):
@@ -46,6 +49,48 @@ class Transport(QObject):
 
     def close(self) -> None:
         self._closing = True
+        self._pending.clear()
+
+    def _accept_write(self, sock, data: bytes) -> bool:
+        """Queue every byte, writing what the device accepts now and keeping the rest in order.
+
+        Qt's write() may accept only part of the buffer.  Returning True means the transport
+        owns all bytes; the upper layer must not resend them.  bytesWritten flushes the rest.
+        """
+        if self._closing or sock is None:
+            return False
+        if self._pending:
+            self._pending.extend(data)
+            return True
+        written = sock.write(data)
+        if written < 0:
+            return False
+        if written < len(data):
+            self._pending.extend(data[written:])
+        return True
+
+    def _flush_pending(self) -> None:
+        if self._flushing or not self._pending or self._closing:
+            return
+        self._flushing = True
+        try:
+            while self._pending and not self._closing:
+                sock = self._socket
+                if sock is None:
+                    break
+                written = sock.write(bytes(self._pending))
+                if written < 0:
+                    self._pending.clear()
+                    self.closed.emit("傳送失敗，連線中斷。")
+                    break
+                if written == 0:
+                    break
+                del self._pending[:written]
+        finally:
+            self._flushing = False
+
+    def _clear_pending(self) -> None:
+        self._pending.clear()
 
 
 class WebSocketTransport(Transport):
@@ -124,6 +169,8 @@ class TelnetTransport(Transport):
         tcp.readyRead.connect(self._on_ready)
         tcp.disconnected.connect(self._on_disconnected)
         tcp.errorOccurred.connect(self._on_error)
+        if hasattr(tcp, "bytesWritten"):
+            tcp.bytesWritten.connect(lambda _n: self._flush_pending())
 
     @property
     def socket(self):
@@ -135,13 +182,14 @@ class TelnetTransport(Transport):
 
     def send(self, data: bytes) -> bool:
         sock = self._socket
-        if self._closing or sock is None or sock.write(data) < 0:
+        if self._closing or sock is None or not self._accept_write(sock, data):
             return False
         sock.flush()
         return True
 
     def close(self) -> None:
         self._closing = True
+        self._clear_pending()
         sock, self._socket = self._socket, None
         if sock is not None:
             sock.abort()
@@ -159,8 +207,7 @@ class TelnetTransport(Transport):
         if not data:
             return
         data, replies = self._iac.feed_with_replies(data)
-        if replies:
-            sock.write(replies)
+        if replies and self._accept_write(sock, replies):
             sock.flush()
         if data:
             self.data.emit(data)
@@ -174,14 +221,18 @@ class TelnetTransport(Transport):
 
     def _on_disconnected(self) -> None:
         if not self._closing:
+            self._clear_pending()
             self.closed.emit("Telnet 連線中斷（伺服器關閉連線）。")
 
 
 class SshTransport(Transport):
-    def __init__(self, parent, host: str, user: str, port: int, connect_timeout_ms: int):
+    def __init__(self, parent, host: str, user: str, port: int, connect_timeout_ms: int,
+                 host_key_check=None, known_hosts_path=None):
         super().__init__(parent)
         self._host, self._user, self._port = host, user, port
         self._connect_timeout_ms = connect_timeout_ms
+        self._host_key_check = host_key_check
+        self._known_hosts_path = str(known_hosts_path) if known_hosts_path else None
         self._stderr = b""
         self._opened = False
         self._ssh = shutil.which("ssh")
@@ -198,6 +249,7 @@ class SshTransport(Transport):
             proc.readyReadStandardError.connect(self._on_stderr)
             proc.errorOccurred.connect(self._on_error)
             proc.finished.connect(self._on_finished)
+            proc.bytesWritten.connect(lambda _n: self._flush_pending())
 
     @property
     def socket(self):
@@ -207,11 +259,24 @@ class SshTransport(Transport):
         if self._socket is None:
             self.errorOccurred.emit("找不到系統 SSH 用戶端（ssh.exe），無法使用 SSH 連線。")
             return
+        if self._host_key_check is not None:
+            try:
+                ok, reason = self._host_key_check(self._host, self._port)
+            except Exception as e:  # noqa: BLE001  (a broken check must fail closed)
+                ok, reason = False, f"主機金鑰確認失敗（{type(e).__name__}）。"
+            if not ok:
+                self.errorOccurred.emit(f"SSH 主機金鑰驗證失敗：{reason}")
+                return
+        if self._known_hosts_path:
+            hostkey_opts = ["-o", f"UserKnownHostsFile={self._known_hosts_path}",
+                            "-o", "StrictHostKeyChecking=yes"]
+        else:
+            hostkey_opts = ["-o", "StrictHostKeyChecking=accept-new"]
         log.info("connecting ssh to %s@%s:%s", self._user, self._host, self._port)
         self._socket.start(self._ssh, [
             "-tt",                                     # force a remote PTY even though stdin/stdout are pipes
             "-o", "BatchMode=yes",                     # PTT uses "none" auth; never wait for an invisible prompt
-            "-o", "StrictHostKeyChecking=accept-new",  # first use is trusted, later changes are refused
+            *hostkey_opts,
             "-o", f"ConnectTimeout={max(1, self._connect_timeout_ms // 1000)}",
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3",
@@ -223,10 +288,11 @@ class SshTransport(Transport):
         sock = self._socket
         if self._closing or sock is None:
             return False
-        return sock.write(data) >= 0
+        return self._accept_write(sock, data)
 
     def close(self) -> None:
         self._closing = True
+        self._clear_pending()
         proc, self._socket = self._socket, None
         if proc is not None:
             proc.blockSignals(True)                    # its late signals must not touch a newer connection
@@ -266,8 +332,14 @@ class SshTransport(Transport):
     def _on_finished(self, code: int, _status) -> None:
         if self._closing:
             return
+        self._clear_pending()
         if not self._opened:
-            detail = self._stderr.decode("utf-8", "replace").strip().splitlines()
+            stderr = self._stderr.decode("utf-8", "replace")
+            lowered = stderr.lower()
+            if "host key verification failed" in lowered or "remote host identification has changed" in lowered:
+                self.errorOccurred.emit("SSH 主機金鑰驗證失敗：OpenSSH 拒絕主機金鑰（可能已變更）。")
+                return
+            detail = stderr.strip().splitlines()
             tail = detail[-1][:300] if detail else ""
             self.errorOccurred.emit(f"SSH 連線失敗：{tail}" if tail else f"SSH 連線失敗（結束碼 {code}）。")
             return

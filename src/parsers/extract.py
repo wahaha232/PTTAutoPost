@@ -16,7 +16,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, CData, Comment, NavigableString, Tag
 
-from ..links import is_article_image_url, is_image_url, validate_http_url
+from ..links import IMAGE_EXTENSIONS, is_article_image_url, is_image_url, validate_http_url
 from ..logging_setup import get_logger
 
 log = get_logger("extract")
@@ -24,9 +24,9 @@ log = get_logger("extract")
 FOUND, MISSING, INFERRED = "found", "missing", "inferred"
 ARTICLE_TYPES = {"newsarticle", "article", "blogposting", "reportagenewsarticle", "analysisnewsarticle", "opinionnewsarticle"}
 ORG_WORDS = re.compile(r"(新聞|電子報|通訊社|雜誌|日報|時報|報導者|編輯部|記者群|網站|網$|Marketing|News|Media|http)", re.I)
-_NOISE_TOK = ("comment|comments|related|recommend|recommended|share|sharing|social|advert|advertisement|sponsor|breadcrumb|breadcrumbs|"
-              "sidebar|newsletter|subscribe|subscription|promo|widget|more-news|morenews|extended|keyword|keywords|toolbar|author-box|"
-              "authorbox|author-card|author-info|author-bio|copyright|banner|popup|modal|login|paywall|adcolumn|ad|ads|ad-blk|hr-separator|tags")
+_NOISE_TOK = ("comments?|related|recommend(?:ed)?|shar(?:e|ing)|social|advert(?:isement)?|sponsor|breadcrumbs?|"
+              "sidebar|newsletter|subscri(?:be|ption)|promo|widget|more-?news|extended|keywords?|toolbar|author-(?:box|card|info|bio)|"
+              "authorbox|copyright|banner|popup|modal|login|paywall|ad(?:column|-blk|s)?|hr-separator|tags")
 NOISE_ATTR = re.compile(r"(?:^|[\s_.\-])(?:" + _NOISE_TOK + r")(?:$|[\s_.\-])", re.I)
 # embed code published by social platforms (blockquote/div classes) and the post URLs those embeds link to
 SOCIAL_EMBED_CLASS = re.compile(r"(?:^|\s)(?:twitter-tweet|twitter-video|twitter-timeline|instagram-media|tiktok-embed|"
@@ -47,7 +47,7 @@ HOST_NAMES = {
     "yahoo.com": "Yahoo奇摩新聞", "ptt.cc": "PTT", "wikipedia.org": "維基百科", "mirrormedia.mg": "鏡週刊", "ftvnews.com.tw": "民視新聞網",
     "ctee.com.tw": "工商時報", "money.udn.com": "經濟日報", "cnyes.com": "鉅亨網", "technice.com.tw": "科技島", "inside.com.tw": "INSIDE",
 }
-NOISE_PARA = re.compile(r"^(延伸閱讀|相關新聞|相關報導|更多.{0,6}報導|更多文章|責任編輯|編輯[:：]|圖／|圖片來源|照片來源|▲|▼|【.{0,12}(看更多|推薦|掌握)|"
+NOISE_PARA = re.compile(r"^(延伸閱讀|相關(?:新聞|報導)|更多(?:.{0,6}報導|文章)|責任編輯|編輯[:：]|圖／|圖片來源|照片來源|▲|▼|【.{0,12}(看更多|推薦|掌握)|"
                         r"加入.{0,10}(好友|粉絲|頻道)|訂閱|點我|按讚|喜歡這篇|\(?Photo|Copyright|版權所有|※\s*發信站|"
                         r"\d+:\d+\s*/\s*\d+:\d+|字級設定|跳過此內容|支持中央社|下載.{0,14}APP|不用抽|我是廣告|udn討論區|"
                         r"Article Information|BBC News,|加入Google|阿立幫你|新聞專題|請同意我們的隱私權|請點選打勾|首選來源|[（(]相關報導|以行動力挺|#\s*\S|熱門.{0,4}(新聞|文章)|最多人閱讀|你可能也?喜歡|推薦閱讀|Related|Advertisement)", re.I)
@@ -306,14 +306,14 @@ def _noise_ident(el: Tag) -> str:
     return " ".join([" ".join(cls if isinstance(cls, list) else [str(cls or "")]), str(el.get("id") or "")])
 
 
-def _candidate_is_noise(el: Tag, page_text_len: int) -> bool:
+def _candidate_is_noise(el: Tag, page_text_len: int, lengths: dict[int, tuple[int, int]] | None = None) -> bool:
     """A candidate that the sanitizer would delete anyway must not protect itself."""
     if el.name in _STRIP_TAGS:
         return True
     ident = _noise_ident(el)
     if not ident.strip() or not (NOISE_ATTR.search(ident) or NOISE_CAMEL.search(ident)):
         return False
-    return not (page_text_len > 300 and len(el.get_text(strip=True)) > 0.6 * page_text_len)
+    return not (page_text_len > 300 and _text_len(el, lengths) > 0.6 * page_text_len)
 
 
 def _strip_noise(root: Tag, protected: set[int] | None = None):
@@ -327,7 +327,8 @@ def _strip_noise(root: Tag, protected: set[int] | None = None):
     for t in root.find_all(_STRIP_TAGS):
         if id(t) not in protected:
             t.decompose()
-    total = len(root.get_text(strip=True))
+    lengths = _text_and_link_lengths(root)             # one bottom-up pass for the whole clean tree
+    total = _text_len(root, lengths)
     scope_lengths: dict[int, int] = {}
 
     def scope_len(el: Tag) -> int:
@@ -335,9 +336,23 @@ def _strip_noise(root: Tag, protected: set[int] | None = None):
         for anc in el.parents:
             if id(anc) in protected:
                 if id(anc) not in scope_lengths:
-                    scope_lengths[id(anc)] = len(anc.get_text(strip=True))
+                    scope_lengths[id(anc)] = _text_len(anc, lengths)
                 return scope_lengths[id(anc)]
         return total
+
+    def forget(el: Tag, own: int) -> None:
+        """Keep cached ancestor sizes current and drop the subtree that is about to be removed."""
+        for anc in el.parents:
+            if not isinstance(anc, Tag):
+                continue
+            cached = lengths.get(id(anc))
+            if cached is not None:
+                text, links = cached
+                lengths[id(anc)] = (max(0, text - own), links)
+            if id(anc) in scope_lengths:
+                scope_lengths[id(anc)] = max(0, scope_lengths[id(anc)] - own)
+        for node in (el, *el.find_all(True)):
+            lengths.pop(id(node), None)
 
     for t in list(root.find_all(True)):
         if id(t) in protected or t.attrs is None or t.name in ("article", "main", "body", "html"):
@@ -345,8 +360,10 @@ def _strip_noise(root: Tag, protected: set[int] | None = None):
         ident = _noise_ident(t)
         if ident.strip() and (NOISE_ATTR.search(ident) or NOISE_CAMEL.search(ident)):
             scope = scope_len(t)
-            if scope > 300 and len(t.get_text(strip=True)) > 0.6 * scope:
+            own = _text_len(t, lengths)
+            if scope > 300 and own > 0.6 * scope:
                 continue                      # that block IS (most of) the candidate text: never throw it away
+            forget(t, own)
             t.decompose()
 
 
@@ -393,6 +410,20 @@ def _text_and_link_lengths(root: Tag) -> dict[int, tuple[int, int]]:
     return out
 
 
+def _text_len(el: Tag, lengths: dict[int, tuple[int, int]] | None = None) -> int:
+    """Cached `len(get_text(strip=True))` for ordinary tags; exact fallback for the rest."""
+    if lengths is not None and el.interesting_string_types == _MAIN_STRINGS and id(el) in lengths:
+        return lengths[id(el)][0]
+    return len(el.get_text(strip=True))
+
+
+def _link_density_cached(el: Tag, lengths: dict[int, tuple[int, int]]) -> float:
+    if el.interesting_string_types != _MAIN_STRINGS or id(el) not in lengths:
+        return _link_density(el)
+    text_len, link_len = lengths[id(el)]
+    return link_len / (text_len or 1)
+
+
 def _dense_parents(doc, top: int = 3):
     scores: dict[int, list] = {}
     body = doc.body
@@ -410,10 +441,7 @@ def _dense_parents(doc, top: int = 3):
     lengths = _text_and_link_lengths(body)                     # one O(n) pass instead of a subtree walk per candidate
 
     def density(el: Tag) -> float:
-        if el.interesting_string_types != _MAIN_STRINGS or id(el) not in lengths:
-            return _link_density(el)                           # script/style/template: exact slow path
-        text_len, link_len = lengths[id(el)]
-        return link_len / (text_len or 1)
+        return _link_density_cached(el, lengths)
 
     ranked = sorted(scores.values(), key=lambda v: -(v[1] * max(0.1, 1 - density(v[0]))))
     return [v[0] for v in ranked[:top]]
@@ -469,7 +497,7 @@ def _trim_tail(paras):
             del paras[i - 1:]
             break
     j = len(paras)
-    while j > 0 and len(paras[j - 1]) < 45 and not re.search(r"[，。；,]", paras[j - 1]):
+    while j > 0 and len(paras[j - 1]) < 45 and not re.search(r"[，。；,！？：）」』]", paras[j - 1]):
         j -= 1
     if len(paras) - j >= 2:
         del paras[j:]
@@ -521,22 +549,26 @@ def _extract_body(doc, selectors, warnings, hint_len=0, title=None):
     embeds = _strip_social_embeds(work)                # before candidate selection: an embed is never the article
     if embeds:
         warnings.append(f"已移除 {embeds} 則內嵌的社群貼文（X／Instagram／Facebook 等），內文只保留新聞本身。")
-    page_text_len = len((work.body or work).get_text(strip=True))
+    body_root = work.body or work
+    pre_lengths = _text_and_link_lengths(body_root)
+    page_text_len = _text_len(body_root, pre_lengths)
     candidates = [(el, kind) for el, kind in _candidates(work, selectors)
-                  if not _candidate_is_noise(el, page_text_len)][:18]
+                  if not _candidate_is_noise(el, page_text_len, pre_lengths)][:18]
     protected: set[int] = set()
     for el, _kind in candidates:
         for node in (el, *el.parents):
             if isinstance(node, Tag):
                 protected.add(id(node))
-    _strip_noise(work.body or work, protected)
+    _strip_noise(body_root, protected)
+    lengths = _text_and_link_lengths(body_root)
     scored = []
     for el, kind in candidates:
         paras, container, raw_tail = _paragraphs_of(el)
         chars = sum(len(p) for p in paras)
         if chars == 0:
             continue
-        scored.append({"kind": kind, "paras": paras, "chars": chars, "score": chars * max(0.1, 1 - _link_density(el)),
+        scored.append({"kind": kind, "paras": paras, "chars": chars,
+                       "score": chars * max(0.1, 1 - _link_density_cached(el, lengths)),
                        "root": container, "raw_tail": raw_tail})
     if not scored:
         return [], "none", None, False
@@ -633,6 +665,11 @@ def _host(url: str) -> str:
         return ""
 
 
+def _is_ptt_host(host: str) -> bool:
+    """Exact ptt.cc or a real subdomain; never a suffix match such as evilptt.cc."""
+    return host == "ptt.cc" or host.endswith(".ptt.cc")
+
+
 def _related_host(a: str, b: str) -> bool:
     """Same host, or one is a subdomain of the other on a label boundary -- never via a bare public suffix."""
     if not a or not b:
@@ -664,7 +701,7 @@ def parse(html: str, url: str, extra_warnings: list[str] | None = None) -> Parse
     res.url.set(url, FOUND, "request")
 
     visible = re.sub(r"\s+", "", doc.get_text())
-    if host.endswith("ptt.cc") and _ptt_web(doc, res):
+    if _is_ptt_host(host) and _ptt_web(doc, res):
         res.body_status = "likely_complete" if len(res.body.value or "") >= 20 else "insufficient"
         _finish(res, None)
         return res
@@ -786,15 +823,14 @@ def _finish(res: ParseResult, ld, visible: str = "", html: str = "", container=N
         res.status = "partial"
 
 
-_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
 _BARE_IMAGE_URL = re.compile(r"(?i)https?://[^\s<>\"'）】」』，。；：！？、]+")
 _BARE_URL_TRAIL = ".,;:!?，。；：！？、\"'」』】》〉)]}"
-_BAD_IMAGE_TOKENS = {
-    "logo", "logos", "icon", "icons", "sprite", "badge", "avatar", "avatars",
-    "ad", "ads", "advert", "advertisement", "banner", "share", "sharing", "social",
-    "related", "recommend", "recommended", "popular", "sidebar", "footer", "header",
-    "nav", "menu", "promo", "promotion", "appdownload", "downloadapp",
-}
+_GENERIC_PATH_TOKENS = {"logo", "icon", "avatar"}
+_AD_TOKENS = {"ad", "ads", "advert", "advertisement"}
+_BAD_IMAGE_TOKENS = (_GENERIC_PATH_TOKENS | {t + "s" for t in _GENERIC_PATH_TOKENS} | _AD_TOKENS
+                     | {"sprite", "badge", "banner", "share", "sharing", "social", "related",
+                        "recommend", "recommended", "popular", "sidebar", "footer", "header",
+                        "nav", "menu", "promo", "promotion", "appdownload", "downloadapp"})
 
 
 def _tokens(*values: str) -> set[str]:
@@ -806,13 +842,10 @@ def _is_generic_image_url(url: str) -> bool:
         path = (urlparse(url).path or "").lower()
     except ValueError:
         return True                                    # unparsable: never offer it
-    if any(token in path for token in ("logo", "icon", "avatar", "pic_fb", "placeholder", "default")):
+    if any(token in path for token in _GENERIC_PATH_TOKENS | {"pic_fb", "placeholder", "default"}):
         return True
-    name = PurePosixPath(path).name
-    for token in re.findall(r"[a-z0-9]+", name):
-        if token in ("ad", "ads", "advert", "advertisement") or re.fullmatch(r"ad\d+[a-z0-9]*", token):
-            return True
-    return False
+    name_tokens = set(re.findall(r"[a-z0-9]+", PurePosixPath(path).name))
+    return bool(name_tokens & _AD_TOKENS) or any(re.fullmatch(r"ad\d+[a-z0-9]*", token) for token in name_tokens)
 
 
 def _original_variant(url: str) -> str:
@@ -839,13 +872,21 @@ def _safe_original(url: str) -> str:
     return upgraded if is_article_image_url(upgraded) else url
 
 
+def _article_image_ok(url: str, *, reject_generic: bool = True) -> bool:
+    return bool(url) and is_article_image_url(url) and not (reject_generic and _is_generic_image_url(url))
+
+
+def _original_article_url(url: str, *, reject_generic: bool = True) -> str:
+    return _safe_original(url) if _article_image_ok(url, reject_generic=reject_generic) else ""
+
+
 def _looks_like_image_file(url: str) -> bool:
     """A direct image file, not a wiki/media page that merely ends in .jpg."""
     try:
         path = (urlparse(url).path or "").lower()
     except ValueError:
         return False
-    if PurePosixPath(path).suffix not in _IMAGE_SUFFIXES:
+    if PurePosixPath(path).suffix not in IMAGE_EXTENSIONS:
         return False
     return not ("/wiki/" in path or "/file:" in path or path.startswith("/wiki"))
 
@@ -878,23 +919,27 @@ def _image_url(img: Tag, base_url: str) -> str:
     anchor = img.find_parent("a", href=True)
     if anchor:
         href = _safe_join(base_url, anchor["href"])
-        if _looks_like_image_file(href) and is_article_image_url(href):
-            return _safe_original(href)
+        if _looks_like_image_file(href):
+            original = _original_article_url(href, reject_generic=False)
+            if original:
+                return original
     picture = img.find_parent("picture")
     if picture is not None:                       # CNA-style <picture><source data-srcset="400 1x, 800 2x">
         for source in picture.find_all("source"):
             best = _best_srcset(source.get("srcset") or source.get("data-srcset"), base_url)
-            if best and is_article_image_url(best):
-                return _safe_original(best)
+            original = _original_article_url(best, reject_generic=False)
+            if original:
+                return original
     best = _best_srcset(img.get("srcset") or img.get("data-srcset"), base_url)
-    if best and is_article_image_url(best):
-        return _safe_original(best)
+    original = _original_article_url(best, reject_generic=False)
+    if original:
+        return original
     for attr in ("data-src", "data-original", "data-lazy-src", "src"):
         raw = img.get(attr)
         if raw:
-            url = _safe_join(base_url, raw)
-            if url and is_article_image_url(url) and not _is_generic_image_url(url):
-                return _safe_original(url)
+            original = _original_article_url(_safe_join(base_url, raw))
+            if original:
+                return original
     return ""
 
 
@@ -938,9 +983,9 @@ def _images_from(root: Tag, base_url: str, limit: int = 16, doc: Tag | None = No
         if len(found) >= limit:
             break
         url = _safe_join(base_url, a["href"])
-        if url and (_looks_like_image_file(url) and is_article_image_url(url)
-                and not _is_generic_image_url(url) and _node_allowed(a, root)):
-            add(_safe_original(url))
+        original = _original_article_url(url) if _looks_like_image_file(url) else ""
+        if original and _node_allowed(a, root):
+            add(original)
     for node in root.find_all(string=True):           # PTT/news posts often paste image URLs as plain text
         if len(found) >= limit:
             break
@@ -951,9 +996,10 @@ def _images_from(root: Tag, base_url: str, limit: int = 16, doc: Tag | None = No
             continue
         for m in _BARE_IMAGE_URL.finditer(str(node)):
             url = m.group(0).rstrip(_BARE_URL_TRAIL)
-            if (is_article_image_url(url) and is_image_url(url)
-                    and not _is_generic_image_url(url)):
-                add(_safe_original(url))
+            if is_image_url(url):
+                original = _original_article_url(url)
+                if original:
+                    add(original)
             if len(found) >= limit:
                 break
     if not found:                                     # og:image is a fallback, not the article's first picture
@@ -961,7 +1007,7 @@ def _images_from(root: Tag, base_url: str, limit: int = 16, doc: Tag | None = No
             raw = _meta(meta_doc, name)
             if raw:
                 url = _safe_join(base_url, raw)
-                if url and is_article_image_url(url) and not _is_generic_image_url(url):
+                if _article_image_ok(url):
                     add(_original_variant(url))
     return found
 

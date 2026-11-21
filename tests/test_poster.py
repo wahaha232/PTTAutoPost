@@ -196,12 +196,24 @@ def test_timeout_aborts_and_releases_the_send_lock(rig):
     text = "\n".join("行%d " % i + "測試內容" * 10 for i in range(15))
     assert typer.start(Target.BODY, text) is None
     assert wait_until(lambda: bool(done), 8000)
-    assert done[0][0] is False and "無回應" in done[0][1]
+    assert done[0][0] is False and ("無回應" in done[0][1] or "持續輸出" in done[0][1])
+    assert "上限" in done[0][1]
     assert "不會自動重試" in done[0][1]
     assert sess.send_lock.owner() is None
     sent = len(bbs.after_login)
     pump(400)
     assert len(bbs.after_login) == sent           # no retry after the timeout
+
+
+def test_timeout_message_distinguishes_no_reply_from_continuous_output(rig):
+    bbs, sess, typer, done = rig
+    typer._cap.setInterval(30)
+    typer._saw_data_since_cap = False
+    assert "無回應" in typer._timeout_message()
+    assert "持續輸出" not in typer._timeout_message()
+    typer._saw_data_since_cap = True
+    assert "持續輸出" in typer._timeout_message()
+    assert "無回應" not in typer._timeout_message()
 
 
 def test_unexpected_screen_mid_typing_aborts(rig):

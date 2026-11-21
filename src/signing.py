@@ -71,6 +71,12 @@ def _recover_x(y: int, sign: int) -> int | None:
 _GY = 4 * _inv(5) % _P
 _GX = _recover_x(_GY, 0)
 _G = (_GX, _GY, 1, _GX * _GY % _P)
+_IDENTITY = (0, 1, 1, 0)
+
+
+def _is_small_order(pt) -> bool:
+    """Reject the 1/2/4/8-torsion points (identity included) that make signatures malleable."""
+    return _equal(_mul(8, pt), _IDENTITY)
 
 
 def _compress(pt) -> bytes:
@@ -116,7 +122,7 @@ def verify(public: bytes, message: bytes, signature: bytes) -> bool:
         return False
     a = _decompress(public)
     r = _decompress(signature[:32])
-    if a is None or r is None:
+    if a is None or r is None or _is_small_order(a) or _is_small_order(r):
         return False
     s = int.from_bytes(signature[32:], "little")
     if s >= _Q:

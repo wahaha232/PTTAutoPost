@@ -70,15 +70,23 @@ class UpdateCheckTask(QRunnable):
         super().__init__()
         self.token = token
         self.signals = _UpdateSignals()
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
 
     def run(self):
         try:
-            self.signals.done.emit(update.fetch_latest_release(self.token))
+            release = update.fetch_latest_release(self.token)
+            if not self._cancel.is_set():
+                self.signals.done.emit(release)
         except update.UpdateError as e:
-            self.signals.failed.emit(str(e))
+            if not self._cancel.is_set():
+                self.signals.failed.emit(str(e))
         except Exception:  # noqa: BLE001
             log.exception("unexpected error while checking updates")
-            self.signals.failed.emit("檢查更新時發生未預期的錯誤。")
+            if not self._cancel.is_set():
+                self.signals.failed.emit("檢查更新時發生未預期的錯誤。")
 
 
 class _DownloadSignals(QObject):
@@ -134,14 +142,20 @@ class SiteCheckTask(QRunnable):
         super().__init__()
         self.site = site
         self.signals = _SiteCheckSignals()
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
 
     def run(self):
         try:
-            ok, msg = sites.check_site(self.site)
+            result = sites.check_site_detailed(self.site)
+            ok, msg = result.ok, result.message
         except Exception as e:  # noqa: BLE001  (the UI waits for exactly one answer)
             log.exception("unexpected error while checking a site")
-            ok, msg = False, f"測試連線時發生未預期的錯誤（{type(e).__name__}）。"
-        self.signals.done.emit(ok, msg)
+            ok, msg = False, f"未測試：測試連線時發生未預期的錯誤（{type(e).__name__}）。"
+        if not self._cancel.is_set():
+            self.signals.done.emit(ok, msg)
 
 
 class _ZipSignals(QObject):

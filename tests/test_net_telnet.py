@@ -32,6 +32,19 @@ def test_failed_initial_connection_switches_protocol_once(qapp):
     client.close()
 
 
+def test_host_key_failure_is_not_allowed_to_switch_protocols(qapp):
+    client = PttClient()
+    starts, failed = [], []
+    client._start_connect = starts.append
+    client.failed.connect(failed.append)
+    client._fallback = "wss://ws.ptt.cc/bbs"
+    client._set_state(State.CONNECTING)
+    client._connect_failed("SSH host key changed", allow_fallback=False)
+    assert starts == [] and failed == ["SSH host key changed"]
+    assert client.state is State.DISCONNECTED
+    client.close()
+
+
 def test_iac_filter_strips_and_answers_negotiation():
     f = IacFilter()
     data, replies = f.feed_with_replies(b"A\xff\xfb\x01B\xff\xfd\x03C")

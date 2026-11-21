@@ -22,7 +22,7 @@ from .. import boards, compose, conn_history, pttmoney, sites, update
 from ..errors import ToolError
 from ..links import find_image_urls, is_auto_open_image_url, validate_http_url
 from ..logging_setup import get_logger
-from ..net import shortener
+from ..net import hostkeys, shortener
 from ..net.client import DEFAULT_URL, State
 from ..net.proxy import KINDS, ProxyConfig
 from ..terminal.detect import Kind
@@ -33,7 +33,7 @@ from ..terminal import selection as termsel
 from ..parsers.extract import ParseResult, parse
 from ..net.image import download_images_zip
 from ..parsers.fetch import fetch
-from ..paths import resource_path
+from ..paths import data_dir, resource_path
 from ..storage.db import MAX_SIGNATURES, Database
 from ..version import APP_NAME, BUILD_DATE, SPONSOR_MESSAGE, SPONSOR_TEXT, SPONSOR_URL, __version__
 from . import browser, mouse_map, theme
@@ -93,6 +93,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db = db
         self.session = session or PttSession(self)
+        self.session.client.host_key_check = self._verify_ssh_host_key
+        self.session.client.ssh_known_hosts_path = data_dir() / "ssh_known_hosts"
         self.typer = PostTyper(self.session, self)
         self.draft_id: int | None = None
         self.states: dict[str, str] = {f: "missing" for f in FIELDS}
@@ -817,6 +819,37 @@ class MainWindow(QMainWindow):
             n = len(self._conn_history)
             self.btn_clear_history.setEnabled(n > 0)
             self.lbl_history.setText(f"目前記錄 {n} 筆（最多 {conn_history.MAX_ENTRIES} 筆）。" if n else "目前沒有連線紀錄。")
+
+    def _verify_ssh_host_key(self, host: str, port: int) -> tuple[bool, str]:
+        """TOFU confirmation for the app's own known_hosts; never touches the user's ~/.ssh."""
+        store = hostkeys.HostKeyStore(data_dir() / "ssh_host_keys.json")
+        known_hosts = data_dir() / "ssh_known_hosts"
+
+        def prompt(h: str, p: int, key_type: str, fingerprint: str, changed: bool) -> bool:
+            if changed:
+                title = "SSH 主機金鑰已變更"
+                text = (f"警告：{h}:{p} 的 SSH 主機金鑰與先前不同。\n\n"
+                        f"{key_type}\n{fingerprint}\n\n"
+                        "這可能是中間人攻擊，也可能是站方更換金鑰。"
+                        "除非您能透過獨立管道確認新指紋，否則請取消。")
+            else:
+                title = "確認 SSH 主機金鑰"
+                text = (f"第一次連線到 {h}:{p}。\n\n{key_type}\n{fingerprint}\n\n"
+                        "這是 TOFU（首次使用即信任）驗證：指紋未經獨立來源比對，"
+                        "仍可能遭到中間人攻擊。請向站方或其他可信管道核對後再接受。")
+            box = QMessageBox(QMessageBox.Icon.Warning if changed else QMessageBox.Icon.Question,
+                              title, text, parent=self)
+            accept = box.addButton("仍要接受新金鑰" if changed else "接受並連線",
+                                   QMessageBox.ButtonRole.AcceptRole)
+            cancel = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(cancel)
+            box.exec()
+            return box.clickedButton() is accept
+
+        ok, reason = hostkeys.verify_host_key(host, port, prompt, store, known_hosts)
+        if not ok:
+            self._notice(f"SSH 主機金鑰驗證失敗：{reason}")
+        return ok, reason
 
     def _connect_bbs(self, url: str) -> bool:
         config = self._proxy_config()
@@ -3901,6 +3934,10 @@ class MainWindow(QMainWindow):
             self._disconnect_task_signals(task, ("done", "failed"))
             self._task = None
         self._disconnect_task_signals(getattr(self, "_update_check_task", None), ("done", "failed"))
+        update_task = getattr(self, "_update_check_task", None)
+        if update_task is not None and hasattr(update_task, "cancel"):
+            update_task.cancel()
+        self._update_check_task = None
         download_task = getattr(self, "_update_download_task", None)
         if download_task is not None:
             download_task.cancel()
@@ -3911,7 +3948,11 @@ class MainWindow(QMainWindow):
             shorten_task.cancel()
             self._disconnect_task_signals(shorten_task, ("done", "failed"))
             self._shorten_task = None
-        self._disconnect_task_signals(getattr(self, "_site_check_task", None), ("done",))
+        site_task = getattr(self, "_site_check_task", None)
+        if site_task is not None and hasattr(site_task, "cancel"):
+            site_task.cancel()
+        self._disconnect_task_signals(site_task, ("done",))
+        self._site_check_task = None
         zip_task = getattr(self, "_zip_task", None)
         if zip_task is not None:
             zip_task.cancel()

@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.35"
+__version__ = "0.8.36"
 BUILD_DATE = "2026/11/21"
 APP_NAME = "PTT AutoPost"
 
@@ -14,6 +14,26 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.36", "2026/11/21", [
+        "robots.txt Crawl-delay is now obeyed in full (no 12-second cap), uses a monotonic per-host "
+        "reservation so concurrent fetches queue in order, and cancellation during the wait never "
+        "continues to an HTTP request.",
+        "Telnet and SSH writes now keep partial-write remainders in an ordered transport queue and drain "
+        "them on bytesWritten; a dropped link clears the queue and is reported without ever resending "
+        "data that may already have reached the server. WSS keeps whole-message semantics.",
+        "PTT web pages are recognised only for ptt.cc or its real subdomains; evilptt.cc and similar "
+        "suffix lookalikes no longer enter the PTT parser.",
+        "SSH connections in the app use a project-owned TOFU known_hosts: the first connection shows the "
+        "host, port, key type and SHA256 fingerprint for explicit acceptance, later changes require a new "
+        "confirmation, and the user's ~/.ssh is never modified.",
+        "Ed25519 verification rejects small-order and non-canonical points; added RFC 8032 vectors and "
+        "invalid-key/R/S/asset tests. No signing standard was relaxed.",
+        "Site checks now report an explicit stage (currently TCP reachable) and state that protocol "
+        "handshake, BBS screen and real login were not tested, so a TCP success is never shown as login.",
+        "Update and site-check background tasks can be cancelled; late results are suppressed on shutdown.",
+        "Shared HTTP capped-reader and host/origin helpers reduce duplicate wrappers; image-URL and noise "
+        "rules are consolidated; unused PyInstaller excludes were removed and Cython/pygments excluded.",
+    ]),
     ("0.8.35", "2026/11/21", [
         "Automatic typing and clipboard paste now share one chunked send engine, so quiet-window pacing, the "
         "hard timeout, the send lock, connection-loss aborts and cancellation messages behave identically. "

@@ -12,10 +12,10 @@ from spec_filters import filter_entries  # noqa: E402
 ONEFILE = os.environ.get("PTTAUTOPOST_ONEFILE") == "1"
 
 EXCLUDES = [
-    "pandas", "numpy", "scipy", "matplotlib", "sympy", "onnxruntime", "cv2", "fitz", "pymupdf", "openpyxl", "xlrd",
-    "reportlab", "pikepdf", "pypdf", "docx", "markitdown", "magika", "oletools", "msoffcrypto", "IPython", "pytest",
-    "_pytest", "pluggy", "iniconfig", "hypothesis", "py", "PyInstaller", "pefile", "altgraph", "win32ctypes",
-    "tkinter", "unittest", "pydoc", "setuptools", "pip", "win32com", "yaml", "cryptography",
+    "numpy", "pandas", "scipy", "matplotlib", "sympy", "psutil", "yaml",
+    "pytest", "_pytest", "pluggy", "iniconfig", "py",
+    "PyInstaller", "pefile", "altgraph", "win32ctypes", "setuptools", "pip", "Cython", "pygments",
+    "tkinter", "unittest", "pydoc", "win32com",
     "PIL.ImageTk", "PIL.ImageShow", "PIL.ImageGrab",
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick", "PySide6.QtWebView",
     "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQuick3D", "PySide6.QtQuickControls2",

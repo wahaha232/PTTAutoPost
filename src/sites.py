@@ -7,10 +7,28 @@ from __future__ import annotations
 
 import re
 import socket
+import enum
+from dataclasses import dataclass
 
 PROTOCOLS = ("wss", "telnet", "ssh")
 PROTOCOL_LABELS = {"wss": "WSS（加密）", "telnet": "Telnet（明文）", "ssh": "SSH（加密）"}
 VERIFIED = "2026-10-23"
+
+
+class SiteStage(str, enum.Enum):
+    UNTESTED = "未測試"
+    TCP_OK = "TCP 可連線"
+    HANDSHAKE_OK = "協定握手成功"
+    BBS_SCREEN_OK = "BBS 畫面正常"
+    LOGGED_IN = "已完成實際登入"
+
+
+@dataclass(frozen=True)
+class SiteCheck:
+    stage: SiteStage
+    ok: bool
+    message: str
+    detail: str = ""
 
 DEFAULT_SITES = (
     {"name": "臺大批踢踢實業坊（PTT）", "protocol": "wss", "host": "ws.ptt.cc", "port": 443,
@@ -107,11 +125,30 @@ def normalize_site(site: dict) -> dict:
             "user": str(site.get("user", "")).strip()}
 
 
-def check_site(site: dict, timeout: float = 5) -> tuple[bool, str]:
-    """Read-only reachability check. Sends no login data and reads no BBS content."""
+def check_site_detailed(site: dict, timeout: float = 5) -> SiteCheck:
+    """Read-only reachability check; only the TCP stage is ever claimed.
+
+    A successful TCP connect says nothing about the BBS protocol handshake, the terminal
+    screen or a real login, so those later stages are explicitly left untested here.
+    """
     host, port = site.get("host", ""), _port(site.get("port"))
+    protocol = str(site.get("protocol") or "BBS").upper()
     try:
         with socket.create_connection((host, port), timeout=timeout):
-            return True, f"TCP {host}:{port} 可連線（唯讀檢查，未送出任何資料）。"
+            return SiteCheck(
+                SiteStage.TCP_OK, True,
+                f"{SiteStage.TCP_OK.value}：TCP {host}:{port} 可連線；"
+                f"尚未驗證 {protocol} 握手、BBS 畫面或實際登入（未送出任何登入資料）。",
+            )
     except (OSError, UnicodeError, ValueError, OverflowError) as e:   # bad IDNA name / port also land here
-        return False, f"無法連線 {host}:{port}：{type(e).__name__}: {e}"
+        return SiteCheck(
+            SiteStage.UNTESTED, False,
+            f"{SiteStage.UNTESTED.value}：無法連線 {host}:{port}：{type(e).__name__}: {e}",
+            f"{type(e).__name__}: {e}",
+        )
+
+
+def check_site(site: dict, timeout: float = 5) -> tuple[bool, str]:
+    """Backward-compatible (ok, message) wrapper around check_site_detailed()."""
+    result = check_site_detailed(site, timeout)
+    return result.ok, result.message

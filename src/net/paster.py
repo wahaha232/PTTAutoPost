@@ -73,6 +73,7 @@ class PasteSender(ChunkedSender):
         why = self._blocked()
         if why:
             return why
+        text, _removed = sanitize_paste(text)              # idempotent if the caller already cleaned it
         if not text:
             return "沒有可貼上的文字。"
         chunks = build_chunks(text, CHUNK_BYTES)           # unencodable chars become '?'; no lock is taken on failure
@@ -80,7 +81,7 @@ class PasteSender(ChunkedSender):
         if why:
             return why
         self.chars_sent = 0
-        self.total_chars = len(text.replace("\n", ""))
+        self.total_chars = sum(self._chunk_chars(chunk) for chunk in chunks)
         self._begin(chunks, IDLE_MS)
         log.info("paste started: %d chars, %d chunks", self.total_chars, len(self._chunks))
         self._next()
@@ -90,17 +91,17 @@ class PasteSender(ChunkedSender):
         why = self._blocked()
         return None if not why else why + "已停止貼上；不會重送。"
 
-    def _timeout_message(self) -> str:
-        return "伺服器持續回傳資料或無回應，已停止貼上。"
-
     def _disconnect_message(self) -> str:
         return "連線已中斷，已停止貼上；不會重送。"
 
     def _cancel_message(self) -> str:
         return "使用者取消貼上。"
 
+    def _chunk_chars(self, chunk: bytes) -> int:
+        return len(chunk.decode("cp950", "replace").replace("\r", ""))
+
     def _count_chunk(self, chunk: bytes) -> None:
-        self.chars_sent += len(chunk.decode("cp950", "replace").replace("\r", ""))
+        self.chars_sent += self._chunk_chars(chunk)
 
     def _abort_detail(self) -> str:
         return f"已送出 {self.chars_sent}／{self.total_chars} 字，共 {len(self._chunks)} 段中的 {self._i} 段"

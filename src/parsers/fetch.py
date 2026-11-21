@@ -281,6 +281,20 @@ def _wait(seconds: float, cancel: threading.Event | None) -> None:
         raise FetchError("已取消擷取。", "cancelled")
 
 
+def _reserve_slot(host: str, interval: float) -> float:
+    """Reserve the next request slot for `host` and return how long to wait.
+
+    `_last_hit[host]` holds the next allowed monotonic time, not the previous request time.
+    Holding the lock while reserving makes concurrent fetches queue in order (0, interval,
+    2*interval, ...) instead of all sleeping for the same remaining delay.
+    """
+    with _lock:
+        now = time.monotonic()
+        next_at = max(now, _last_hit.get(host, 0.0))
+        _last_hit[host] = next_at + interval
+        return next_at - now
+
+
 def _polite(url: str, timeout: float, ignore_robots: bool, min_interval: float, warnings: list[str], first: bool,
             cancel: threading.Event | None = None) -> None:
     """robots.txt + per-host request spacing for one hop (every hop, so redirects to another host obey them too)."""
@@ -294,10 +308,10 @@ def _polite(url: str, timeout: float, ignore_robots: bool, min_interval: float, 
             raise FetchError(f"{where}的 robots.txt 不允許擷取此路徑（可勾選「忽略 robots」由您自行承擔後再試）。", "robots")
     pu = urlparse(url)
     host = (pu.hostname or "") + (f":{pu.port}" if pu.port else "")
-    with _lock:
-        wait = max(min_interval, delay or 0) - (time.monotonic() - _last_hit.get(host, 0))
-        _last_hit[host] = time.monotonic() + max(wait, 0)     # reserve our slot so parallel fetches queue up
-    _wait(min(wait, 12), cancel)
+    wait = _reserve_slot(host, max(min_interval, delay or 0))
+    _wait(wait, cancel)                                    # obey the full Crawl-delay; never truncate it
+    if cancel is not None and cancel.is_set():
+        raise FetchError("已取消擷取。", "cancelled")
 
 
 _CODEC_ALIASES = {"big5": "cp950", "big-5": "cp950", "x-big5": "cp950", "cn-big5": "cp950", "csbig5": "cp950"}
@@ -365,6 +379,8 @@ def fetch(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_BYTES,
         while True:
             _pin_session(sess, cur)                            # validate + pin every hop before robots or the request
             _polite(cur, timeout, ignore_robots, min_interval, warnings, first=(hops == 0), cancel=cancel)
+            if cancel is not None and cancel.is_set():
+                raise FetchError("已取消擷取。", "cancelled")
             try:
                 r = sess.get(cur, timeout=timeout, stream=True, allow_redirects=False)
             except requests.exceptions.Timeout as e:

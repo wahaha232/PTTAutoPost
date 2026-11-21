@@ -42,37 +42,35 @@ TRUSTED_LOGIN_HOSTS = ("ws.ptt.cc",)          # the assisted login only ever sen
 TRUSTED_TELNET_LOGINS = {("bbs.gamer.com.tw", 23)}
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
 DEFAULT_SSH_USER = "bbs"
-# Explicit pairs only: a failed official WSS endpoint may use the matching SSH endpoint,
-# and vice versa.  Nothing else is tried, so an arbitrary host is never dialled behind
-# the user's back.
-FALLBACK_URLS = {
-    "wss://ws.ptt.cc/bbs": "ssh://bbs@ptt.cc:22",
-    "wss://ws.ptt2.cc/bbs": "ssh://bbs@ptt2.cc:22",
-    "ssh://bbs@ptt.cc:22": "wss://ws.ptt.cc/bbs",
-    "ssh://bbs@ptt2.cc:22": "wss://ws.ptt2.cc/bbs",
-}
 
 
 def fallback_url(url: str) -> str | None:
-    """The other protocol for the same site, or None when this endpoint has no pair."""
+    """The other official protocol for the same site, or None for anything else.
+
+    Only the exact official endpoints are paired (ws.ptt.cc <-> ssh ptt.cc, and the ptt2
+    equivalents).  A custom port, another path, userinfo, a query/fragment or any other
+    host is refused, so an arbitrary address is never dialled behind the user's back.
+    """
     try:
         p = urlparse(url)
         host = (p.hostname or "").lower()
         port = p.port
-        if p.scheme == "wss":
-            if host not in ("ws.ptt.cc", "ws.ptt2.cc") or port not in (None, 443):
-                return None
-            if (p.path or "/") != "/bbs" or p.username or p.password:
-                return None
-            return FALLBACK_URLS[f"wss://ws.{host[3:]}/bbs"]
-        if p.scheme == "ssh":
-            if host not in ("ptt.cc", "ptt2.cc") or port not in (None, 22) or p.password:
-                return None
-            if (p.username or DEFAULT_SSH_USER).lower() != "bbs" or (p.path or ""):
-                return None
-            return FALLBACK_URLS[f"ssh://bbs@{host}:22"]
     except ValueError:
         return None
+    if p.password or p.query or p.fragment:
+        return None
+    if p.scheme == "wss":
+        if host not in ("ws.ptt.cc", "ws.ptt2.cc") or port not in (None, 443):
+            return None
+        if p.username or (p.path or "/") != "/bbs":
+            return None
+        return f"ssh://bbs@{host[3:]}:22"
+    if p.scheme == "ssh":
+        if host not in ("ptt.cc", "ptt2.cc") or port not in (None, 22):
+            return None
+        if (p.username or DEFAULT_SSH_USER).lower() != "bbs" or (p.path or ""):
+            return None
+        return f"wss://ws.{host}/bbs"
     return None
 
 
@@ -182,6 +180,8 @@ class PttClient(QObject):
         self.bytes_received = 0
         self._iac = IacFilter()
         self.proxy = ProxyConfig()
+        self.host_key_check = None                     # set by the UI: (host, port) -> (ok, reason)
+        self.ssh_known_hosts_path = None               # project-owned file, never the user's ~/.ssh
 
     @property
     def _ws(self):
@@ -237,7 +237,9 @@ class PttClient(QObject):
             transport = TelnetTransport(self, parsed.hostname or "", parsed.port or 23, qt_proxy, QTcpSocket)
         elif parsed.scheme == "ssh":
             transport = SshTransport(self, parsed.hostname or "", parsed.username or DEFAULT_SSH_USER,
-                                     parsed.port or 22, self._connect_timeout_ms)
+                                     parsed.port or 22, self._connect_timeout_ms,
+                                     host_key_check=self.host_key_check,
+                                     known_hosts_path=self.ssh_known_hosts_path)
         else:
             transport = WebSocketTransport(self, url, origin_for(url), qt_proxy, QWebSocket)
         self._transport = transport
@@ -305,7 +307,7 @@ class PttClient(QObject):
             return
         log.warning("transport error: %s", msg)
         if self.state is State.CONNECTING:
-            self._connect_failed(msg)
+            self._connect_failed(msg, allow_fallback=not msg.startswith("SSH 主機金鑰驗證失敗"))
         else:
             self._timer.stop()
             self.failed.emit(msg)
@@ -322,7 +324,7 @@ class PttClient(QObject):
         self._set_state(State.DISCONNECTED)
         if was is State.CONNECTED:
             log.warning("connection lost by remote")
-            self.failed.emit("連線已中斷（伺服器關閉連線）。程式不會自動重連或重送任何內容。")
+            self.failed.emit(f"{reason} 程式不會自動重連或重送任何內容。")
 
     def _on_message(self, data) -> None:
         data = bytes(data)
@@ -339,11 +341,12 @@ class PttClient(QObject):
         if data:
             self.dataReceived.emit(data)
 
-    def _connect_failed(self, reason: str) -> None:
-        """End a failed initial attempt; switch to the paired protocol once, if there is one."""
+    def _connect_failed(self, reason: str, allow_fallback: bool = True) -> None:
+        """End a failed initial attempt; switch to the paired protocol once, if allowed."""
         if self.state is not State.CONNECTING:
             return
-        alt, self._fallback = self._fallback, None
+        alt = self._fallback if allow_fallback else None
+        self._fallback = None
         self._timer.stop()
         self._drop_transport()
         self._set_state(State.DISCONNECTED)

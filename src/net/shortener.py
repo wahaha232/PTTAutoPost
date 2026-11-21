@@ -13,10 +13,10 @@ from dataclasses import dataclass
 import requests
 
 from ..errors import FetchError, InputError
-from ..links import host_matches, public_https_host, validate_http_url
+from ..links import host_matches, make_pinned_session, public_https_host, validate_http_url
 from ..logging_setup import get_logger
 from ..version import __version__
-from .upload import _session_for, read_capped
+from .http_util import read_capped
 
 MAX_RESPONSE_BYTES = 4096
 
@@ -68,7 +68,7 @@ def shorten_url(service_key: str, url: str, timeout: float = 10,
         raise FetchError("已取消縮網址。", "cancelled")
     headers = {"User-Agent": f"PTTAutoPost/{__version__}", "Accept": "application/json, text/plain;q=0.8"}
     try:
-        with _session_for(svc.endpoint) as sess:
+        with make_pinned_session(svc.endpoint) as sess:
             if svc.method == "POST":
                 resp = sess.post(svc.endpoint, json={svc.param: url}, headers=headers,
                                  timeout=timeout, allow_redirects=False, stream=True)

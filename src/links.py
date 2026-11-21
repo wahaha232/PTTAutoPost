@@ -80,6 +80,23 @@ def host_matches(host: str, domains: tuple[str, ...] | list[str]) -> bool:
     return bool(h) and any(h == d or h.endswith("." + d) for d in domains)
 
 
+def hostname_of(url: str) -> str:
+    """Lower-case host without a trailing dot, or "" when the URL cannot be parsed."""
+    try:
+        return (urlparse(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def origin_of(url: str) -> str:
+    """Scheme + host origin (no userinfo), or "" when the URL cannot be parsed."""
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return ""
+    return f"{p.scheme}://{p.netloc.rpartition('@')[2]}/"
+
+
 def image_suffix(url: str) -> str:
     """Lower-case path suffix (including the dot), or "" when the URL cannot be parsed."""
     try:

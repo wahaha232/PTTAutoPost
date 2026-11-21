@@ -39,7 +39,7 @@ class Sess:
 
 def _patch(monkeypatch, resp):
     fake = Sess(resp)
-    monkeypatch.setattr(sh, "_session_for", lambda url: fake)
+    monkeypatch.setattr(sh, "make_pinned_session", lambda url, **kw: fake)
     return fake
 
 
@@ -64,7 +64,7 @@ def test_rejects_an_unexpected_response_host(monkeypatch):
 
 def test_rejects_invalid_input_before_any_request(monkeypatch):
     called = []
-    monkeypatch.setattr(sh, "_session_for", lambda url: called.append(url))
+    monkeypatch.setattr(sh, "make_pinned_session", lambda url, **kw: called.append(url))
     with pytest.raises(InputError):
         sh.shorten_url("isgd", "javascript:alert(1)")
     assert called == []

@@ -35,6 +35,22 @@ def test_generic_article_all_fields_found():
     assert r.body.value.count("第") >= 6
 
 
+def test_trim_tail_keeps_short_lines_ending_with_sentence_or_quote_punctuation():
+    from src.parsers.extract import _trim_tail
+    paras = ["長" * 60, "短句！", "短句？」", "短句：", "短句』"]
+    assert _trim_tail(paras) == 0 and len(paras) == 5
+
+
+def test_ptt_host_matching_uses_domain_boundaries():
+    from src.parsers.extract import _host, _is_ptt_host
+    assert _is_ptt_host(_host("https://ptt.cc/x"))
+    assert _is_ptt_host(_host("https://www.PTT.cc./x"))
+    assert _is_ptt_host(_host("https://bbs.ptt.cc/x"))
+    for url in ("https://evilptt.cc/x", "https://notptt.cc/x",
+                "https://ptt.cc.evil.example/x", "https://ptt.cc.example/x"):
+        assert not _is_ptt_host(_host(url)), url
+
+
 def test_organization_author_is_not_taken_as_reporter_and_byline_is_inferred():
     html = ARTICLE.replace('"author":{"@type":"Person","name":"王小明"},', "").replace(
         "<article><h1>", "<article><h1>").replace(f"<p>{PARA}第0段。</p>", f"<p>（某社記者李大華台北1日電）{PARA}</p>")
@@ -502,6 +518,86 @@ def test_ignore_robots_does_not_request_robots_txt(monkeypatch):
     assert F.fetch("https://a.example/p", ignore_robots=True, min_interval=0).status == 200
 
 
+@pytest.mark.parametrize("delay", [0, 5, 12, 30])
+def test_polite_obeys_the_full_crawl_delay(monkeypatch, delay):
+    clock = [1000.0]
+    waits = []
+    monkeypatch.setattr(F.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(F, "_robots", lambda url, timeout: (True, "", float(delay)))
+
+    def fake_wait(seconds, cancel):
+        waits.append(seconds)
+        clock[0] += seconds
+    monkeypatch.setattr(F, "_wait", fake_wait)
+    F._last_hit.clear()
+    F._polite("https://delay.example/a", 5, False, 0.0, [], first=True)
+    F._polite("https://delay.example/b", 5, False, 0.0, [], first=False)
+    assert waits == [0.0, float(delay)]
+
+
+def test_reserve_slot_queues_concurrent_requests_for_the_same_host(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    clock = [1000.0]
+    monkeypatch.setattr(F.time, "monotonic", lambda: clock[0])
+    F._last_hit.clear()
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        waits = list(pool.map(lambda _i: F._reserve_slot("queue.example:443", 5.0), range(6)))
+    assert sorted(waits) == [0.0, 5.0, 10.0, 15.0, 20.0, 25.0]
+
+
+def test_polite_keeps_going_when_robots_cannot_be_read(monkeypatch):
+    waits, warnings = [], []
+    monkeypatch.setattr(F, "_robots", lambda url, timeout: (None, "無法讀取 robots.txt", None))
+    monkeypatch.setattr(F, "_wait", lambda seconds, cancel: waits.append(seconds))
+    F._last_hit.clear()
+    F._polite("https://noread.example/a", 5, False, 0.0, warnings, first=True)
+    assert waits == [0.0] and warnings == ["無法讀取 robots.txt"]
+
+
+def test_polite_still_refuses_disallowed_paths(monkeypatch):
+    monkeypatch.setattr(F, "_robots", lambda url, timeout: (False, "", 0))
+    F._last_hit.clear()
+    with pytest.raises(FetchError, match="robots"):
+        F._polite("https://blocked.example/a", 5, False, 0.0, [], first=True)
+
+
+def test_polite_cancel_during_a_long_wait_raises(monkeypatch):
+    F._last_hit.clear()
+    monkeypatch.setattr(F, "_robots", lambda url, timeout: (True, "", 30.0))
+    F._polite("https://cancel.example/a", 5, False, 0.0, [], first=True)   # reserve the host, no wait
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(FetchError, match="取消"):
+        F._polite("https://cancel.example/b", 5, False, 0.0, [], first=False, cancel=cancel)
+
+
+def test_fetch_does_not_send_a_request_after_cancel(monkeypatch):
+    import requests
+    cancel = threading.Event()
+
+    def polite(*_args, **_kwargs):
+        cancel.set()
+    monkeypatch.setattr(F, "_polite", polite)
+    monkeypatch.setattr(F, "_mount_pinning", lambda _sess: None)
+    monkeypatch.setattr(F, "_pin_session", lambda _sess, _url: None)
+
+    class Sess:
+        def __init__(self):
+            self.headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("request must not be sent after cancel")
+    monkeypatch.setattr(requests, "Session", Sess)
+    with pytest.raises(FetchError, match="取消"):
+        F.fetch("https://cancel.example/p", min_interval=0, cancel=cancel)
+
+
 def test_oversized_robots_txt_is_not_read_forever(monkeypatch):
     import requests
 
@@ -774,12 +870,12 @@ def test_quoted_charset_in_the_content_type_header(monkeypatch):
 
 def test_sessions_ignore_proxy_environment_variables(monkeypatch):
     import requests
-    from src.net import upload as up
+    from src.links import make_pinned_session
     sess = requests.Session()
     F._mount_pinning(sess)
     assert sess.trust_env is False
-    monkeypatch.setattr(up, "_pin_session", lambda s, url: None)
-    with up._session_for("https://catbox.moe/user/api.php") as s:
+    monkeypatch.setattr(F, "_pin_session", lambda s, url: None)
+    with make_pinned_session("https://catbox.moe/user/api.php") as s:
         assert s.trust_env is False
 
 

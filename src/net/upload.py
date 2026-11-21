@@ -17,13 +17,22 @@ import requests
 from ..errors import FetchError, InputError
 from ..links import IMAGE_EXTENSIONS, host_matches, make_pinned_session
 from ..logging_setup import get_logger
-from ..parsers.fetch import _mount_pinning, _pin_session
 from ..version import __version__
+from .http_util import read_capped
 
 log = get_logger("upload")
 USER_AGENT = f"PTTAutoPost/{__version__} (+https://github.com/wahaha232/PTTAutoPost)"
 MAX_RESPONSE_BYTES = 8192
 IMAGE_EXTS = IMAGE_EXTENSIONS
+MIME_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".avif": "image/avif",
+}
 MB = 1024 * 1024
 
 
@@ -91,12 +100,6 @@ class _CancellableReader:
         return getattr(self._fh, name)
 
 
-def _session_for(url: str) -> requests.Session:
-    """Session with the same DNS pinning / public-host check as article and image fetches."""
-    return make_pinned_session(url, session_factory=requests.Session,
-                               mount=_mount_pinning, pin=_pin_session)
-
-
 def _validate_url(url: str, allowed: tuple[str, ...]) -> str:
     try:
         p = urlparse(url)
@@ -129,10 +132,10 @@ def upload_image(path: str | Path, host_key: str, timeout: float = 180,
         raise InputError(f"{host.label} 單檔上限是 {host.max_bytes // MB} MB。", f"{size} bytes")
     if cancel is not None and cancel.is_set():
         raise FetchError("已取消圖片上傳。", "cancelled")
-    ctype = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
+    ctype = MIME_BY_EXT.get(file.suffix.lower()) or mimetypes.guess_type(file.name)[0] or "application/octet-stream"
     headers = {"User-Agent": USER_AGENT, "Accept": "text/plain, */*;q=0.5"}
     try:
-        with _session_for(host.endpoint) as sess, file.open("rb") as fh:
+        with make_pinned_session(host.endpoint) as sess, file.open("rb") as fh:
             resp = sess.post(host.endpoint, data=host.extra,
                              files={host.field: (file.name, _CancellableReader(fh, cancel), ctype)},
                              headers=headers, timeout=timeout, allow_redirects=False, stream=True)
@@ -156,18 +159,6 @@ def upload_image(path: str | Path, host_key: str, timeout: float = 180,
     url = _validate_url(url, host.allowed_hosts)
     log.info("uploaded %s to %s (%d bytes)", file.name, host.key, size)
     return UploadResult(name=file.name, url=url, host=host.key, size=size)
-
-
-def read_capped(resp, cap: int) -> tuple[str, bool]:
-    """(text of at most `cap` bytes, whether the body was longer) without loading the whole body."""
-    chunks, total = [], 0
-    for chunk in resp.iter_content(4096):
-        chunks.append(chunk)
-        total += len(chunk)
-        if total > cap:
-            break
-    data = b"".join(chunks)
-    return data[:cap].decode("utf-8", "replace"), len(data) > cap
 
 
 def _body_hint(resp) -> str:

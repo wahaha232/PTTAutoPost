@@ -67,6 +67,27 @@ def test_check_site_uses_tcp_only(monkeypatch):
     assert not ok and "no route" in msg
 
 
+def test_check_site_detailed_never_claims_protocol_or_login(monkeypatch):
+    class Sock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(sites.socket, "create_connection", lambda addr, timeout: Sock())
+    res = sites.check_site_detailed(sites.DEFAULT_SITES[0])
+    assert res.ok and res.stage is sites.SiteStage.TCP_OK
+    assert "TCP" in res.message and "尚未驗證" in res.message and "登入" in res.message
+    assert not any(word in res.message for word in ("登入成功", "已完成實際登入"))
+
+    def fail(addr, timeout):
+        raise OSError("no route")
+    monkeypatch.setattr(sites.socket, "create_connection", fail)
+    res = sites.check_site_detailed(sites.DEFAULT_SITES[0])
+    assert not res.ok and res.stage is sites.SiteStage.UNTESTED and "no route" in res.message
+
+
 @pytest.fixture
 def win(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
@@ -188,6 +209,18 @@ def test_ptt_wss_and_ssh_fallback_urls():
     assert fallback_url("wss://ws.ptt.cc/other") is None
     assert fallback_url("ssh://alice@ptt.cc:22") is None
     assert fallback_url("wss://example.org/bbs") is None
+
+
+def test_fallback_url_is_bidirectional_for_ptt2_and_refuses_non_official_forms():
+    from src.net.client import fallback_url
+    assert fallback_url("ssh://bbs@ptt2.cc:22") == "wss://ws.ptt2.cc/bbs"
+    assert fallback_url("ssh://ptt2.cc") == "wss://ws.ptt2.cc/bbs"
+    for bad in ("wss://ws.ptt.cc:8443/bbs", "wss://ws.ptt2.cc/bbs?x=1",
+                "wss://ws.ptt.cc/bbs#x", "wss://u:p@ws.ptt.cc/bbs",
+                "wss://evil.example/bbs", "ssh://bbs@ptt.cc:2222",
+                "ssh://bbs@ptt.cc/path", "ssh://alice@ptt.cc:22",
+                "ssh://bbs:pw@ptt.cc:22", "ssh://bbs@evil.example:22"):
+        assert fallback_url(bad) is None, bad
 
 
 def test_ipv6_hosts_are_bracketed_and_bad_ports_are_reported():

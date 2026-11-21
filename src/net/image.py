@@ -16,8 +16,8 @@ from urllib.parse import unquote, urljoin, urlparse
 import requests
 
 from ..errors import FetchError, InputError, ToolError
-from ..links import (IMAGE_EXTENSIONS, is_article_image_url, is_auto_open_image_url,
-                     make_pinned_session)
+from ..links import (IMAGE_EXTENSIONS, hostname_of, is_article_image_url, is_auto_open_image_url,
+                     make_pinned_session, origin_of)
 from ..logging_setup import get_logger
 from ..parsers.fetch import (MAX_REDIRECTS, USER_AGENT, _mount_pinning, _pin_session,  # shared SSRF/DNS-pinning rules
                              validate_url)
@@ -46,18 +46,6 @@ def check_hop(url: str, strict_host: bool = True) -> str:
     return validate_url(url)
 
 
-def _hostname(url: str) -> str:
-    try:
-        return (urlparse(url).hostname or "").lower().rstrip(".")
-    except ValueError:
-        return ""
-
-
-def _origin(url: str) -> str:
-    p = urlparse(url)
-    return f"{p.scheme}://{p.netloc.rpartition('@')[2]}/"
-
-
 def _content_type(headers) -> str:
     return (headers.get("Content-Type") or "").split(";")[0].strip().lower()
 
@@ -79,16 +67,16 @@ def fetch_image(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_IMA
         # Per request, never session-wide.  Full article URL only to the article's own host; the image
         # host the article linked gets the origin only (browser strict-origin-when-cross-origin, enough
         # for hot-link checks); any other host reached by a redirect gets nothing.
-        article_host = _hostname(referer) if referer else ""
+        article_host = hostname_of(referer) if referer else ""
         referer = referer if article_host else None           # unparsable referer: send none
-        image_host = _hostname(url)
+        image_host = hostname_of(url)
         while True:
             _pin_session(sess, cur)                            # resolve + pin every hop, fail closed on DNS errors
             headers = {}
-            if referer and _hostname(cur) == article_host:
+            if referer and hostname_of(cur) == article_host:
                 headers["Referer"] = referer
-            elif referer and _hostname(cur) == image_host:
-                headers["Referer"] = _origin(referer)
+            elif referer and hostname_of(cur) == image_host:
+                headers["Referer"] = origin_of(referer)
             try:
                 r = sess.get(cur, timeout=timeout, stream=True, allow_redirects=False, headers=headers)
             except requests.exceptions.Timeout as e:

@@ -44,6 +44,7 @@ class ChunkedSender(QObject):
         self.running = False
         self._chunks: list[bytes] = []
         self._i = 0
+        self._saw_data_since_cap = False
         self._quiet = QTimer(self)
         self._quiet.setSingleShot(True)
         self._quiet.setInterval(IDLE_MS)
@@ -61,7 +62,11 @@ class ChunkedSender(QObject):
         return None
 
     def _timeout_message(self) -> str:
-        return "伺服器持續回傳資料或無回應，已停止。"
+        """Explain which timeout fired: no reply at all, or output that never lets the run finish."""
+        limit = max(0, self._cap.interval()) / 1000
+        if self._saw_data_since_cap:
+            return f"伺服器持續輸出超過 {limit:g} 秒上限，已停止{self.action}。"
+        return f"伺服器無回應超過 {limit:g} 秒上限，已停止{self.action}。"
 
     def _disconnect_message(self) -> str:
         return "連線中斷；不會自動重連或重送。請目視確認終端機現況。"
@@ -89,6 +94,7 @@ class ChunkedSender(QObject):
         self._chunks = chunks
         self._i = 0
         self.running = True
+        self._saw_data_since_cap = False
         self._quiet.setInterval(quiet_ms)
 
     def _next(self) -> None:
@@ -104,6 +110,8 @@ class ChunkedSender(QObject):
             return
         if self._i >= len(self._chunks):
             self.running = False
+            self._quiet.stop()
+            self._cap.stop()
             self._release()
             self.finished.emit(True, self._success_message())
             return
@@ -114,11 +122,13 @@ class ChunkedSender(QObject):
         self._count_chunk(chunk)
         self._i += 1
         self.progress.emit(self._i, len(self._chunks))
+        self._saw_data_since_cap = False
         self._cap.start()
         self._quiet.start()                  # next chunk after the server has been quiet
 
     def _on_data(self, _data: bytes) -> None:
         if self.running:
+            self._saw_data_since_cap = True
             self._quiet.start()              # still receiving: restart the quiet window
 
     def _on_state(self, st: State) -> None:
