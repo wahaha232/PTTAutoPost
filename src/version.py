@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.34"
-BUILD_DATE = "2026/11/15"
+__version__ = "0.8.35"
+BUILD_DATE = "2026/11/21"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,20 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.35", "2026/11/21", [
+        "Automatic typing and clipboard paste now share one chunked send engine, so quiet-window pacing, the "
+        "hard timeout, the send lock, connection-loss aborts and cancellation messages behave identically. "
+        "Every chunk is still screen-checked and nothing is ever retried or resent.",
+        "WSS, Telnet and SSH now use separate lightweight transports with one common open/send/close signal "
+        "contract; the client keeps only endpoint validation, proxy selection, the connect timeout and the "
+        "single wss/ssh fallback.",
+        "Image-link, shortener and upload checks share one public-https/host/SVG rule and one DNS-pinned "
+        "session builder; unused exception classes were removed.",
+        "The portable package drops unused Qt plugins (TUIO, network-information, virtual keyboard, "
+        "certificate-only TLS, qminimal/qdirect2d) and debug symbols while Qt/PySide6 DLLs stay replaceable.",
+        "Unused special-purpose IP ranges (including 192.0.0.0/24) are refused consistently even on older "
+        "Python versions.",
+    ]),
     ("0.8.34", "2026/11/15", [
         "Click an item in a PTT article list or board list to open it: the program moves PTT's cursor to that "
         "row with the arrow keys and presses →. Dragging still selects text and links still open; nothing "
