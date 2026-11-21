@@ -13,8 +13,10 @@ ONEFILE = os.environ.get("PTTAUTOPOST_ONEFILE") == "1"
 
 EXCLUDES = [
     "pandas", "numpy", "scipy", "matplotlib", "sympy", "onnxruntime", "cv2", "fitz", "pymupdf", "openpyxl", "xlrd",
-    "reportlab", "pikepdf", "pypdf", "docx", "markitdown", "magika", "oletools", "msoffcrypto", "IPython", "pytest", "hypothesis",
+    "reportlab", "pikepdf", "pypdf", "docx", "markitdown", "magika", "oletools", "msoffcrypto", "IPython", "pytest",
+    "_pytest", "pluggy", "iniconfig", "hypothesis", "py", "PyInstaller", "pefile", "altgraph", "win32ctypes",
     "tkinter", "unittest", "pydoc", "setuptools", "pip", "win32com", "yaml", "cryptography",
+    "PIL.ImageTk", "PIL.ImageShow", "PIL.ImageGrab",
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick", "PySide6.QtWebView",
     "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQuick3D", "PySide6.QtQuickControls2",
     "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtGraphs",

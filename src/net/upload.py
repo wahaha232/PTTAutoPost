@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import requests
 
 from ..errors import FetchError, InputError
+from ..links import IMAGE_EXTENSIONS, host_matches, make_pinned_session
 from ..logging_setup import get_logger
 from ..parsers.fetch import _mount_pinning, _pin_session
 from ..version import __version__
@@ -22,7 +23,7 @@ from ..version import __version__
 log = get_logger("upload")
 USER_AGENT = f"PTTAutoPost/{__version__} (+https://github.com/wahaha232/PTTAutoPost)"
 MAX_RESPONSE_BYTES = 8192
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
+IMAGE_EXTS = IMAGE_EXTENSIONS
 MB = 1024 * 1024
 
 
@@ -92,14 +93,8 @@ class _CancellableReader:
 
 def _session_for(url: str) -> requests.Session:
     """Session with the same DNS pinning / public-host check as article and image fetches."""
-    sess = requests.Session()
-    try:
-        _mount_pinning(sess)
-        _pin_session(sess, url)
-    except Exception:
-        sess.close()
-        raise
-    return sess
+    return make_pinned_session(url, session_factory=requests.Session,
+                               mount=_mount_pinning, pin=_pin_session)
 
 
 def _validate_url(url: str, allowed: tuple[str, ...]) -> str:
@@ -110,7 +105,7 @@ def _validate_url(url: str, allowed: tuple[str, ...]) -> str:
     host = (p.hostname or "").lower().rstrip(".")
     if p.scheme != "https" or not host or p.username or p.password:
         raise FetchError("圖床回傳的網址不是安全的 https 網址。", url)
-    if not any(host == h or host.endswith("." + h) for h in allowed):
+    if not host_matches(host, allowed):
         raise FetchError("圖床回傳了非預期的網址，已停止。", url)
     if not p.path or p.path == "/":
         raise FetchError("圖床回傳的網址沒有檔案路徑。", url)

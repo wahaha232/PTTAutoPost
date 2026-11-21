@@ -9,12 +9,11 @@ from __future__ import annotations
 import unicodedata
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, QTimer, Signal
-
 from ..compose import INVISIBLE
 from ..logging_setup import get_logger
+from .chunked import CHUNK_BYTES, IDLE_MS, ChunkedSender
 from .client import State
-from .poster import CHUNK_BYTES, IDLE_MS, MAX_WAIT_MS, build_chunks
+from .poster import build_chunks
 from .sendlock import PASTE
 from .session import PttSession
 
@@ -54,29 +53,16 @@ def paste_preview(text: str, max_lines: int = 5, width: int = 100) -> str:
     return out
 
 
-class PasteSender(QObject):
-    progress = Signal(int, int)
-    finished = Signal(bool, str)
+class PasteSender(ChunkedSender):
+    owner = PASTE
+    action = "貼上"
+    log_name = "paste"
 
     def __init__(self, session: PttSession, blocked: Callable[[], str | None], parent=None):
-        super().__init__(parent)
-        self.s = session
+        super().__init__(session, parent)
         self._blocked = blocked
-        self.running = False
         self.chars_sent = 0
         self.total_chars = 0
-        self._chunks: list[bytes] = []
-        self._i = 0
-        self._quiet = QTimer(self)
-        self._quiet.setSingleShot(True)
-        self._quiet.setInterval(IDLE_MS)
-        self._quiet.timeout.connect(self._next)
-        self._cap = QTimer(self)
-        self._cap.setSingleShot(True)
-        self._cap.setInterval(MAX_WAIT_MS)
-        self._cap.timeout.connect(lambda: self._abort("伺服器持續回傳資料或無回應，已停止貼上。"))
-        self.s.client.dataReceived.connect(self._on_data)
-        self.s.client.stateChanged.connect(self._on_state)
 
     def start(self, text: str) -> str | None:
         """Start sending. Returns None if started, else the reason nothing was sent."""
@@ -90,72 +76,35 @@ class PasteSender(QObject):
         if not text:
             return "沒有可貼上的文字。"
         chunks = build_chunks(text, CHUNK_BYTES)           # unencodable chars become '?'; no lock is taken on failure
-        lock = getattr(self.s, "send_lock", None)
-        if lock is not None and not lock.acquire(PASTE):
-            return f"{lock.label()}進行中，已暫停貼上；請等它結束後再試。"
-        self._chunks = chunks
-        self._i = 0
+        why = self._acquire()
+        if why:
+            return why
         self.chars_sent = 0
         self.total_chars = len(text.replace("\n", ""))
-        self.running = True
+        self._begin(chunks, IDLE_MS)
         log.info("paste started: %d chars, %d chunks", self.total_chars, len(self._chunks))
         self._next()
         return None
 
-    def cancel(self, why: str = "使用者取消貼上。") -> None:
-        self._abort(why)
-
-    def _chunk_chars(self, chunk: bytes) -> int:
-        return len(chunk.decode("cp950", "replace").replace("\r", ""))
-
-    def _next(self) -> None:
-        if not self.running:
-            return
-        self._cap.stop()
-        if self.s.client.state is not State.CONNECTED:
-            self._abort("連線已中斷，已停止貼上；不會重送。")
-            return
+    def _guard(self) -> str | None:
         why = self._blocked()
-        if why:
-            self._abort(why + "已停止貼上；不會重送。")
-            return
-        if self._i >= len(self._chunks):
-            self.running = False
-            self._release()
-            self.finished.emit(True, f"貼上完成：已送出 {self.chars_sent} 字（{len(self._chunks)} 段）。"
-                                     "程式只送出文字，未按 Enter／存檔；請在終端機確認內容。")
-            return
-        chunk = self._chunks[self._i]
-        if not self.s.client.send(chunk):
-            self._abort("傳送失敗。")
-            return
-        self.chars_sent += self._chunk_chars(chunk)
-        self._i += 1
-        self.progress.emit(self._i, len(self._chunks))
-        self._cap.start()
-        self._quiet.start()
+        return None if not why else why + "已停止貼上；不會重送。"
 
-    def _on_data(self, _data: bytes) -> None:
-        if self.running:
-            self._quiet.start()
+    def _timeout_message(self) -> str:
+        return "伺服器持續回傳資料或無回應，已停止貼上。"
 
-    def _on_state(self, st: State) -> None:
-        if self.running and st is not State.CONNECTED:
-            self._abort("連線已中斷，已停止貼上；不會重送。")
+    def _disconnect_message(self) -> str:
+        return "連線已中斷，已停止貼上；不會重送。"
 
-    def _release(self) -> None:
-        lock = getattr(self.s, "send_lock", None)
-        if lock is not None:
-            lock.release(PASTE)
+    def _cancel_message(self) -> str:
+        return "使用者取消貼上。"
 
-    def _abort(self, why: str) -> None:
-        if not self.running:
-            return
-        self.running = False
-        self._quiet.stop()
-        self._cap.stop()
-        self._release()
-        log.warning("paste aborted after %d/%d chunks: %s", self._i, len(self._chunks), why)
-        self.finished.emit(False, f"{why}（已送出 {self.chars_sent}／{self.total_chars} 字，"
-                                  f"共 {len(self._chunks)} 段中的 {self._i} 段）"
-                                  "請先目視確認終端機內容；程式不會自動重試或重送。")
+    def _count_chunk(self, chunk: bytes) -> None:
+        self.chars_sent += len(chunk.decode("cp950", "replace").replace("\r", ""))
+
+    def _abort_detail(self) -> str:
+        return f"已送出 {self.chars_sent}／{self.total_chars} 字，共 {len(self._chunks)} 段中的 {self._i} 段"
+
+    def _success_message(self) -> str:
+        return (f"貼上完成：已送出 {self.chars_sent} 字（{len(self._chunks)} 段）。"
+                "程式只送出文字，未按 Enter／存檔；請在終端機確認內容。")

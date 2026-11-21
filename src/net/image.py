@@ -16,7 +16,8 @@ from urllib.parse import unquote, urljoin, urlparse
 import requests
 
 from ..errors import FetchError, InputError, ToolError
-from ..links import is_article_image_url, is_auto_open_image_url
+from ..links import (IMAGE_EXTENSIONS, is_article_image_url, is_auto_open_image_url,
+                     make_pinned_session)
 from ..logging_setup import get_logger
 from ..parsers.fetch import (MAX_REDIRECTS, USER_AGENT, _mount_pinning, _pin_session,  # shared SSRF/DNS-pinning rules
                              validate_url)
@@ -25,7 +26,7 @@ log = get_logger("image")
 TIMEOUT = 15
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_ZIP_BYTES = 300 * 1024 * 1024
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
+_IMAGE_EXTS = IMAGE_EXTENSIONS
 _EXT_BY_TYPE = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
                 "image/webp": ".webp", "image/bmp": ".bmp", "image/avif": ".avif"}
 
@@ -70,8 +71,8 @@ def fetch_image(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_IMA
     """
     url = check_hop(raw_url, strict_host)
     cur, hops = url, 0
-    with requests.Session() as sess:                          # releases the urllib3 pool even on errors
-        _mount_pinning(sess)
+    with make_pinned_session(url, session_factory=requests.Session,
+                             mount=_mount_pinning, pin=_pin_session) as sess:
         sess.headers.update({"User-Agent": USER_AGENT, "Accept": "image/jpeg,image/png,image/gif,image/webp,image/bmp"})
         if not (referer and referer.startswith(("http://", "https://")) and not any(c in referer for c in " \r\n\t")):
             referer = None

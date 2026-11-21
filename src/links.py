@@ -15,7 +15,8 @@ from .terminal.screen import WIDE2
 
 _URL_RE = re.compile(r"(?i)(?<![A-Za-z0-9])https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 _TRAILING = ".,;:!?，。；：！？、\"'」』】》〉)]}"
-_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
+_IMAGE_EXTENSIONS = IMAGE_EXTENSIONS          # kept for internal callers
 _IMAGE_HOSTS = (
     "imgur.com", "i.imgur.com", "m.imgur.com", "imgbox.com", "i.ibb.co", "ibb.co",
     "gyazo.com", "puu.sh", "flic.kr", "postimg.cc", "i.postimg.cc", "imageshack.us",
@@ -59,7 +60,7 @@ def _trim(url: str) -> str:
 
 
 def _known_image_host(host: str) -> bool:
-    return any(host == h or host.endswith("." + h) for h in _IMAGE_HOSTS)
+    return host_matches(host, _IMAGE_HOSTS)
 
 
 def _private_host(host: str) -> bool:
@@ -73,6 +74,68 @@ def _private_host(host: str) -> bool:
     return not ip.is_global
 
 
+def host_matches(host: str, domains: tuple[str, ...] | list[str]) -> bool:
+    """Exact host or a subdomain; never a suffix such as imgur.com.evil.example."""
+    h = (host or "").lower().rstrip(".")
+    return bool(h) and any(h == d or h.endswith("." + d) for d in domains)
+
+
+def image_suffix(url: str) -> str:
+    """Lower-case path suffix (including the dot), or "" when the URL cannot be parsed."""
+    try:
+        return PurePosixPath(urlparse(url).path).suffix.lower()
+    except ValueError:
+        return ""
+
+
+def is_svg_url(url: str) -> bool:
+    return image_suffix(url) == ".svg"
+
+
+def public_https_host(url: str) -> str | None:
+    """The lower-case host when `url` is a public https URL, else None.
+
+    This is the one place that combines validate_http_url(), the https-only rule and the
+    string-only private/loopback rejection used by image links, shorteners and uploads.
+    """
+    if not validate_http_url(url):
+        return None
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return None
+    if p.scheme.lower() != "https":
+        return None
+    host = (p.hostname or "").lower().rstrip(".")
+    if not host or _private_host(host):
+        return None
+    return host
+
+
+def make_pinned_session(url: str, *, session_factory=None, mount=None, pin=None):
+    """A requests Session with DNS pinning applied to `url`.
+
+    Callers that test or specialise the HTTP layer can inject `session_factory`, `mount` and
+    `pin`; by default the shared parsers.fetch pinning implementation is used.
+    """
+    import requests
+
+    if session_factory is None:
+        session_factory = requests.Session
+    if mount is None or pin is None:
+        from .parsers.fetch import _mount_pinning, _pin_session
+        mount = mount or _mount_pinning
+        pin = pin or _pin_session
+    sess = session_factory()
+    try:
+        mount(sess)
+        pin(sess, url)
+    except Exception:
+        sess.close()
+        raise
+    return sess
+
+
 def is_image_url(url: str) -> bool:
     try:
         p = urlparse(url)
@@ -83,42 +146,21 @@ def is_image_url(url: str) -> bool:
         return False
     if _known_image_host(host):
         return True
-    return PurePosixPath(p.path).suffix.lower() in _IMAGE_EXTENSIONS
+    return image_suffix(url) in _IMAGE_EXTENSIONS
 
 
 def is_auto_open_image_url(url: str) -> bool:
     """Auto-open https image links on a known image host or with a known image extension."""
-    if not validate_http_url(url):
+    host = public_https_host(url)
+    if host is None or is_svg_url(url):
         return False
-    try:
-        p = urlparse(url)
-    except ValueError:
-        return False
-    if p.scheme.lower() != "https":
-        return False
-    host = (p.hostname or "").lower().rstrip(".")
-    if not host or _private_host(host):
-        return False
-    suffix = PurePosixPath(p.path).suffix.lower()
-    if suffix == ".svg":
-        return False
-    return _known_image_host(host) or suffix in _IMAGE_EXTENSIONS
+    return _known_image_host(host) or image_suffix(url) in _IMAGE_EXTENSIONS
 
 
 def is_article_image_url(url: str) -> bool:
     """An https image URL taken from the article itself (any public host, still no SVG)."""
-    if not validate_http_url(url):
-        return False
-    try:
-        p = urlparse(url)
-    except ValueError:
-        return False
-    if p.scheme.lower() != "https":
-        return False
-    host = (p.hostname or "").lower().rstrip(".")
-    if not host or _private_host(host):
-        return False
-    return PurePosixPath(p.path).suffix.lower() != ".svg"
+    host = public_https_host(url)
+    return host is not None and not is_svg_url(url)
 
 
 
@@ -164,7 +206,7 @@ def find_image_urls(screen, limit: int = 16) -> list[str]:
     found: list[str] = []
 
     def has_extension(url: str) -> bool:
-        return PurePosixPath(urlparse(url).path).suffix.lower() in _IMAGE_EXTENSIONS
+        return image_suffix(url) in _IMAGE_EXTENSIONS
 
     def add(url: str) -> None:
         url = _trim(url)

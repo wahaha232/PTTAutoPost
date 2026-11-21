@@ -14,20 +14,24 @@ the system OpenSSH client (ssh.exe on Windows), so no extra Python dependency is
 When an initial connection to the official PTT/PTT2 WebSocket endpoint fails, the client
 automatically retries the matching SSH endpoint once (and the other way round).  A session
 that was already established is reported once and is NEVER reconnected or resent.
+
+The protocol-specific socket/process handling lives in `transport.py`; this module is
+responsible for endpoint validation, proxy selection, the connect timeout and the single
+wss/ssh fallback.
 """
 from __future__ import annotations
 
 import enum
-import shutil
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, QUrl, Signal
-from PySide6.QtNetwork import QAbstractSocket, QNetworkRequest, QTcpSocket
-from PySide6.QtWebSockets import QWebSocket, QWebSocketHandshakeOptions
+from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtNetwork import QTcpSocket
+from PySide6.QtWebSockets import QWebSocket
 
 from ..logging_setup import get_logger
 from .proxy import ProxyConfig
 from .telnet import IacFilter
+from .transport import SshTransport, TelnetTransport, Transport, WebSocketTransport
 
 log = get_logger("net")
 DEFAULT_URL = "wss://ws.ptt.cc/bbs"
@@ -79,7 +83,6 @@ def protocol_label(url: str) -> str:
 
 def endpoint_problem(url: str) -> str | None:
     """Reason a BBS endpoint is refused, or None. wss/ws(loopback), telnet or ssh; no passwords."""
-    from urllib.parse import urlparse
     try:
         p = urlparse(url)
         host = p.hostname
@@ -131,7 +134,6 @@ def login_host_trusted(url: str) -> bool:
     A suffix match is not enough: a crafted host such as ws.ptt.cc.evil.example must
     never receive the user's credentials, and neither should another port or path.
     """
-    from urllib.parse import urlparse
     try:
         p = urlparse(url)
         host = (p.hostname or "").lower()
@@ -167,15 +169,11 @@ class PttClient(QObject):
     def __init__(self, parent=None, connect_timeout_ms: int = 10000):
         super().__init__(parent)
         self.state = State.DISCONNECTED
-        self._ws: QWebSocket | None = None
-        self._tcp: QTcpSocket | None = None
-        self._ssh: QProcess | None = None
-        self._ssh_err = b""
+        self._transport: Transport | None = None
         self.url = DEFAULT_URL
         self._first = True
         self._head = b""
         self._fallback: str | None = None
-        self._intentional_close = False
         self._connect_timeout_ms = connect_timeout_ms
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -184,6 +182,18 @@ class PttClient(QObject):
         self.bytes_received = 0
         self._iac = IacFilter()
         self.proxy = ProxyConfig()
+
+    @property
+    def _ws(self):
+        """The raw WSS socket of the current attempt (test/introspection only)."""
+        t = self._transport
+        return t.socket if isinstance(t, WebSocketTransport) else None
+
+    @property
+    def _tcp(self):
+        """The raw Telnet socket of the current attempt (test/introspection only)."""
+        t = self._transport
+        return t.socket if isinstance(t, TelnetTransport) else None
 
     # ----------------------------------------------------------------- control
     def set_proxy(self, proxy: ProxyConfig) -> None:
@@ -213,38 +223,32 @@ class PttClient(QObject):
     def _start_connect(self, url: str) -> None:
         """Begin one transport attempt; _fallback is kept until it is used or the first data arrives."""
         self.url = url
-        self._first, self._intentional_close, self._head = True, False, b""
+        self._first, self._head = True, b""
         self.bytes_sent = self.bytes_received = 0
         self._iac = IacFilter()
-        self._drop_ws()                                    # never leave a previous socket without an owner
-        self._drop_tcp()
-        self._drop_ssh()
+        self._drop_transport()                             # never leave a previous transport without an owner
         parsed = urlparse(url)
+        qt_proxy = None
+        if parsed.scheme != "ssh":
+            qt_proxy = self.proxy.to_qt()
+            if qt_proxy is not None:
+                log.info("BBS connection uses %s", self.proxy.label())
         if parsed.scheme == "telnet":
-            self._connect_telnet(parsed.hostname or "", parsed.port or 23)
-            return
-        if parsed.scheme == "ssh":
-            self._connect_ssh(parsed)
-            return
-        ws = QWebSocket(origin_for(url))
-        qt_proxy = self.proxy.to_qt()
-        if qt_proxy is not None:
-            ws.setProxy(qt_proxy)                             # must be set before open()
-            log.info("BBS connection uses %s", self.proxy.label())
-        ws.setMaxAllowedIncomingFrameSize(256 * 1024)         # PTT frames are a few KB; refuse absurd ones
-        ws.setMaxAllowedIncomingMessageSize(1024 * 1024)
-        self._ws = ws
-        ws.connected.connect(self._on_connected)
-        ws.disconnected.connect(self._on_disconnected)
-        ws.errorOccurred.connect(self._on_error)
-        ws.binaryMessageReceived.connect(self._on_message)
-        ws.textMessageReceived.connect(lambda _s: log.warning("ignored an unexpected text frame (PTT sends binary only)"))
-        opts = QWebSocketHandshakeOptions()
-        opts.setSubprotocols(["binary"])
+            transport = TelnetTransport(self, parsed.hostname or "", parsed.port or 23, qt_proxy, QTcpSocket)
+        elif parsed.scheme == "ssh":
+            transport = SshTransport(self, parsed.hostname or "", parsed.username or DEFAULT_SSH_USER,
+                                     parsed.port or 22, self._connect_timeout_ms)
+        else:
+            transport = WebSocketTransport(self, url, origin_for(url), qt_proxy, QWebSocket)
+        self._transport = transport
+        transport.opened.connect(self._on_transport_opened)
+        transport.data.connect(self._on_transport_data)
+        transport.errorOccurred.connect(self._on_transport_error)
+        transport.closed.connect(self._on_transport_closed)
         self._set_state(State.CONNECTING)
         log.info("connecting to %s", url)
         self._timer.start(self._connect_timeout_ms)
-        ws.open(QNetworkRequest(QUrl(url)), opts)
+        transport.open()
 
     def close(self) -> None:
         """Drop the socket and report DISCONNECTED immediately.
@@ -254,120 +258,71 @@ class PttClient(QObject):
         connection is aborted on purpose: the user explicitly asked to disconnect and an
         immediate reconnect must always be possible.
         """
-        self._intentional_close = True
         self._fallback = None
         self._timer.stop()
-        self._drop_ws()
-        self._drop_tcp()
-        self._drop_ssh()
+        self._drop_transport()
         self._set_state(State.DISCONNECTED)
 
-    def _drop_ws(self) -> None:
-        """Single cleanup path: forget the current socket, abort it and let Qt delete it."""
-        ws, self._ws = self._ws, None
-        if ws is not None:
-            ws.abort()
-            ws.deleteLater()
-
-    def _drop_tcp(self) -> None:
-        tcp, self._tcp = self._tcp, None
-        if tcp is not None:
-            tcp.abort()
-            tcp.deleteLater()
-
-    def _drop_ssh(self) -> None:
-        """Stop ssh.exe without letting its late signals touch a newer connection."""
-        proc, self._ssh = self._ssh, None
-        if proc is not None:
-            proc.blockSignals(True)
-            proc.kill()
-            proc.deleteLater()
-
-    def _connect_telnet(self, host: str, port: int) -> None:
-        tcp = QTcpSocket(self)
-        qt_proxy = self.proxy.to_qt()
-        if qt_proxy is not None:
-            tcp.setProxy(qt_proxy)                            # must be set before connectToHost()
-            log.info("BBS connection uses %s", self.proxy.label())
-        self._tcp = tcp
-        tcp.connected.connect(self._on_tcp_connected)
-        tcp.readyRead.connect(self._on_tcp_ready)
-        tcp.disconnected.connect(self._on_tcp_disconnected)
-        tcp.errorOccurred.connect(self._on_tcp_error)
-        self._set_state(State.CONNECTING)
-        log.info("connecting telnet to %s:%s (plaintext)", host, port)
-        self._timer.start(self._connect_timeout_ms)
-        tcp.connectToHost(host, port)
-
-    def _connect_ssh(self, parsed) -> None:
-        self._set_state(State.CONNECTING)
-        ssh = shutil.which("ssh")
-        if not ssh:
-            self._connect_failed("找不到系統 SSH 用戶端（ssh.exe），無法使用 SSH 連線。")
-            return
-        host = parsed.hostname or ""
-        user = parsed.username or DEFAULT_SSH_USER
-        port = parsed.port or 22
-        proc = QProcess(self)
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("TERM", "xterm-256color")
-        proc.setProcessEnvironment(env)
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
-        self._ssh, self._ssh_err = proc, b""
-        proc.started.connect(self._on_ssh_started)
-        proc.readyReadStandardOutput.connect(self._on_ssh_ready)
-        proc.readyReadStandardError.connect(self._on_ssh_stderr)
-        proc.errorOccurred.connect(self._on_ssh_error)
-        proc.finished.connect(self._on_ssh_finished)
-        log.info("connecting ssh to %s@%s:%s", user, host, port)
-        self._timer.start(self._connect_timeout_ms)
-        proc.start(ssh, [
-            "-tt",                                     # force a remote PTY even though stdin/stdout are pipes
-            "-o", "BatchMode=yes",                     # PTT uses "none" auth; never wait for an invisible prompt
-            "-o", "StrictHostKeyChecking=accept-new",  # first use is trusted, later changes are refused
-            "-o", f"ConnectTimeout={max(1, self._connect_timeout_ms // 1000)}",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
-            "-p", str(port),
-            f"{user}@{host}",
-        ])
-
-    def _stale(self) -> bool:
-        """True for a signal from a socket that is no longer the current one (it must never touch the current state)."""
-        s = self.sender()
-        return s is not None and s is not self._ws
+    def _drop_transport(self) -> None:
+        """Forget the current transport first: its late signals can no longer touch this client."""
+        transport, self._transport = self._transport, None
+        if transport is not None:
+            transport.close()
+            transport.deleteLater()
 
     def send(self, data: bytes) -> bool:
         """Send raw terminal bytes. Returns False (and sends nothing) unless connected."""
         if self.state is not State.CONNECTED or not data:
             return False
-        if self._tcp is not None:
-            if self._tcp.write(data) < 0:
-                return False
-            self._tcp.flush()
-        elif self._ssh is not None:
-            if self._ssh.write(data) < 0:
-                return False
-        elif self._ws is not None:
-            if self._ws.sendBinaryMessage(data) != len(data):    # Qt returns the bytes queued (0 when it refused)
-                return False
-        else:
+        transport = self._transport
+        if transport is None or not transport.send(data):
             return False
         self.bytes_sent += len(data)  # only counts; the content is never logged
         return True
 
     # ----------------------------------------------------------------- slots
-    def _on_connected(self) -> None:
-        if self._stale():
-            return
-        if self._intentional_close or self.state is not State.CONNECTING:      # cancelled / timed out meanwhile
-            if self._ws is not None:
-                self._ws.abort()
+    def _on_transport_opened(self) -> None:
+        if self.sender() is not self._transport:
             return
         self._timer.stop()
         self._fallback = None                              # an established session is never swapped or retried
         self._set_state(State.CONNECTED)
-        log.info("connected (subprotocol=%r)", self._ws.subprotocol() if self._ws else "")
+        log.info("connected (%s)", protocol_label(self.url))
+
+    def _on_transport_data(self, data: bytes) -> None:
+        transport = self._transport
+        if transport is None or self.sender() is not transport:
+            return
+        if transport.decoded:                              # Telnet already stripped/answered IAC
+            self.bytes_received += len(data)
+            if data:
+                self.dataReceived.emit(data)
+        else:
+            self._on_message(data)
+
+    def _on_transport_error(self, msg: str) -> None:
+        if self.sender() is not self._transport:
+            return
+        log.warning("transport error: %s", msg)
+        if self.state is State.CONNECTING:
+            self._connect_failed(msg)
+        else:
+            self._timer.stop()
+            self.failed.emit(msg)
+
+    def _on_transport_closed(self, reason: str) -> None:
+        if self.sender() is not self._transport:
+            return
+        was = self.state
+        self._timer.stop()
+        if was is State.CONNECTING:
+            self._connect_failed(reason)
+            return
+        self._drop_transport()
+        self._set_state(State.DISCONNECTED)
+        if was is State.CONNECTED:
+            log.warning("connection lost by remote")
+            self.failed.emit("連線已中斷（伺服器關閉連線）。程式不會自動重連或重送任何內容。")
 
     def _on_message(self, data) -> None:
         data = bytes(data)
@@ -384,102 +339,17 @@ class PttClient(QObject):
         if data:
             self.dataReceived.emit(data)
 
-    def _stale_tcp(self) -> bool:
-        s = self.sender()
-        return s is not None and s is not self._tcp
-
-    def _on_tcp_connected(self) -> None:
-        if self._stale_tcp():
-            return
-        if self._intentional_close or self.state is not State.CONNECTING:
-            self._drop_tcp()
-            return
-        self._timer.stop()
-        self._fallback = None
-        self._set_state(State.CONNECTED)
-        log.info("connected (telnet)")
-
-    def _on_tcp_ready(self) -> None:
-        if self._stale_tcp() or self._tcp is None:
-            return
-        data = bytes(self._tcp.readAll())
-        if not data:
-            return
-        self.bytes_received += len(data)
-        data, replies = self._iac.feed_with_replies(data)
-        if replies and self._tcp is not None:
-            self._tcp.write(replies)
-            self._tcp.flush()
-        if data:
-            self.dataReceived.emit(data)
-
-    def _on_tcp_error(self, _err) -> None:
-        if self._intentional_close or self._stale_tcp() or self._tcp is None:
-            return
-        msg = self._tcp.errorString()
-        log.warning("telnet socket error: %s", msg)
-        if self.state is State.CONNECTING:
-            self._connect_failed(f"Telnet 連線錯誤：{msg}")
-        else:
-            self._timer.stop()
-            self.failed.emit(f"連線錯誤：{msg}")
-
-    def _on_tcp_disconnected(self) -> None:
-        if self._stale_tcp():
-            return
-        was = self.state
-        if was is State.CONNECTING and not self._intentional_close:
-            self._connect_failed("Telnet 連線中斷（伺服器關閉連線）。")
-            return
-        self._timer.stop()
-        self._drop_tcp()
-        self._set_state(State.DISCONNECTED)
-        if was is State.CONNECTED and not self._intentional_close:
-            log.warning("telnet connection lost by remote")
-            self.failed.emit("連線已中斷（伺服器關閉連線）。程式不會自動重連或重送任何內容。")
-
-    def _on_error(self, err) -> None:
-        if self._intentional_close or self._stale():
-            return
-        msg = self._ws.errorString() if self._ws else str(err)
-        log.warning("socket error: %s", msg)
-        if self.state is State.CONNECTING and self._ws is not None:   # handshake failed: no 'disconnected' follows
-            self._connect_failed(f"WSS 連線錯誤：{msg}")
-        else:
-            self._timer.stop()
-            self.failed.emit(f"連線錯誤：{msg}")
-
-    def _on_disconnected(self) -> None:
-        if self._stale():
-            return
-        was = self.state
-        if was is State.CONNECTING and not self._intentional_close:
-            self._connect_failed("WSS 連線中斷（伺服器關閉連線）。")
-            return
-        self._timer.stop()
-        ws, self._ws = self._ws, None
-        if ws is not None:
-            ws.deleteLater()
-        self._set_state(State.DISCONNECTED)
-        if was is State.CONNECTED and not self._intentional_close:
-            log.warning("connection lost by remote")
-            self.failed.emit("連線已中斷（伺服器關閉連線）。程式不會自動重連或重送任何內容。")
-
     def _connect_failed(self, reason: str) -> None:
         """End a failed initial attempt; switch to the paired protocol once, if there is one."""
-        if self._intentional_close or self.state is not State.CONNECTING:
+        if self.state is not State.CONNECTING:
             return
         alt, self._fallback = self._fallback, None
         self._timer.stop()
-        self._intentional_close = True
-        self._drop_ws()
-        self._drop_tcp()
-        self._drop_ssh()
+        self._drop_transport()
         self._set_state(State.DISCONNECTED)
         if alt:
             log.warning("initial %s connection failed; switching to %s", protocol_label(self.url), protocol_label(alt))
             self.failed.emit(f"{reason} 自動改用 {protocol_label(alt)} 連線…")
-            self._intentional_close = False
             self._start_connect(alt)
         else:
             self.failed.emit(reason)
@@ -487,61 +357,6 @@ class PttClient(QObject):
     def _on_connect_timeout(self) -> None:
         log.warning("connect timeout")
         self._connect_failed(f"連線逾時（{self._connect_timeout_ms // 1000} 秒）。")
-
-    # ----------------------------------------------------------------- ssh (OpenSSH)
-    def _stale_ssh(self) -> bool:
-        s = self.sender()
-        return s is not None and s is not self._ssh
-
-    def _on_ssh_started(self) -> None:
-        if not self._stale_ssh():
-            log.info("ssh process started; waiting for the BBS screen")
-
-    def _on_ssh_stderr(self) -> None:
-        if self._stale_ssh() or self._ssh is None:
-            return
-        data = bytes(self._ssh.readAllStandardError())
-        if data:
-            self._ssh_err = (self._ssh_err + data)[-4096:]     # diagnostics only; never shown as terminal data
-
-    def _on_ssh_ready(self) -> None:
-        if self._stale_ssh() or self._ssh is None:
-            return
-        data = bytes(self._ssh.readAllStandardOutput())
-        if not data:
-            return
-        if self.state is State.CONNECTING and not self._intentional_close:
-            self._timer.stop()
-            self._fallback = None
-            self._set_state(State.CONNECTED)
-            log.info("connected (ssh)")
-        self._on_message(data)
-
-    def _on_ssh_error(self, err) -> None:
-        if self._intentional_close or self._stale_ssh() or self._ssh is None:
-            return
-        msg = self._ssh.errorString() or str(err)
-        log.warning("ssh process error: %s", msg)
-        if self.state is State.CONNECTING:
-            self._connect_failed(f"SSH 連線錯誤：{msg}")
-
-    def _on_ssh_finished(self, code: int, _status) -> None:
-        if self._stale_ssh():
-            return
-        if self._intentional_close:
-            self._drop_ssh()
-            return
-        was = self.state
-        detail = self._ssh_err.decode("utf-8", "replace").strip().splitlines()
-        tail = detail[-1][:300] if detail else ""
-        if was is State.CONNECTING:
-            self._connect_failed(f"SSH 連線失敗：{tail}" if tail else f"SSH 連線失敗（結束碼 {code}）。")
-            return
-        self._drop_ssh()
-        if was is State.CONNECTED:
-            log.warning("ssh connection lost")
-            self._set_state(State.DISCONNECTED)
-            self.failed.emit("連線已中斷（SSH 連線結束）。程式不會自動重連或重送任何內容。")
 
     def _set_state(self, st: State) -> None:
         if st is not self.state:

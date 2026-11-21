@@ -9,12 +9,11 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import dataclass
-from urllib.parse import urlparse
 
 import requests
 
 from ..errors import FetchError, InputError
-from ..links import validate_http_url
+from ..links import host_matches, public_https_host, validate_http_url
 from ..logging_setup import get_logger
 from ..version import __version__
 from .upload import _session_for, read_capped
@@ -51,14 +50,8 @@ def choices() -> list[tuple[str, str]]:
 
 
 def _allowed_response(url: str, host: str) -> bool:
-    if not validate_http_url(url):
-        return False
-    try:
-        p = urlparse(url)
-    except ValueError:
-        return False
-    h = (p.hostname or "").lower().rstrip(".")
-    return p.scheme.lower() == "https" and (h == host or h.endswith("." + host))
+    h = public_https_host(url)
+    return h is not None and host_matches(h, (host,))
 
 
 def shorten_url(service_key: str, url: str, timeout: float = 10,

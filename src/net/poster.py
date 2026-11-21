@@ -11,21 +11,18 @@ Hard guarantees (covered by tests/test_poster.py against a fake BBS that records
 from __future__ import annotations
 
 import enum
-import re
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import Signal
 
 from ..compose import INVISIBLE
 from ..logging_setup import get_logger
 from ..terminal.detect import Kind, editor_is_empty, reply_editor_ready, title_prompt_is_empty
+from .chunked import CHUNK_BYTES, IDLE_MS, ChunkedSender
 from .client import State
 from .sendlock import PASTE, TYPING
 from .session import PttSession
 
 log = get_logger("poster")
-CHUNK_BYTES = 100
-IDLE_MS = 120
-MAX_WAIT_MS = 3000
 MONEY_CHUNK_BYTES = 2          # one cp950 character (or one ASCII byte)
 MONEY_CHAR_MS = 500            # PTT: at most 1 P per 2 seconds = 4 chars per 2 s
 # zero-width (non-)joiners, variation selectors and skin-tone modifiers: invisible glue inside one
@@ -121,31 +118,19 @@ def preflight(session: PttSession, target: Target, text: str, allow_nonempty: bo
     return None
 
 
-class PostTyper(QObject):
+class PostTyper(ChunkedSender):
     started = Signal(object)         # Target -- emitted BEFORE the first byte is sent (write-ahead hook)
-    progress = Signal(int, int)      # chunks done, total
-    finished = Signal(bool, str)     # ok, message (also emitted on abort with ok=False)
+
+    owner = TYPING
+    action = "自動輸入"
+    log_name = "typing"
 
     def __init__(self, session: PttSession, parent=None):
-        super().__init__(parent)
-        self.s = session
-        self.running = False
+        super().__init__(session, parent)
         self.bytes_sent = 0
         self.total_chars = 0
         self.sent_chars = 0
-        self._chunks: list[bytes] = []
-        self._i = 0
         self._target = Target.BODY
-        self._quiet = QTimer(self)
-        self._quiet.setSingleShot(True)
-        self._quiet.setInterval(IDLE_MS)
-        self._quiet.timeout.connect(self._next)
-        self._cap = QTimer(self)
-        self._cap.setSingleShot(True)
-        self._cap.setInterval(MAX_WAIT_MS)
-        self._cap.timeout.connect(lambda: self._abort("伺服器持續回傳資料或無回應，已停止輸入。"))
-        self.s.client.dataReceived.connect(self._on_data)
-        self.s.client.stateChanged.connect(self._on_state)
 
     def start(self, target: Target, text: str, allow_nonempty: bool = False,
               pasting: bool = False, money_pace: bool = False) -> str | None:
@@ -160,24 +145,20 @@ class PostTyper(QObject):
         if why:
             log.info("typing refused (%s): %s", target.value, why)
             return why
-        lock = getattr(self.s, "send_lock", None)
-        if lock is not None and not lock.acquire(TYPING):
-            return f"{lock.label()}進行中，已暫停自動輸入；請等它結束後再試。"
-        self._target, self._i, self.bytes_sent = target, 0, 0
+        why = self._acquire()
+        if why:
+            return why
+        self._target = target
+        self.bytes_sent = 0
         self.total_chars = sum(1 for ch in text if not ch.isspace() and ch.isprintable())
         self.sent_chars = 0
-        self._chunks = build_chunks(text, limit=MONEY_CHUNK_BYTES if money_pace else CHUNK_BYTES)
-        self._quiet.setInterval(MONEY_CHAR_MS if money_pace else IDLE_MS)
-        self.running = True
+        chunks = build_chunks(text, limit=MONEY_CHUNK_BYTES if money_pace else CHUNK_BYTES)
+        self._begin(chunks, MONEY_CHAR_MS if money_pace else IDLE_MS)
         self.started.emit(target)            # caller records "input started" durably first
         log.info("typing %s: %d chunks (%s)", target.value, len(self._chunks),
                  "money pace" if money_pace else "normal")
         self._next()
         return None
-
-    def cancel(self) -> None:
-        if self.running:
-            self._abort("使用者取消輸入；已輸入的部分不會自動清除或重送。")
 
     # ----------------------------------------------------------------- internals
     def _screen_ok(self) -> bool:
@@ -186,53 +167,28 @@ class PostTyper(QObject):
             return k is Kind.TITLE_PROMPT          # the typed echo stays on the '標題：' row, so every chunk can be verified
         return k is Kind.EDITOR
 
-    def _next(self) -> None:
-        if not self.running:
-            return
-        self._cap.stop()
-        if self.s.client.state is not State.CONNECTED:
-            self._abort("連線中斷。")
-            return
-        if self._i >= len(self._chunks):
-            self.running = False
-            self._release()
-            self.finished.emit(True, "傳送完成：程式只確認資料已送出，並不代表伺服器已完整收到。請在終端機逐行核對內容；程式不會代按存檔或送出，請自行確認／送出。")
-            return
-        if not self._screen_ok():
-            self._abort(f"輸入途中畫面不是預期的畫面（偵測為：{self.s.kind.value}），已停止；請目視確認終端機內容。")
-            return
-        chunk = self._chunks[self._i]
-        if not self.s.client.send(chunk):
-            self._abort("傳送失敗。")
-            return
+    def _guard(self) -> str | None:
+        if self._screen_ok():
+            return None
+        return f"輸入途中畫面不是預期的畫面（偵測為：{self.s.kind.value}），已停止；請目視確認終端機內容。"
+
+    def _timeout_message(self) -> str:
+        return "伺服器持續回傳資料或無回應，已停止輸入。"
+
+    def _disconnect_message(self) -> str:
+        return "連線中斷；不會自動重連或重送。請重新連線並目視檢查編輯區現況。"
+
+    def _cancel_message(self) -> str:
+        return "使用者取消輸入；已輸入的部分不會自動清除或重送。"
+
+    def _count_chunk(self, chunk: bytes) -> None:
         self.bytes_sent += len(chunk)
         self.sent_chars += sum(1 for ch in chunk.decode("cp950", errors="ignore")
                                if not ch.isspace() and ch.isprintable())
-        self._i += 1
-        self.progress.emit(self._i, len(self._chunks))
-        self._cap.start()
-        self._quiet.start()                  # next chunk after the server has been quiet for IDLE_MS
 
-    def _on_data(self, _data: bytes) -> None:
-        if self.running:
-            self._quiet.start()              # still receiving: restart the quiet window
+    def _abort_detail(self) -> str:
+        return f"已送出 {self.bytes_sent} bytes，共 {len(self._chunks)} 段中的 {self._i} 段"
 
-    def _on_state(self, st: State) -> None:
-        if self.running and st is not State.CONNECTED:
-            self._abort("連線中斷；不會自動重連或重送。請重新連線並目視檢查編輯區現況。")
-
-    def _release(self) -> None:
-        lock = getattr(self.s, "send_lock", None)
-        if lock is not None:
-            lock.release(TYPING)
-
-    def _abort(self, why: str) -> None:
-        if not self.running:
-            return
-        self.running = False
-        self._quiet.stop()
-        self._cap.stop()
-        self._release()
-        log.warning("typing aborted after %d/%d chunks: %s", self._i, len(self._chunks), why)
-        self.finished.emit(False, f"{why}（已送出 {self.bytes_sent} bytes，共 {len(self._chunks)} 段中的 {self._i} 段）"
-                                  "請先目視確認終端機內容；程式不會自動重試或重送。")
+    def _success_message(self) -> str:
+        return ("傳送完成：程式只確認資料已送出，並不代表伺服器已完整收到。請在終端機逐行核對內容；"
+                "程式不會代按存檔或送出，請自行確認／送出。")

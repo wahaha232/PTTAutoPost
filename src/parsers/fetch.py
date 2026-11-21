@@ -31,6 +31,12 @@ ROBOTS_OK_TTL = 3600                   # seconds a successful robots.txt decisio
 ROBOTS_FAIL_TTL = 60                   # a transient failure must not pin the host until restart
 MAX_ROBOTS_CACHE = 128
 ALLOW_PRIVATE_HOSTS = False            # tests / explicit override only: refuse loopback, LAN and metadata addresses
+# IANA special-purpose ranges that older `ipaddress` versions still report as global
+# (notably 192.0.0.0/24 before Python 3.13).  They must never be fetched.
+_SPECIAL_USE = tuple(ipaddress.ip_network(n) for n in (
+    "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15",
+    "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32",
+))
 _RESTRICTED = {401: "需要登入", 402: "需要付費", 403: "存取被拒（可能是登入牆、付費牆或反爬機制）", 451: "因法律原因無法存取"}
 # base URL -> (cached_at mono, parser | None, note)
 _robots_cache: dict[str, tuple[float, urllib.robotparser.RobotFileParser | None, str]] = {}
@@ -186,7 +192,7 @@ def _resolve_public(url: str) -> tuple[str, list[tuple[int, str]]] | None:
             continue
         if addr.version == 6 and addr.ipv4_mapped is not None:
             addr = addr.ipv4_mapped                  # ::ffff:127.0.0.1 is loopback
-        if not addr.is_global or addr.is_multicast:  # also CGNAT 100.64/10, benchmarking, documentation ranges
+        if not addr.is_global or addr.is_multicast or any(addr in net for net in _SPECIAL_USE):
             raise FetchError("網址指向本機或內網位址，為避免誤觸內部服務，已拒絕。", f"{host} -> {addr}")
         if info[0] in (socket.AF_INET, socket.AF_INET6) and (info[0], str(addr)) not in addresses:
             addresses.append((info[0], str(addr)))

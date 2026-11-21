@@ -24,21 +24,5 @@ class FetchError(ToolError):
     code = "E-FETCH"
 
 
-class ParseError(ToolError):
-    code = "E-PARSE"
-
-
-class ValidationError(ToolError):
-    code = "E-CHECK"
-
-
 class StorageError(ToolError):
     code = "E-DB"
-
-
-class ConnectionFailed(ToolError):
-    code = "E-CONN"
-
-
-class DeliveryError(ToolError):
-    code = "E-DELIVERY"
