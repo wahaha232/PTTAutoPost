@@ -168,6 +168,7 @@ class FakeProc(QObject):
         self.results = list(results or [])
         self.accepted = bytearray()
         self.blocks = []
+        self.start_args = None
 
     def setProcessEnvironment(self, _env):
         pass
@@ -175,8 +176,8 @@ class FakeProc(QObject):
     def setProcessChannelMode(self, _mode):
         pass
 
-    def start(self, _program, _args):
-        pass
+    def start(self, program, args):
+        self.start_args = (program, args)
 
     def write(self, data):
         n = self.results.pop(0) if self.results else len(data)
@@ -220,3 +221,46 @@ def test_ssh_uses_the_same_buffered_write_path(monkeypatch):
     fake.bytesWritten.emit(2)
     assert bytes(fake.accepted) == b"abcd"
     assert not t._pending
+
+
+def test_ssh_quotes_the_project_known_hosts_path_with_spaces(monkeypatch):
+    fake = FakeProc()
+
+    class ProcFactory:
+        ProcessChannelMode = FakeProc.ProcessChannelMode
+
+        def __call__(self, _parent):
+            return fake
+
+    monkeypatch.setattr(T, "QProcess", ProcFactory())
+    monkeypatch.setattr(T.shutil, "which", lambda _name: "ssh.exe")
+    path = r"D:\VS CODE\PTTAutoPost\data\ssh_known_hosts"
+    t = T.SshTransport(None, "ptt.cc", "bbs", 22, 10000,
+                       host_key_check=lambda _h, _p: (True, ""), known_hosts_path=path)
+    t.open()
+    assert fake.start_args is not None
+    assert f'UserKnownHostsFile="{path}"' in fake.start_args[1]
+
+
+def test_ssh_open_stops_when_the_host_key_check_closed_it(monkeypatch):
+    fake = FakeProc([2])
+
+    class ProcFactory:
+        ProcessChannelMode = FakeProc.ProcessChannelMode
+
+        def __call__(self, _parent):
+            return fake
+
+    monkeypatch.setattr(T, "QProcess", ProcFactory())
+    monkeypatch.setattr(T.shutil, "which", lambda _name: "ssh.exe")
+    holder = {}
+
+    def check(_host, _port):
+        holder["t"].close()                    # timeout / user cancellation during the dialog
+        return True, ""
+
+    t = T.SshTransport(None, "ptt.cc", "bbs", 22, 10000, host_key_check=check,
+                       known_hosts_path=r"C:\tmp\known_hosts")
+    holder["t"] = t
+    t.open()
+    assert fake.start_args is None

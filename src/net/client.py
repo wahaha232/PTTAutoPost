@@ -249,8 +249,9 @@ class PttClient(QObject):
         transport.closed.connect(self._on_transport_closed)
         self._set_state(State.CONNECTING)
         log.info("connecting to %s", url)
-        self._timer.start(self._connect_timeout_ms)
-        transport.open()
+        transport.open()                     # SSH may wait for the host-key confirmation dialog
+        if self._transport is transport and self.state is State.CONNECTING:
+            self._timer.start(self._connect_timeout_ms)
 
     def close(self) -> None:
         """Drop the socket and report DISCONNECTED immediately.

@@ -268,10 +268,14 @@ class SshTransport(Transport):
                 self.errorOccurred.emit(f"SSH 主機金鑰驗證失敗：{reason}")
                 return
         if self._known_hosts_path:
-            hostkey_opts = ["-o", f"UserKnownHostsFile={self._known_hosts_path}",
+            # OpenSSH splits an unquoted UserKnownHostsFile value on whitespace; quote the
+            # path so a portable folder such as "...\VS CODE\..." is still one file.
+            hostkey_opts = ["-o", f'UserKnownHostsFile="{self._known_hosts_path}"',
                             "-o", "StrictHostKeyChecking=yes"]
         else:
             hostkey_opts = ["-o", "StrictHostKeyChecking=accept-new"]
+        if self._closing or self._socket is None:
+            return
         log.info("connecting ssh to %s@%s:%s", self._user, self._host, self._port)
         self._socket.start(self._ssh, [
             "-tt",                                     # force a remote PTY even though stdin/stdout are pipes

@@ -1,5 +1,5 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.36"
+__version__ = "0.8.37"
 BUILD_DATE = "2026/11/21"
 APP_NAME = "PTT AutoPost"
 
@@ -14,6 +14,14 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.37", "2026/11/21", [
+        "Fixed SSH when the portable folder path contains spaces: the project-owned "
+        "UserKnownHostsFile value is now quoted, so OpenSSH no longer splits the path into "
+        "several nonexistent files and rejects the host key.",
+        "The connect timeout now starts after the SSH host-key confirmation dialog returns, and "
+        "the transport re-checks its socket before starting ssh; a timeout during the dialog can "
+        "no longer close the transport and then call start() on a missing process.",
+    ]),
     ("0.8.36", "2026/11/21", [
         "robots.txt Crawl-delay is now obeyed in full (no 12-second cap), uses a monotonic per-host "
         "reservation so concurrent fetches queue in order, and cancellation during the wait never "
