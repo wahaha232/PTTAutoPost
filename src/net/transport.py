@@ -270,7 +270,11 @@ class SshTransport(Transport):
         if self._known_hosts_path:
             # OpenSSH splits an unquoted UserKnownHostsFile value on whitespace; quote the
             # path so a portable folder such as "...\VS CODE\..." is still one file.
-            hostkey_opts = ["-o", f'UserKnownHostsFile="{self._known_hosts_path}"',
+            # -F none and GlobalKnownHostsFile=none ensure the user's ~/.ssh/config never
+            # overrides the project-owned known_hosts or StrictHostKeyChecking policy.
+            hostkey_opts = ["-F", "none",
+                            "-o", "GlobalKnownHostsFile=none",
+                            "-o", f'UserKnownHostsFile="{self._known_hosts_path}"',
                             "-o", "StrictHostKeyChecking=yes"]
         else:
             hostkey_opts = ["-o", "StrictHostKeyChecking=accept-new"]

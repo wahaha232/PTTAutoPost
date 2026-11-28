@@ -5,7 +5,7 @@ point PTTAUTOPOST_SIGNING_KEY at it or pass --key.
 
 Usage:
     python tools/sign_release.py keygen --out D:/Claude/keystore/pttautopost-update-ed25519.key
-    python tools/sign_release.py sign dist/PTTAutoPost-0.8.19-portable.zip dist/PTTAutoPost-0.8.18-delta-0.8.19.zip
+    python tools/sign_release.py sign dist/PTTAutoPost-0.8.19-portable.zip dist/PTTAutoPost-0.8.19-delta-0.8.18.zip
 
 `sign` writes <asset>.sig next to each asset; upload every .sig to the same GitHub Release.
 """

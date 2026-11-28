@@ -7,6 +7,14 @@ build/
 /data/
 /logs/
 /config/
+/updates/
+# virtualenvs & editor/OS temp files
+.venv/
+venv/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
 # generated source-listing snapshot (stale by definition)
 PTTAutoPost_全部程式碼.txt
 PTTAutoPost-*-source.txt

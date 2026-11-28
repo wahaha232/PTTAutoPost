@@ -71,7 +71,8 @@ def fetch_image(raw_url: str, timeout: float = TIMEOUT, max_bytes: int = MAX_IMA
         referer = referer if article_host else None           # unparsable referer: send none
         image_host = hostname_of(url)
         while True:
-            _pin_session(sess, cur)                            # resolve + pin every hop, fail closed on DNS errors
+            if hops > 0:
+                _pin_session(sess, cur)                        # hop 0 is already pinned by make_pinned_session()
             headers = {}
             if referer and hostname_of(cur) == article_host:
                 headers["Referer"] = referer
@@ -167,6 +168,8 @@ def download_images_zip(urls: list[str], target: Path, referer: str | None = Non
                 try:
                     data = fetch_image(url, strict_host=False, referer=referer, cancel=cancel)
                 except ToolError as e:
+                    if e.detail == "cancelled":
+                        raise
                     skipped += 1
                     errors.append(f"{url}: {e.message}")
                     log.info("article image skipped %s: %s", url, e.message)

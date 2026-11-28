@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pytest  # noqa: E402
-from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
+from PySide6.QtCore import QEventLoop, QThreadPool, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 
@@ -68,6 +68,7 @@ def _dispose_windows():
     unsaved-changes dialog or tray hand-off during teardown).
     """
     yield
+    QThreadPool.globalInstance().waitForDone(2000)
     app = QApplication.instance()
     if app is None:
         return

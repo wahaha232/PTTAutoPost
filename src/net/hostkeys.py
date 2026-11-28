@@ -54,9 +54,13 @@ def scan_host_key(host: str, port: int, timeout: float = 5.0,
     tool = which("ssh-keyscan")
     if not tool:
         raise HostKeyError("找不到 ssh-keyscan（OpenSSH 用戶端），無法驗證 SSH 主機金鑰。")
+    run_kwargs = {"capture_output": True, "text": True, "timeout": timeout + 2}
+    if os.name == "nt":
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if flags:
+            run_kwargs["creationflags"] = flags
     try:
-        completed = runner([tool, "-p", str(port), "-T", str(max(1, int(timeout))), host],
-                           capture_output=True, text=True, timeout=timeout + 2)
+        completed = runner([tool, "-p", str(port), "-T", str(max(1, int(timeout))), host], **run_kwargs)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise HostKeyError(f"ssh-keyscan 無法完成（{type(e).__name__}）。") from e
     if completed.returncode != 0:

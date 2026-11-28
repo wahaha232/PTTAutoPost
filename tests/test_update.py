@@ -293,6 +293,10 @@ def test_stage_delta_never_deletes_user_data(monkeypatch, tmp_path):
     monkeypatch.setattr(update, "updates_dir", lambda: tmp_path / "updates")
     with pytest.raises(update.UpdateError, match="使用者資料"):
         update.stage_delta(_make_delta(tmp_path, delete=["data/pttpost.db"]))
+    with pytest.raises(update.UpdateError, match="使用者資料"):
+        update.stage_delta(_make_delta(tmp_path, files={"data/pttpost.db": b"overwrite"}))
+    with pytest.raises(update.UpdateError, match="使用者資料"):
+        update.stage_delta(_make_delta(tmp_path, files={"config/settings.ini": b"overwrite"}))
     staged = update.stage_delta(_make_delta(tmp_path, delete=["_internal/old.dll"]))
     assert staged.deletes == ("_internal/old.dll",)
 

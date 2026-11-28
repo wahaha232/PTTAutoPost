@@ -239,6 +239,8 @@ def test_ssh_quotes_the_project_known_hosts_path_with_spaces(monkeypatch):
                        host_key_check=lambda _h, _p: (True, ""), known_hosts_path=path)
     t.open()
     assert fake.start_args is not None
+    assert "-F" in fake.start_args[1] and "none" in fake.start_args[1]
+    assert "GlobalKnownHostsFile=none" in fake.start_args[1]
     assert f'UserKnownHostsFile="{path}"' in fake.start_args[1]
 
 

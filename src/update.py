@@ -270,17 +270,22 @@ def stage_delta(result: DownloadResult, expected_version: str | None = None) -> 
                 if not isinstance(item, dict):
                     raise UpdateError("更新檔清單格式不正確。")
                 rel = _safe_rel(item.get("path"))
+                if rel.parts[0].lower() in USER_DATA_DIRS:
+                    raise UpdateError(f"更新檔嘗試覆蓋使用者資料 {rel}，已停止。")
                 expected = str(item.get("sha256") or "").lower()
                 try:
                     size = int(item.get("size") or 0)
                 except (TypeError, ValueError):
                     raise UpdateError("更新檔清單的大小格式不正確。") from None
-                if size > MAX_DELTA_FILE_BYTES:
+                if size < 0 or size > MAX_DELTA_FILE_BYTES:
                     raise UpdateError(f"更新檔中的 {rel} 過大，已停止。")
                 try:
-                    data = zf.read(rel.as_posix())
+                    info = zf.getinfo(rel.as_posix())
                 except KeyError:
                     raise UpdateError(f"更新檔缺少 {rel}，已停止。") from None
+                if info.file_size > MAX_DELTA_FILE_BYTES:
+                    raise UpdateError(f"更新檔中的 {rel} 過大，已停止。")
+                data = zf.read(info)
                 if len(data) != size or hashlib.sha256(data).hexdigest() != expected:
                     raise UpdateError(f"更新檔中的 {rel} 驗證失敗，已停止。")
                 total += len(data)
@@ -483,7 +488,10 @@ def download_asset(asset: Asset, dest: Path | None = None, token: str | None = N
             final_url = getattr(resp, "url", "") or ""
             if final_url and not _allowed_url(final_url):
                 raise UpdateError("下載被重新導向到不允許的網址，已停止。")
-            declared = int(getattr(resp, "headers", {}).get("Content-Length") or 0)
+            try:
+                declared = max(0, int(getattr(resp, "headers", {}).get("Content-Length") or 0))
+            except (TypeError, ValueError):
+                declared = 0
             if declared > MAX_ASSET_BYTES:
                 raise UpdateError("更新檔超過大小上限，已停止下載。")
             with open(part, "wb") as f:

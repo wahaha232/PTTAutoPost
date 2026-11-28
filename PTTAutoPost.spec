@@ -4,6 +4,7 @@
 import os
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = Path(SPECPATH).resolve()  # noqa: F821
 sys.path.insert(0, str(ROOT / "tools"))
@@ -34,8 +35,8 @@ a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[(str(ROOT / "assets" / "buymeacoffee.png"), "assets")],
-    hiddenimports=["PySide6.QtWebSockets", "PySide6.QtNetwork", "lxml.etree", "lxml._elementpath", "charset_normalizer"],
+    datas=[(str(ROOT / "assets" / "buymeacoffee.png"), "assets"), *collect_data_files("qt_themes")],
+    hiddenimports=["PySide6.QtWebSockets", "PySide6.QtNetwork", "lxml.etree", "lxml._elementpath", "charset_normalizer", "qt_themes"],
     hookspath=[],
     runtime_hooks=[],
     excludes=EXCLUDES,

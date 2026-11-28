@@ -63,3 +63,20 @@ def test_apply_theme_sets_application_palette(qapp):
     assert QApplication.instance().palette().color(QPalette.ColorRole.Window).name() == theme.LIGHT.window
     theme.apply_theme(QApplication.instance(), "dark")
     assert QApplication.instance().property("ptt_theme") == "dark"
+
+
+def test_open_source_qt_themes_are_available_and_accessible(qapp):
+    def rgb(hex_):
+        return tuple(int(hex_[i:i + 2], 16) for i in (1, 3, 5))
+
+    for name in ("github_light", "github_dark", "catppuccin_latte", "catppuccin_mocha", "nord", "dracula", "one_dark_two"):
+        assert name in theme.THEMES
+        assert theme.resolve_theme(name) == name
+        t = theme.get_theme(name)
+        css = theme.stylesheet(t)
+        assert 'QPushButton[variant="primary"]' in css
+        for edge in (t.muted, t.info):
+            assert theme.contrast_ratio(rgb(edge), rgb(t.base)) >= 3, (name, edge)
+            assert theme.contrast_ratio(rgb(edge), rgb(t.window)) >= 3, (name, edge)
+    theme.apply_theme(QApplication.instance(), "catppuccin_mocha")
+    assert QApplication.instance().property("ptt_theme") == "catppuccin_mocha"

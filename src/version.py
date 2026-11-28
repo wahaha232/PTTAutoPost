@@ -1,6 +1,6 @@
 """Single source of truth for the application version (bump it on every delivered change)."""
-__version__ = "0.8.37"
-BUILD_DATE = "2026/11/21"
+__version__ = "0.8.38"
+BUILD_DATE = "2026/11/28"
 APP_NAME = "PTT AutoPost"
 
 # Sponsorship: leave SPONSOR_URL empty to hide the whole block. Must be an http/https URL.
@@ -14,6 +14,18 @@ SPONSOR_MESSAGE = (
 
 # newest first; tests/test_version.py enforces: CHANGELOG[0] == (__version__, BUILD_DATE)
 CHANGELOG = [
+    ("0.8.38", "2026/11/28", [
+        "Redesigned the UI using the open-source qt-themes (MIT) palettes with Qt Fusion style, "
+        "modern rounded controls, primary action emphasis, and 10 theme choices (including GitHub "
+        "Light/Dark, Catppuccin Latte/Mocha, Nord, Dracula and One Dark) with WCAG contrast checks.",
+        "Hardened delta updates (stage_delta now blocks overwriting user data directories and checks "
+        "ZipInfo sizes before extraction) and safely parses malformed Content-Length headers.",
+        "Isolated SSH further (-F none, GlobalKnownHostsFile=none), hid the ssh-keyscan console "
+        "window on Windows, fixed image ZIP cancellation handling, removed duplicate hop-0 DNS "
+        "pinning, validated WSS/WS port ranges, and eliminated a robots.txt cache race.",
+        "Added GitHub Actions CI (.github/workflows/ci.yml), updated .gitignore/README/constraints, "
+        "and waited for QThreadPool completion during test teardown.",
+    ]),
     ("0.8.37", "2026/11/21", [
         "Fixed SSH when the portable folder path contains spaces: the project-owned "
         "UserKnownHostsFile value is now quoted, so OpenSSH no longer splits the path into "

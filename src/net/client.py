@@ -103,7 +103,7 @@ def endpoint_problem(url: str) -> str | None:
                 and all(ch.isalnum() or ch in "._-" for ch in user)):
             return "SSH 帳號格式不正確。"
         return None
-    if p.scheme == "wss" or (p.scheme == "ws" and host in _LOOPBACK):
+    if (p.scheme == "wss" or (p.scheme == "ws" and host in _LOOPBACK)) and (port is None or 1 <= port <= 65535):
         return None
     if p.scheme == "telnet" and (port is None or 1 <= port <= 65535):
         return None

@@ -5,6 +5,7 @@ beautifulsoup4>=4.12
 lxml>=5.0
 charset-normalizer>=3.3
 Pillow>=10
+qt-themes>=0.4
 # build / test
 pyinstaller>=6.0
 pytest>=8.0

@@ -264,8 +264,8 @@ def _robots(url: str, timeout: float) -> tuple[bool | None, str, float | None]:
         except (requests.RequestException, ValueError, FetchError, InputError):
             note = "無法讀取 robots.txt"
         _robots_put(base, rp, note)
-    with _lock:
-        _cached_at, rp, note = _robots_cache[base]
+    else:
+        _cached_at, rp, note = entry
     if rp is None:
         return None, note, None
     return rp.can_fetch(USER_AGENT, url), note, rp.crawl_delay(USER_AGENT)
